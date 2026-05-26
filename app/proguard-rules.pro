@@ -45,6 +45,13 @@
     *;
 }
 
+# 本地持久化模型也通过 Gson 读写。字段名不能被混淆，否则旧版本保存的 JSON
+# 在压缩版中会读成空字段，启动自动登录时可能触发崩溃。
+-keep class dev.jmx.client.data.models.** { *; }
+-keepclassmembers class dev.jmx.client.data.models.** {
+    *;
+}
+
 # WorkManager 通过类名恢复 Worker，debug/release 都启用 R8 后保留 Worker 类和构造入口即可。
 -keepnames class dev.jmx.client.worker.**
 -keepclassmembers class dev.jmx.client.worker.** {

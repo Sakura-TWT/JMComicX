@@ -1,20 +1,25 @@
 # Changelog
 
+## v1.0.2
+
+压缩体积并修复启动稳定性。
+
+- 重新开启 release 代码压缩与资源压缩。
+- 保留本地持久化模型字段，避免压缩后读取旧登录数据异常。
+- 增加自动登录空值防护，异常缓存不再导致启动闪退。
+
 ## v1.0.1
 
-Release hotfix.
+发布版启动闪退修复。
 
-- Disabled release R8 minification and resource shrinking to avoid runtime crashes caused by over-aggressive stripping.
-- Kept release APK signing enabled so the published package remains installable.
+- 临时关闭 release 代码压缩与资源压缩，规避启动闪退。
+- 保留 release 签名，确保发布包可安装。
 
 ## v1.0.0
 
-Initial JMX release.
+首个 JMX 发布版本。
 
-- Renamed and reorganized the client as JMX.
-- Reworked the main experience with an Apple-inspired Liquid Glass design direction.
-- Added home discovery, search, recommendations, comic detail, comments, favorites, history, reading, and download flows.
-- Added JM account login, profile, check-in, and synchronized account data.
-- Added local cache trimming and APK size optimizations.
-- Embedded the required AndroidLiquidGlass Backdrop module under `third_party/AndroidLiquidGlass/backdrop` for reproducible builds.
-- Added disclaimer and open-source credits pages.
+- 完成项目命名与基础结构整理。
+- 引入 Apple 风格与 Liquid Glass 视觉方向。
+- 支持首页、搜索、详情、阅读、账号、签到与下载流程。
+- 增加免责声明、项目引用与 GitHub Release 发布。
