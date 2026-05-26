@@ -29,8 +29,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,14 +48,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.jmx.client.BuildConfig
 import dev.jmx.client.R
+import dev.jmx.client.store.AppUpdateManager
 import dev.jmx.client.ui.components.CommonScaffold
 import dev.jmx.client.ui.glass.GlassPanel
 import dev.jmx.client.ui.glass.LocalJmxGlassPalette
 import dev.jmx.client.ui.razor.AppleChevron
 import dev.jmx.client.ui.razor.RazorText
+import kotlinx.coroutines.launch
+import org.koin.compose.getKoin
 
-private const val PROJECT_URL = "https://github.com/Sakura-TWT/JMX"
+private const val PROJECT_URL = "https://github.com/Sakura-TWT/JMComicX"
 
 @Stable
 private data class CreditItem(
@@ -206,8 +212,45 @@ private fun AboutActionRow(
 }
 
 @Composable
-private fun AppIntroCard() {
+private fun AboutSwitch(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
     val palette = LocalJmxGlassPalette.current
+    val interactionSource = remember { MutableInteractionSource() }
+    Box(
+        modifier = Modifier
+            .size(width = 50.dp, height = 30.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = { onCheckedChange(!checked) }
+            )
+            .background(
+                if (checked) palette.accent.copy(alpha = 0.92f) else palette.contentSurface.copy(alpha = 0.72f)
+            )
+            .padding(3.dp),
+        contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart
+    ) {
+        Box(
+            modifier = Modifier
+                .size(24.dp)
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = 0.96f))
+        )
+    }
+}
+
+@Composable
+private fun AppIntroCard(
+    checkingUpdate: Boolean,
+    autoCheckEnabled: Boolean,
+    onCheckUpdate: () -> Unit,
+    onAutoCheckChanged: (Boolean) -> Unit
+) {
+    val palette = LocalJmxGlassPalette.current
+    val interactionSource = remember { MutableInteractionSource() }
     val logoBrush = rememberMotionBrush(
         label = "jmxLogoTextGradient",
         colors = listOf(
@@ -288,6 +331,98 @@ private fun AppIntroCard() {
                     fontWeight = FontWeight.Medium
                 )
             )
+            Spacer(modifier = Modifier.height(18.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(palette.primaryText.copy(alpha = 0.06f))
+            )
+            Spacer(modifier = Modifier.height(14.dp))
+            RazorText(
+                text = "当前版本 v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                modifier = Modifier.fillMaxWidth(),
+                style = TextStyle(
+                    color = palette.primaryText,
+                    fontSize = 14.sp,
+                    lineHeight = 18.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(22.dp))
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = null,
+                        onClick = onCheckUpdate
+                    )
+                    .background(palette.accent.copy(alpha = 0.09f))
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    RazorText(
+                        text = if (checkingUpdate) "正在检查更新..." else "点击此处检查更新",
+                        style = TextStyle(
+                            color = palette.primaryText,
+                            fontSize = 14.sp,
+                            lineHeight = 18.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    RazorText(
+                        text = "通过 GitHub Releases 获取最新版本",
+                        style = TextStyle(
+                            color = palette.secondaryText,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    )
+                }
+                AppleChevron()
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(palette.contentSurface.copy(alpha = 0.48f))
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    RazorText(
+                        text = "自动检测更新",
+                        style = TextStyle(
+                            color = palette.primaryText,
+                            fontSize = 14.sp,
+                            lineHeight = 18.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    RazorText(
+                        text = "启动时静默检查，有新版本才提示",
+                        style = TextStyle(
+                            color = palette.secondaryText,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    )
+                }
+                AboutSwitch(
+                    checked = autoCheckEnabled,
+                    onCheckedChange = onAutoCheckChanged
+                )
+            }
         }
     }
 }
@@ -382,9 +517,14 @@ private fun DeveloperCard() {
 }
 
 @Composable
-fun AboutScreen() {
+fun AboutScreen(
+    appUpdateManager: AppUpdateManager = getKoin().get()
+) {
     val mainNavController = LocalMainNavController.current
     val uriHandler = LocalUriHandler.current
+    val scope = rememberCoroutineScope()
+    val updateUiState by appUpdateManager.uiState.collectAsState()
+    val autoCheckEnabled by appUpdateManager.autoCheckEnabled.collectAsState()
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -398,7 +538,16 @@ fun AboutScreen() {
                 .padding(top = 20.dp, bottom = 132.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            AppIntroCard()
+            AppIntroCard(
+                checkingUpdate = updateUiState.checking,
+                autoCheckEnabled = autoCheckEnabled,
+                onCheckUpdate = {
+                    scope.launch {
+                        appUpdateManager.checkForUpdate(showResultToast = true, fromStartup = false)
+                    }
+                },
+                onAutoCheckChanged = appUpdateManager::setAutoCheckEnabled
+            )
 
             Column {
                 SectionLabel("LEGAL")
