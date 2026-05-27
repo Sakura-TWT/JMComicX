@@ -33,18 +33,24 @@ import dev.jmx.client.ui.components.CommonScaffold
 import dev.jmx.client.ui.glass.LocalJmxGlassPalette
 import dev.jmx.client.ui.razor.RazorPullRefreshBox
 import dev.jmx.client.ui.razor.RazorText
+import dev.jmx.client.ui.screens.LocalMainNavController
 import dev.jmx.client.ui.state.rememberTabIndexState
 import dev.jmx.client.ui.viewModel.DownloadViewModel
+import dev.jmx.client.store.ToastManager
 import kotlinx.coroutines.launch
+import org.koin.compose.getKoin
 import org.koin.compose.viewmodel.koinActivityViewModel
+import java.io.File
 
 private val tabList = listOf("下载中" to "downloading", "已下载" to "complete")
 
 @Composable
 fun DownloadScreen(
-    downloadViewModel: DownloadViewModel = koinActivityViewModel()
+    downloadViewModel: DownloadViewModel = koinActivityViewModel(),
+    toastManager: ToastManager = getKoin().get()
 ) {
     val palette = LocalJmxGlassPalette.current
+    val mainNavController = LocalMainNavController.current
     val coroutineScope = rememberCoroutineScope()
     val selectedTabIndexState = rememberTabIndexState()
     val scrollState = rememberScrollState()
@@ -115,7 +121,26 @@ fun DownloadScreen(
                     ) { index ->
                         val item = downloadLazyPagingItems[index]
                         if (item != null) {
-                            DownloadListItem(album = item)
+                            DownloadListItem(
+                                album = item,
+                                onClick = { album ->
+                                    when {
+                                        album.status != "complete" -> {
+                                            toastManager.showAsync("漫画仍在下载中，完成后可阅读")
+                                        }
+
+                                        album.zipPath.isBlank() || !File(album.zipPath).exists() -> {
+                                            toastManager.showAsync("下载文件不存在，请重新下载")
+                                        }
+
+                                        else -> {
+                                            mainNavController.navigate("albumRead/${album.id}") {
+                                                launchSingleTop = true
+                                            }
+                                        }
+                                    }
+                                }
+                            )
                         }
                     }
 //                    items(count = 4, key = { it }) {

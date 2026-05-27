@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -138,6 +139,9 @@ fun ChapterPickerSheet(
         (LocalWindowInfo.current.containerSize.height * 0.58f).toDp()
     }
     val currentIndex = chapterList.indexOfFirst { it.id == currentAlbumId }
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = (currentIndex - 3).coerceAtLeast(0)
+    )
     val sheetColor = if (palette.page.luminance() > 0.5f) {
         Color.White.copy(alpha = 0.96f)
     } else {
@@ -233,6 +237,7 @@ fun ChapterPickerSheet(
                             .height(0.6.dp)
                     )
                     LazyColumn(
+                        state = listState,
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = maxHeight)

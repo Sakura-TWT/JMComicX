@@ -61,16 +61,15 @@ private fun AlbumCoverImage(
 @Composable
 fun DownloadListItem(
     modifier: Modifier = Modifier,
-    album: DownloadAlbum
+    album: DownloadAlbum,
+    onClick: (DownloadAlbum) -> Unit
 ) {
     val palette = LocalJmxGlassPalette.current
     GlassPanel(
         modifier = Modifier.clickable(
             interactionSource = null,
             indication = null,
-            onClick = {
-                // TODO
-            }
+            onClick = { onClick(album) }
         ),
         cornerRadius = 24.dp,
         useContentSurface = true
