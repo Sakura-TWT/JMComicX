@@ -10,7 +10,17 @@ import dev.jmx.client.ui.theme.AppTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        JmxDiagnostics.i("MainActivity", "onCreate savedState=${savedInstanceState != null}")
+        JmxDiagnostics.i(
+            "Lifecycle",
+            "MainActivity onCreate",
+            metadata = mapOf(
+                "component" to "MainActivity",
+                "callback" to "onCreate",
+                "saved_state" to (savedInstanceState != null),
+                "launch_action" to intent?.action.orEmpty(),
+                "launch_data" to intent?.dataString.orEmpty()
+            )
+        )
 
         enableEdgeToEdge()
         setContent {
@@ -22,21 +32,40 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        JmxDiagnostics.i("MainActivity", "onStart")
+        JmxDiagnostics.setForeground(true)
+        JmxDiagnostics.i(
+            "Lifecycle",
+            "MainActivity onStart",
+            metadata = mapOf("component" to "MainActivity", "callback" to "onStart")
+        )
     }
 
     override fun onResume() {
         super.onResume()
-        JmxDiagnostics.i("MainActivity", "onResume")
+        JmxDiagnostics.setForeground(true)
+        JmxDiagnostics.i(
+            "Lifecycle",
+            "MainActivity onResume",
+            metadata = mapOf("component" to "MainActivity", "callback" to "onResume")
+        )
     }
 
     override fun onPause() {
-        JmxDiagnostics.i("MainActivity", "onPause")
+        JmxDiagnostics.i(
+            "Lifecycle",
+            "MainActivity onPause",
+            metadata = mapOf("component" to "MainActivity", "callback" to "onPause")
+        )
         super.onPause()
     }
 
     override fun onStop() {
-        JmxDiagnostics.i("MainActivity", "onStop")
+        JmxDiagnostics.i(
+            "Lifecycle",
+            "MainActivity onStop",
+            metadata = mapOf("component" to "MainActivity", "callback" to "onStop")
+        )
+        JmxDiagnostics.setForeground(false)
         super.onStop()
     }
 }

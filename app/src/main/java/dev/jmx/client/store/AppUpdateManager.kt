@@ -45,30 +45,74 @@ class AppUpdateManager(
 
     suspend fun checkForUpdate(showResultToast: Boolean, fromStartup: Boolean = false) {
         if (fromStartup && !autoCheckEnabled.value) {
-            JmxDiagnostics.i("Update", "Startup update check skipped because auto check is disabled")
+            JmxDiagnostics.i(
+                "Update",
+                "Startup update check skipped because auto check is disabled",
+                metadata = mapOf("from_startup" to fromStartup)
+            )
             return
         }
 
-        JmxDiagnostics.i("Update", "Check update started showToast=$showResultToast fromStartup=$fromStartup")
+        JmxDiagnostics.i(
+            "Update",
+            "Update check started",
+            metadata = mapOf(
+                "show_result_toast" to showResultToast,
+                "from_startup" to fromStartup,
+                "local_version" to BuildConfig.VERSION_NAME
+            )
+        )
         _uiState.value = _uiState.value.copy(checking = true)
-        val latest = runCatching { fetchLatestRelease() }.getOrNull()
+        val latestResult = runCatching { fetchLatestRelease() }
         _uiState.value = _uiState.value.copy(checking = false)
+        val latest = latestResult.getOrNull()
 
         when {
+            latestResult.isFailure -> {
+                JmxDiagnostics.e(
+                    "Update",
+                    "Update check failed with exception",
+                    latestResult.exceptionOrNull(),
+                    metadata = mapOf("from_startup" to fromStartup)
+                )
+                if (showResultToast) {
+                    toastManager.showAsync("检查更新失败，可能需要稍后重试或开启网络代理")
+                }
+            }
+
             latest == null -> {
-                JmxDiagnostics.w("Update", "Check update failed: latest release unavailable")
+                JmxDiagnostics.w(
+                    "Update",
+                    "Update check finished without available release",
+                    metadata = mapOf("from_startup" to fromStartup)
+                )
                 if (showResultToast) {
                     toastManager.showAsync("检查更新失败，可能需要稍后重试或开启网络代理")
                 }
             }
 
             isNewerVersion(latest.versionName, BuildConfig.VERSION_NAME) -> {
-                JmxDiagnostics.i("Update", "New version found remote=${latest.versionName} local=${BuildConfig.VERSION_NAME}")
+                JmxDiagnostics.i(
+                    "Update",
+                    "New version found",
+                    metadata = mapOf(
+                        "remote_version" to latest.versionName,
+                        "local_version" to BuildConfig.VERSION_NAME,
+                        "force_update" to latest.forceUpdate,
+                        "download_url" to latest.downloadUrl.orEmpty(),
+                        "release_url" to latest.releaseUrl,
+                        "release_body_length" to latest.body.length
+                    )
+                )
                 _uiState.value = _uiState.value.copy(dialogInfo = latest)
             }
 
             showResultToast -> {
-                JmxDiagnostics.i("Update", "Already latest local=${BuildConfig.VERSION_NAME}")
+                JmxDiagnostics.i(
+                    "Update",
+                    "Already latest version",
+                    metadata = mapOf("local_version" to BuildConfig.VERSION_NAME)
+                )
                 toastManager.showAsync("当前已是最新版本")
             }
         }
@@ -79,7 +123,12 @@ class AppUpdateManager(
     }
 
     fun setAutoCheckEnabled(enabled: Boolean) {
-        JmxDiagnostics.i("Update", "Auto update check set enabled=$enabled")
+        JmxDiagnostics.userAction(
+            screen = "About",
+            action = "toggle",
+            target = "auto_update_check",
+            metadata = mapOf("enabled" to enabled)
+        )
         preferenceStorage.setAutoCheckEnabled(enabled)
         toastManager.showAsync(if (enabled) "已开启自动更新检测" else "已关闭自动更新提示")
     }
@@ -90,7 +139,12 @@ class AppUpdateManager(
     }
 
     private suspend fun fetchLatestRelease(): UpdateInfo? = withContext(Dispatchers.IO) {
-        for (endpoint in RELEASE_ENDPOINTS) {
+        for ((index, endpoint) in RELEASE_ENDPOINTS.withIndex()) {
+            JmxDiagnostics.i(
+                "Update",
+                "Fetch latest release endpoint started",
+                metadata = mapOf("endpoint_index" to index, "endpoint" to endpoint)
+            )
             val response = runCatching {
                 client.newCall(
                     Request.Builder()
@@ -99,19 +153,51 @@ class AppUpdateManager(
                         .header("User-Agent", "JMX/${BuildConfig.VERSION_NAME}")
                         .build()
                 ).execute()
+            }.onFailure {
+                JmxDiagnostics.e(
+                    "Update",
+                    "Fetch latest release endpoint failed",
+                    it,
+                    metadata = mapOf("endpoint_index" to index, "endpoint" to endpoint)
+                )
             }.getOrNull() ?: continue
 
             response.use {
                 if (!it.isSuccessful) {
+                    JmxDiagnostics.w(
+                        "Update",
+                        "Fetch latest release endpoint returned non-success",
+                        metadata = mapOf(
+                            "endpoint_index" to index,
+                            "endpoint" to endpoint,
+                            "status_code" to it.code
+                        )
+                    )
                     return@use
                 }
 
                 val payload = it.body?.string().orEmpty()
                 val release = runCatching {
                     gson.fromJson(payload, GitHubReleaseResponse::class.java)
+                }.onFailure { throwable ->
+                    JmxDiagnostics.e(
+                        "Update",
+                        "Parse latest release response failed",
+                        throwable,
+                        metadata = mapOf("endpoint_index" to index, "payload_length" to payload.length)
+                    )
                 }.getOrNull() ?: return@use
 
                 if (release.draft == true || release.prerelease == true) {
+                    JmxDiagnostics.i(
+                        "Update",
+                        "Latest release ignored because it is draft or prerelease",
+                        metadata = mapOf(
+                            "draft" to release.draft,
+                            "prerelease" to release.prerelease,
+                            "tag_name" to release.tagName.orEmpty()
+                        )
+                    )
                     return@withContext null
                 }
 

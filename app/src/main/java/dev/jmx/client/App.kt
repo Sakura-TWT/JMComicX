@@ -236,18 +236,34 @@ fun App(
     val updateUiState by appUpdateManager.uiState.collectAsState()
 
     LaunchedEffect(Unit) {
-        JmxDiagnostics.i("App", "Global init requested")
+        JmxDiagnostics.i(
+            "App",
+            "Global init requested",
+            metadata = mapOf("stage" to "global_view_model_init")
+        )
         globalViewModel.init()
     }
     LaunchedEffect(Unit) {
-        JmxDiagnostics.i("AppUpdate", "Startup update check requested")
+        JmxDiagnostics.i(
+            "Update",
+            "Startup update check requested",
+            metadata = mapOf("stage" to "startup")
+        )
         appUpdateManager.checkForUpdate(showResultToast = false, fromStartup = true)
     }
     LaunchedEffect(context) {
         withContext(Dispatchers.IO) {
-            JmxDiagnostics.i("Cache", "App cache trim start")
+            val start = System.nanoTime()
+            JmxDiagnostics.i("Cache", "App cache trim started", metadata = mapOf("reason" to "startup"))
             trimAppCaches(context.applicationContext)
-            JmxDiagnostics.i("Cache", "App cache trim finished")
+            JmxDiagnostics.i(
+                "Cache",
+                "App cache trim finished",
+                metadata = mapOf(
+                    "reason" to "startup",
+                    "cost_ms" to ((System.nanoTime() - start) / 1_000_000)
+                )
+            )
         }
     }
     LaunchedEffect(Unit) {

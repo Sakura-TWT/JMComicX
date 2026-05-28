@@ -8,12 +8,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
+import androidx.navigation.NavDestination
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import dev.jmx.client.store.JmxDiagnostics
 import dev.jmx.client.ui.components.NavigationInputBlocker
 import dev.jmx.client.ui.screens.downloadScreen.DownloadScreen
 import dev.jmx.client.ui.screens.readScreen.AlbumReadScreen
@@ -27,10 +29,20 @@ fun AppScreen(
 ) {
     val mainNavController = rememberNavController()
     val backStackEntry by mainNavController.currentBackStackEntryAsState()
-    val route = backStackEntry?.destination?.route.orEmpty()
+    val route = backStackEntry?.let { entry ->
+        entry.destination.actualRoute(entry.arguments)
+    }.orEmpty()
     androidx.compose.runtime.LaunchedEffect(route) {
         if (route.isNotBlank()) {
-            dev.jmx.client.store.JmxDiagnostics.i("Navigation", "route=$route")
+            JmxDiagnostics.updateCurrentRoute(route)
+            JmxDiagnostics.i(
+                "Navigation",
+                "Navigate to route",
+                metadata = mapOf(
+                    "nav_type" to "route_visible",
+                    "to_route" to route
+                )
+            )
         }
     }
     CompositionLocalProvider(
@@ -128,4 +140,18 @@ fun AppScreen(
 
 val LocalMainNavController = staticCompositionLocalOf<NavHostController> {
     error("none")
+}
+
+private fun NavDestination.actualRoute(arguments: android.os.Bundle?): String {
+    val template = route.orEmpty()
+    if (template.isBlank() || arguments == null) {
+        return template
+    }
+    return template
+        .replace("{tabName}?", arguments.getString("tabName").orEmpty())
+        .replace("{tabName}", arguments.getString("tabName").orEmpty())
+        .replace("{searchContent}", arguments.getString("searchContent").orEmpty())
+        .replace("{albumId}", arguments.getInt("albumId", -1).toString())
+        .replace("{id}", arguments.getInt("id", -1).toString())
+        .trimEnd('/')
 }

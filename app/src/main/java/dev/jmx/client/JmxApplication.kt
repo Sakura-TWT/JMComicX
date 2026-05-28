@@ -24,6 +24,8 @@ private val moduleList = listOf(
 )
 
 class JmxApplication : Application() {
+    private val startedAt = System.nanoTime()
+
     override fun onCreate() {
         super.onCreate()
 
@@ -34,6 +36,33 @@ class JmxApplication : Application() {
         }
         val diagnosticLogManager = GlobalContext.get().get<DiagnosticLogManager>()
         diagnosticLogManager.initialize()
-        JmxDiagnostics.i("Application", "JMX application created")
+        JmxDiagnostics.i(
+            "Lifecycle",
+            "JMX application created",
+            metadata = mapOf(
+                "component" to "JmxApplication",
+                "callback" to "onCreate",
+                "startup_reason" to "process_start",
+                "application_init_ms" to ((System.nanoTime() - startedAt) / 1_000_000)
+            )
+        )
+    }
+
+    override fun onLowMemory() {
+        JmxDiagnostics.w(
+            "SystemState",
+            "System reported low memory",
+            metadata = mapOf("callback" to "onLowMemory")
+        )
+        super.onLowMemory()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        JmxDiagnostics.w(
+            "SystemState",
+            "System requested memory trim",
+            metadata = mapOf("callback" to "onTrimMemory", "trim_level" to level)
+        )
+        super.onTrimMemory(level)
     }
 }

@@ -24,6 +24,15 @@ class DownloadManager(
 ) {
     fun downloadAlbum(album: Album) {
         scope.launch(Dispatchers.IO) {
+            JmxDiagnostics.userAction(
+                screen = "AlbumDetail",
+                action = "click",
+                target = "download_album",
+                metadata = mapOf(
+                    "album_id" to album.id,
+                    "album_name_length" to album.name.length
+                )
+            )
             downloadAlbumDao.insert(
                 DownloadAlbum(
                     id = album.id,
@@ -34,6 +43,16 @@ class DownloadManager(
                     progress = 0f,
                     status = "pending",
                     createTime = System.currentTimeMillis()
+                )
+            )
+            JmxDiagnostics.i(
+                "Download",
+                "Download task created",
+                metadata = mapOf(
+                    "task_id" to album.id,
+                    "album_id" to album.id,
+                    "album_name_length" to album.name.length,
+                    "status" to "pending"
                 )
             )
             toastManager.showAsync("创建下载任务成功")
@@ -50,6 +69,14 @@ class DownloadManager(
                 .setBackoffCriteria(BackoffPolicy.LINEAR, 10, TimeUnit.SECONDS) // 重试策略
                 .build()
             WorkManager.getInstance(context).enqueue(downloadRequest)
+            JmxDiagnostics.i(
+                "Download",
+                "Download worker enqueued",
+                metadata = mapOf(
+                    "task_id" to album.id,
+                    "worker_id" to downloadRequest.id
+                )
+            )
         }
     }
 }

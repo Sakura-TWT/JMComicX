@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.navOptions
 import dev.jmx.client.R
+import dev.jmx.client.store.JmxDiagnostics
 import dev.jmx.client.ui.glass.LiquidBottomBar
 import dev.jmx.client.ui.glass.LiquidBottomBarItem
 import dev.jmx.client.ui.razor.RazorIcon
@@ -79,6 +80,30 @@ fun BottomNavigationBarComponent(
         if (route == currentRoute && visualSelectedIndex == selectedIndex) {
             return
         }
+        val fromTab = tabs.getOrNull(selectedIndex)?.label.orEmpty()
+        val toTab = tabs[index].label
+        JmxDiagnostics.userAction(
+            screen = "BottomNavigation",
+            action = "tab_switch",
+            target = toTab,
+            metadata = mapOf(
+                "from_tab" to fromTab,
+                "to_tab" to toTab,
+                "from_route" to currentRoute.orEmpty(),
+                "to_route" to route,
+                "index" to index
+            )
+        )
+        JmxDiagnostics.i(
+            "Navigation",
+            "Bottom tab switched",
+            metadata = mapOf(
+                "nav_type" to "tab_switch",
+                "from_route" to currentRoute.orEmpty(),
+                "to_route" to route,
+                "tab_name" to toTab
+            )
+        )
         visualSelectedIndex = index
         tabNavController.navigate(route, navOptions {
             launchSingleTop = true

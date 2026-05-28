@@ -52,7 +52,7 @@ val appModule = module {
     single { HistorySearchManager(get()) } bind AppInitTask::class
     single { ToastManager() }
     single { AppUpdateManager(get(), get(), get()) }
-    single { DiagnosticLogManager(get(), get(), get()) }
+    single { DiagnosticLogManager(get(), get(), get(), get(), get()) }
     single { InitManager() }
 
     single<Gson> { GsonBuilder().setStrictness(Strictness.LENIENT).serializeNulls().create() }

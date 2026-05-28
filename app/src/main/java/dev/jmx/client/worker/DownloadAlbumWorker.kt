@@ -22,6 +22,7 @@ import dev.jmx.client.repository.AlbumRepository
 import dev.jmx.client.data.remote.model.AlbumImageListResponse
 import dev.jmx.client.data.remote.model.NetworkResult
 import dev.jmx.client.store.LocalSettingManager
+import dev.jmx.client.store.JmxDiagnostics
 import dev.jmx.client.store.RemoteSettingManager
 import dev.jmx.client.store.ToastManager
 import dev.jmx.client.utils.tryCreateDir
@@ -47,14 +48,34 @@ class DownloadAlbumWorker(
     override suspend fun doWork(): Result {
         val albumId = inputData.getInt("albumId", -1)
         if (albumId == -1) {
+            JmxDiagnostics.e(
+                "Download",
+                "Download worker missing album id",
+                metadata = mapOf("worker_run_attempt" to runAttemptCount)
+            )
             return Result.failure()
         }
+        val startMs = System.currentTimeMillis()
+        JmxDiagnostics.i(
+            "Download",
+            "Download task started",
+            metadata = mapOf(
+                "task_id" to albumId,
+                "album_id" to albumId,
+                "worker_run_attempt" to runAttemptCount
+            )
+        )
         return try {
             downloadAlbumDao.updateStatus(
                 UpdateAlbumStatus(
                     albumId,
                     "downloading"
                 )
+            )
+            JmxDiagnostics.d(
+                "Download",
+                "Download status changed",
+                metadata = mapOf("task_id" to albumId, "status" to "downloading")
             )
             val coverPath = downloadCover(albumId)
             downloadAlbumDao.updateCover(
@@ -80,9 +101,34 @@ class DownloadAlbumWorker(
                     "complete"
                 )
             )
+            val costMs = System.currentTimeMillis() - startMs
+            val zipFile = File(zipPath)
+            JmxDiagnostics.i(
+                "Download",
+                "Download task completed",
+                metadata = mapOf(
+                    "task_id" to albumId,
+                    "album_id" to albumId,
+                    "cost_ms" to costMs,
+                    "image_count" to picPathList.size,
+                    "final_file_size_bytes" to zipFile.length(),
+                    "target_path" to zipFile.name
+                )
+            )
             toastManager.showAsync("下载成功")
             Result.success()
         } catch (e: Exception) {
+            JmxDiagnostics.e(
+                "Download",
+                "Download task failed",
+                e,
+                metadata = mapOf(
+                    "task_id" to albumId,
+                    "album_id" to albumId,
+                    "worker_run_attempt" to runAttemptCount,
+                    "will_retry" to (runAttemptCount < 3)
+                )
+            )
             if (runAttemptCount < 3) {
                 Result.retry() // 如果失败了，系统会自动尝试重试
             } else {
@@ -101,6 +147,15 @@ class DownloadAlbumWorker(
         return withContext(Dispatchers.IO) {
             val coverUrl =
                 "${remoteSettingManager.remoteSettingState.value.imgHost}/media/albums/${albumId}_3x4.jpg"
+            JmxDiagnostics.i(
+                "Download",
+                "Download cover started",
+                metadata = mapOf(
+                    "task_id" to albumId,
+                    "download_url" to coverUrl,
+                    "target_path" to "download/cover/${albumId}.jpg"
+                )
+            )
             val request = ImageRequest.Builder(appContext)
                 .data(coverUrl)
                 .allowHardware(false)
@@ -110,7 +165,12 @@ class DownloadAlbumWorker(
 
             when (val result = imageLoader.execute(request)) {
                 is ErrorResult -> {
-                    // TODO 处理错误
+                    JmxDiagnostics.e(
+                        "Download",
+                        "Download cover failed",
+                        result.throwable,
+                        metadata = mapOf("task_id" to albumId, "download_url" to coverUrl)
+                    )
                     ""
                 }
 
@@ -121,6 +181,15 @@ class DownloadAlbumWorker(
                     FileOutputStream(file).use { out ->
                         bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 50, out)
                     }
+                    JmxDiagnostics.i(
+                        "Download",
+                        "Download cover completed",
+                        metadata = mapOf(
+                            "task_id" to albumId,
+                            "target_path" to file.name,
+                            "final_file_size_bytes" to file.length()
+                        )
+                    )
                     file.absolutePath
                 }
             }
@@ -140,6 +209,17 @@ class DownloadAlbumWorker(
                     }
 
                     val dir = getAlbumImageListDownloadDir(albumId)
+                    JmxDiagnostics.i(
+                        "Download",
+                        "Download image list started",
+                        metadata = mapOf(
+                            "task_id" to albumId,
+                            "album_id" to albumId,
+                            "image_count" to data.data.list.size,
+                            "shunt" to shunt
+                        )
+                    )
+                    var lastLoggedPercent = -10
                     data.data.list.mapIndexed { index, url ->
                         val request = ImageRequest.Builder(appContext)
                             .data(url)
@@ -167,6 +247,21 @@ class DownloadAlbumWorker(
                                         (index + 1).toFloat() / data.data.list.size
                                     )
                                 )
+                                val percent = (((index + 1).toFloat() / data.data.list.size) * 100).toInt()
+                                if (percent >= lastLoggedPercent + 10 || percent == 100) {
+                                    lastLoggedPercent = percent
+                                    JmxDiagnostics.i(
+                                        "Download",
+                                        "Download image progress",
+                                        metadata = mapOf(
+                                            "task_id" to albumId,
+                                            "downloaded_count" to (index + 1),
+                                            "total_count" to data.data.list.size,
+                                            "progress_percent" to percent,
+                                            "downloaded_bytes" to file.length()
+                                        )
+                                    )
+                                }
                                 file.absolutePath
                             }
                         }
@@ -178,6 +273,15 @@ class DownloadAlbumWorker(
 
     private fun zipPicPathList(albumId: Int, picPathList: List<String>): String {
         val zipFile = File(getDownloadDir(appContext), "$albumId.zip")
+        JmxDiagnostics.i(
+            "Download",
+            "Compress downloaded images started",
+            metadata = mapOf(
+                "task_id" to albumId,
+                "source_file_count" to picPathList.size,
+                "target_path" to zipFile.name
+            )
+        )
         ZipOutputStream(FileOutputStream(zipFile)).use { zipOut ->
             picPathList.forEach { source ->
                 val file = File(source)
@@ -192,6 +296,15 @@ class DownloadAlbumWorker(
                 }
             }
         }
+        JmxDiagnostics.i(
+            "Download",
+            "Compress downloaded images completed",
+            metadata = mapOf(
+                "task_id" to albumId,
+                "target_path" to zipFile.name,
+                "final_file_size_bytes" to zipFile.length()
+            )
+        )
         return zipFile.absolutePath
     }
 
