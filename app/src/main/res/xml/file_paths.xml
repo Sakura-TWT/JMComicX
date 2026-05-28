@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path
+        name="diagnostic_logs"
+        path="diagnostic_logs/" />
+    <cache-path
+        name="shared_logs"
+        path="shared_logs/" />
+</paths>

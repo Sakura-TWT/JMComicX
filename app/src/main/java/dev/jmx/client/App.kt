@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.jmx.client.cache.trimAppCaches
 import dev.jmx.client.store.AppUpdateManager
+import dev.jmx.client.store.JmxDiagnostics
 import dev.jmx.client.store.ToastManager
 import dev.jmx.client.store.UpdateInfo
 import dev.jmx.client.ui.glass.LocalJmxGlassPalette
@@ -235,14 +236,18 @@ fun App(
     val updateUiState by appUpdateManager.uiState.collectAsState()
 
     LaunchedEffect(Unit) {
+        JmxDiagnostics.i("App", "Global init requested")
         globalViewModel.init()
     }
     LaunchedEffect(Unit) {
+        JmxDiagnostics.i("AppUpdate", "Startup update check requested")
         appUpdateManager.checkForUpdate(showResultToast = false, fromStartup = true)
     }
     LaunchedEffect(context) {
         withContext(Dispatchers.IO) {
+            JmxDiagnostics.i("Cache", "App cache trim start")
             trimAppCaches(context.applicationContext)
+            JmxDiagnostics.i("Cache", "App cache trim finished")
         }
     }
     LaunchedEffect(Unit) {

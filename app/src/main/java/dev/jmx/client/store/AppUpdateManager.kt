@@ -45,25 +45,32 @@ class AppUpdateManager(
 
     suspend fun checkForUpdate(showResultToast: Boolean, fromStartup: Boolean = false) {
         if (fromStartup && !autoCheckEnabled.value) {
+            JmxDiagnostics.i("Update", "Startup update check skipped because auto check is disabled")
             return
         }
 
+        JmxDiagnostics.i("Update", "Check update started showToast=$showResultToast fromStartup=$fromStartup")
         _uiState.value = _uiState.value.copy(checking = true)
         val latest = runCatching { fetchLatestRelease() }.getOrNull()
         _uiState.value = _uiState.value.copy(checking = false)
 
         when {
             latest == null -> {
+                JmxDiagnostics.w("Update", "Check update failed: latest release unavailable")
                 if (showResultToast) {
                     toastManager.showAsync("检查更新失败，可能需要稍后重试或开启网络代理")
                 }
             }
 
             isNewerVersion(latest.versionName, BuildConfig.VERSION_NAME) -> {
+                JmxDiagnostics.i("Update", "New version found remote=${latest.versionName} local=${BuildConfig.VERSION_NAME}")
                 _uiState.value = _uiState.value.copy(dialogInfo = latest)
             }
 
-            showResultToast -> toastManager.showAsync("当前已是最新版本")
+            showResultToast -> {
+                JmxDiagnostics.i("Update", "Already latest local=${BuildConfig.VERSION_NAME}")
+                toastManager.showAsync("当前已是最新版本")
+            }
         }
     }
 
@@ -72,6 +79,7 @@ class AppUpdateManager(
     }
 
     fun setAutoCheckEnabled(enabled: Boolean) {
+        JmxDiagnostics.i("Update", "Auto update check set enabled=$enabled")
         preferenceStorage.setAutoCheckEnabled(enabled)
         toastManager.showAsync(if (enabled) "已开启自动更新检测" else "已关闭自动更新提示")
     }

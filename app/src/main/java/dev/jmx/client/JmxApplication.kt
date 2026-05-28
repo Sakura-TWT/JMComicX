@@ -10,6 +10,9 @@ import dev.jmx.client.di.userModule
 import org.koin.android.ext.koin.androidContext
 import org.koin.androidx.workmanager.koin.workManagerFactory
 import org.koin.core.context.startKoin
+import org.koin.core.context.GlobalContext
+import dev.jmx.client.store.DiagnosticLogManager
+import dev.jmx.client.store.JmxDiagnostics
 
 private val moduleList = listOf(
     appModule,
@@ -29,5 +32,8 @@ class JmxApplication : Application() {
             workManagerFactory()
             modules(moduleList)
         }
+        val diagnosticLogManager = GlobalContext.get().get<DiagnosticLogManager>()
+        diagnosticLogManager.initialize()
+        JmxDiagnostics.i("Application", "JMX application created")
     }
 }

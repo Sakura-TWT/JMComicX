@@ -21,6 +21,7 @@ import dev.jmx.client.ui.screens.LocalMainNavController
 fun CommonScaffold(
     title: String,
     onTitleClick: (() -> Unit)? = null,
+    actions: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit = {},
     bottomBar: @Composable () -> Unit = {},
     content: @Composable (() -> Unit)? = null
 ) {
@@ -45,7 +46,8 @@ fun CommonScaffold(
                 RazorBackTopBar(
                     title = title,
                     onTitleClick = onTitleClick,
-                    onBack = { mainNavController.popBackStack() }
+                    onBack = { mainNavController.popBackStack() },
+                    actions = actions
                 )
                 Box(
                     modifier = Modifier.fillMaxSize(),

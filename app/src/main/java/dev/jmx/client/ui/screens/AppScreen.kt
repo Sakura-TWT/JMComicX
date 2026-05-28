@@ -4,12 +4,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import dev.jmx.client.ui.components.NavigationInputBlocker
@@ -24,6 +26,13 @@ fun AppScreen(
     albumViewModel: AlbumViewModel = koinActivityViewModel()
 ) {
     val mainNavController = rememberNavController()
+    val backStackEntry by mainNavController.currentBackStackEntryAsState()
+    val route = backStackEntry?.destination?.route.orEmpty()
+    androidx.compose.runtime.LaunchedEffect(route) {
+        if (route.isNotBlank()) {
+            dev.jmx.client.store.JmxDiagnostics.i("Navigation", "route=$route")
+        }
+    }
     CompositionLocalProvider(
         LocalMainNavController provides mainNavController,
     ) {
@@ -88,6 +97,7 @@ fun AppScreen(
                 composable(route = "albumSearch") { AlbumSearchScreen() }
                 composable(route = "aboutDisclaimer") { AboutDisclaimerScreen() }
                 composable(route = "aboutCredits") { AboutCreditsScreen() }
+                composable(route = "diagnosticLogs") { DiagnosticLogScreen() }
                 composable(
                     route = "albumSearchResult/{searchContent}",
                     arguments = listOf(

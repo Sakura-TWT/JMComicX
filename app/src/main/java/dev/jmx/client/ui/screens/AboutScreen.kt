@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
 package dev.jmx.client.ui.screens
 
 import androidx.compose.animation.core.LinearEasing
@@ -14,6 +16,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -28,14 +31,21 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.FolderZip
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -46,6 +56,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
@@ -56,10 +67,14 @@ import androidx.compose.ui.unit.sp
 import dev.jmx.client.BuildConfig
 import dev.jmx.client.R
 import dev.jmx.client.store.AppUpdateManager
+import dev.jmx.client.store.DiagnosticLogManager
+import dev.jmx.client.store.DiagnosticLogSession
 import dev.jmx.client.ui.components.CommonScaffold
 import dev.jmx.client.ui.glass.GlassPanel
 import dev.jmx.client.ui.glass.LocalJmxGlassPalette
 import dev.jmx.client.ui.razor.AppleChevron
+import dev.jmx.client.ui.razor.RazorGlassButton
+import dev.jmx.client.ui.razor.RazorIcon
 import dev.jmx.client.ui.razor.RazorText
 import kotlinx.coroutines.launch
 import org.koin.compose.getKoin
@@ -276,6 +291,121 @@ private fun AboutSwitch(
                 .clip(CircleShape)
                 .background(Color.White.copy(alpha = 0.96f))
         )
+    }
+}
+
+@Composable
+private fun DiagnosticLogSwitch(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val red = Color(0xFFFF3B30)
+    val trackColor by animateColorAsState(
+        targetValue = if (checked) red else red.copy(alpha = 0.14f),
+        animationSpec = tween(durationMillis = 180),
+        label = "diagnosticLogTrackColor"
+    )
+    val thumbOffset by animateDpAsState(
+        targetValue = if (checked) 34.dp else 3.dp,
+        animationSpec = spring(dampingRatio = 0.72f, stiffness = 560f),
+        label = "diagnosticLogThumbOffset"
+    )
+    val thumbScale by animateFloatAsState(
+        targetValue = if (pressed) 0.90f else 1f,
+        animationSpec = spring(dampingRatio = 0.70f, stiffness = 620f),
+        label = "diagnosticLogThumbScale"
+    )
+    Box(
+        modifier = Modifier
+            .size(width = 64.dp, height = 34.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(trackColor)
+            .border(1.dp, red.copy(alpha = if (checked) 0.36f else 0.26f), RoundedCornerShape(999.dp))
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = { onCheckedChange(!checked) }
+            ),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(start = thumbOffset)
+                .size(width = if (pressed) 29.dp else 27.dp, height = 27.dp)
+                .graphicsLayer {
+                    scaleX = thumbScale
+                    scaleY = thumbScale
+                }
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = 0.98f))
+        )
+    }
+}
+
+@Composable
+private fun DiagnosticLogCard(
+    enabled: Boolean,
+    sessionCount: Int,
+    onToggle: (Boolean) -> Unit,
+    onOpen: () -> Unit
+) {
+    val palette = LocalJmxGlassPalette.current
+    val interactionSource = remember { MutableInteractionSource() }
+    AboutGlassCard(
+        modifier = Modifier.combinedClickable(
+            interactionSource = interactionSource,
+            indication = null,
+            onClick = {},
+            onLongClick = onOpen
+        )
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                RazorText(
+                    text = "运行日志输出",
+                    style = TextStyle(
+                        color = Color(0xFFFF3B30),
+                        fontSize = 16.sp,
+                        lineHeight = 20.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                RazorText(
+                    text = if (enabled) {
+                        "正在记录运行、网络、导航与异常日志。长按进入日志中心。"
+                    } else {
+                        "关闭中。长按可管理本地日志，开启后按启停时间自动分段。"
+                    },
+                    style = TextStyle(
+                        color = palette.secondaryText,
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                RazorText(
+                    text = "本地日志：$sessionCount 段",
+                    style = TextStyle(
+                        color = palette.tertiaryText,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+            }
+            DiagnosticLogSwitch(
+                checked = enabled,
+                onCheckedChange = onToggle
+            )
+        }
     }
 }
 
@@ -555,13 +685,16 @@ private fun DeveloperCard() {
 
 @Composable
 fun AboutScreen(
-    appUpdateManager: AppUpdateManager = getKoin().get()
+    appUpdateManager: AppUpdateManager = getKoin().get(),
+    diagnosticLogManager: DiagnosticLogManager = getKoin().get()
 ) {
     val mainNavController = LocalMainNavController.current
     val uriHandler = LocalUriHandler.current
     val scope = rememberCoroutineScope()
     val updateUiState by appUpdateManager.uiState.collectAsState()
     val autoCheckEnabled by appUpdateManager.autoCheckEnabled.collectAsState()
+    val logEnabled by diagnosticLogManager.enabled.collectAsState()
+    val logSessions by diagnosticLogManager.sessions.collectAsState()
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -592,6 +725,16 @@ fun AboutScreen(
                     title = "免责声明",
                     subtitle = "查看完整使用声明与责任边界",
                     onClick = { mainNavController.navigate("aboutDisclaimer") }
+                )
+            }
+
+            Column {
+                SectionLabel("DIAGNOSTICS")
+                DiagnosticLogCard(
+                    enabled = logEnabled,
+                    sessionCount = logSessions.size,
+                    onToggle = diagnosticLogManager::setEnabled,
+                    onOpen = { mainNavController.navigate("diagnosticLogs") }
                 )
             }
 
@@ -755,6 +898,222 @@ fun AboutCreditsScreen() {
                             lineHeight = 22.sp,
                             fontWeight = FontWeight.Medium
                         )
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticLogSessionCard(
+    session: DiagnosticLogSession,
+    selected: Boolean,
+    selectionMode: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: () -> Unit,
+    diagnosticLogManager: DiagnosticLogManager
+) {
+    val palette = LocalJmxGlassPalette.current
+    AboutGlassCard(
+        modifier = Modifier.combinedClickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+            onClick = onClick,
+            onLongClick = onLongClick
+        )
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (selected) Color(0xFFFF3B30) else Color(0xFFFF3B30).copy(alpha = 0.12f)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                RazorIcon(
+                    imageVector = Icons.Outlined.FolderZip,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = if (selected) Color.White else Color(0xFFFF3B30)
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                RazorText(
+                    text = diagnosticLogManager.formatSessionTitle(session),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(
+                        color = palette.primaryText,
+                        fontSize = 15.sp,
+                        lineHeight = 20.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                RazorText(
+                    text = diagnosticLogManager.formatSessionSubtitle(session),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(
+                        color = palette.secondaryText,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                )
+            }
+            if (!selectionMode) {
+                RazorGlassButton(onClick = onShare, modifier = Modifier.size(42.dp)) {
+                    RazorIcon(
+                        imageVector = Icons.Outlined.Share,
+                        contentDescription = "分享",
+                        modifier = Modifier.size(18.dp),
+                        tint = palette.primaryText
+                    )
+                }
+                RazorGlassButton(onClick = onDelete, modifier = Modifier.size(42.dp)) {
+                    RazorIcon(
+                        imageVector = Icons.Outlined.Delete,
+                        contentDescription = "删除",
+                        modifier = Modifier.size(18.dp),
+                        tint = Color(0xFFFF3B30)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DiagnosticLogScreen(
+    diagnosticLogManager: DiagnosticLogManager = getKoin().get()
+) {
+    val context = LocalContext.current
+    val palette = LocalJmxGlassPalette.current
+    val sessions by diagnosticLogManager.sessions.collectAsState()
+    val selectedIds = remember { mutableStateOf<Set<String>>(emptySet()) }
+    val selectedSessions = sessions.filter { it.id in selectedIds.value }
+    val selectionMode = selectedIds.value.isNotEmpty()
+
+    CommonScaffold(
+        title = if (selectionMode) "已选择 ${selectedIds.value.size}" else "运行日志",
+        actions = {
+            RazorGlassButton(
+                onClick = { diagnosticLogManager.shareAllLogs(context) },
+                modifier = Modifier.size(48.dp)
+            ) {
+                RazorIcon(
+                    imageVector = Icons.Outlined.Share,
+                    contentDescription = "分享全部",
+                    modifier = Modifier.size(22.dp),
+                    tint = palette.primaryText
+                )
+            }
+        },
+        bottomBar = {
+            if (selectionMode) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    RazorGlassButton(
+                        onClick = {
+                            diagnosticLogManager.shareSessions(context, selectedSessions)
+                            selectedIds.value = emptySet()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        RazorText(
+                            text = "分享选中",
+                            style = TextStyle(
+                                color = palette.primaryText,
+                                fontSize = 15.sp,
+                                lineHeight = 19.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
+                    }
+                    RazorGlassButton(
+                        onClick = {
+                            diagnosticLogManager.deleteSessions(selectedSessions)
+                            selectedIds.value = emptySet()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        RazorText(
+                            text = "删除选中",
+                            style = TextStyle(
+                                color = Color(0xFFFF3B30),
+                                fontSize = 15.sp,
+                                lineHeight = 19.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    ) {
+        if (sessions.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                RazorText(
+                    text = "暂无本地日志\n在关于页开启运行日志输出后，关闭时会按时间段归档。",
+                    style = TextStyle(
+                        color = palette.secondaryText,
+                        fontSize = 15.sp,
+                        lineHeight = 24.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(sessions, key = { it.id }) { session ->
+                    val selected = session.id in selectedIds.value
+                    DiagnosticLogSessionCard(
+                        session = session,
+                        selected = selected,
+                        selectionMode = selectionMode,
+                        onClick = {
+                            if (selectionMode) {
+                                selectedIds.value = if (selected) {
+                                    selectedIds.value - session.id
+                                } else {
+                                    selectedIds.value + session.id
+                                }
+                            }
+                        },
+                        onLongClick = {
+                            selectedIds.value = selectedIds.value + session.id
+                        },
+                        onShare = {
+                            diagnosticLogManager.shareSessions(context, listOf(session))
+                        },
+                        onDelete = {
+                            diagnosticLogManager.deleteSessions(listOf(session))
+                        },
+                        diagnosticLogManager = diagnosticLogManager
                     )
                 }
             }
