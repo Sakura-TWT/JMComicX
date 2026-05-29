@@ -21,6 +21,16 @@ class HistorySearchManager(
             list
         }
         historySearchStorage.set(list)
+        JmxDiagnostics.d(
+            "Storage",
+            "History search item persisted",
+            metadata = mapOf(
+                "operation" to "write",
+                "target" to "history_search",
+                "item_length" to item.length,
+                "total_count" to list.size
+            )
+        )
     }
 
     fun clear() {
@@ -28,6 +38,14 @@ class HistorySearchManager(
         _historySearchState.update {
             historySearchStorage.get()
         }
+        JmxDiagnostics.d(
+            "Storage",
+            "History search cleared",
+            metadata = mapOf(
+                "operation" to "delete",
+                "target" to "history_search"
+            )
+        )
     }
 
     override suspend fun init() {
@@ -35,6 +53,15 @@ class HistorySearchManager(
         _historySearchState.update {
             historySearchStorage.get()
         }
+        JmxDiagnostics.d(
+            "Storage",
+            "History search loaded",
+            metadata = mapOf(
+                "operation" to "read",
+                "target" to "history_search",
+                "total_count" to _historySearchState.value.size
+            )
+        )
         log("已加载历史搜索数据")
     }
 

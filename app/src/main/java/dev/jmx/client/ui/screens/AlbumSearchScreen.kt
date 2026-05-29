@@ -46,6 +46,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.jmx.client.store.HistorySearchManager
+import dev.jmx.client.store.JmxDiagnostics
 import dev.jmx.client.ui.components.AlbumSearchHistoryTag
 import dev.jmx.client.ui.glass.LocalJmxGlassPalette
 import dev.jmx.client.ui.razor.AppleIconButton
@@ -66,6 +67,15 @@ fun AlbumSearchScreen(
     fun onSearch(text: String) {
         val value = text.trim()
         if (value.isBlank()) return
+        JmxDiagnostics.userAction(
+            screen = "AlbumSearch",
+            action = "submit_search",
+            target = "search_field",
+            metadata = mapOf(
+                "input_length" to value.length,
+                "from_history" to (value in historySearchState)
+            )
+        )
         historySearchManager.addItem(value)
         mainNavController.navigate("albumSearchResult/${Uri.encode(value)}") {
             launchSingleTop = true

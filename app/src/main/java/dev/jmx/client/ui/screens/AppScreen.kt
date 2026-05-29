@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
@@ -28,19 +29,37 @@ fun AppScreen(
     albumViewModel: AlbumViewModel = koinActivityViewModel()
 ) {
     val mainNavController = rememberNavController()
+    val navigationHistory = remember { mutableListOf<String>() }
     val backStackEntry by mainNavController.currentBackStackEntryAsState()
     val route = backStackEntry?.let { entry ->
         entry.destination.actualRoute(entry.arguments)
     }.orEmpty()
     androidx.compose.runtime.LaunchedEffect(route) {
         if (route.isNotBlank()) {
+            val fromRoute = navigationHistory.lastOrNull().orEmpty()
+            val previousIndex = navigationHistory.indexOfLast { it == route }
+            val navType = when {
+                navigationHistory.isEmpty() -> "start"
+                route == fromRoute -> "route_visible"
+                previousIndex >= 0 -> "pop"
+                else -> "push"
+            }
+            if (navType == "pop") {
+                repeat(navigationHistory.lastIndex - previousIndex) {
+                    navigationHistory.removeAt(navigationHistory.lastIndex)
+                }
+            } else if (route != fromRoute) {
+                navigationHistory.add(route)
+            }
             JmxDiagnostics.updateCurrentRoute(route)
             JmxDiagnostics.i(
                 "Navigation",
                 "Navigate to route",
                 metadata = mapOf(
-                    "nav_type" to "route_visible",
-                    "to_route" to route
+                    "nav_type" to navType,
+                    "from_route" to fromRoute,
+                    "to_route" to route,
+                    "back_stack_depth" to navigationHistory.size
                 )
             )
         }

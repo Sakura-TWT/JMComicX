@@ -10,10 +10,12 @@ import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Debug
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.telephony.TelephonyManager
+import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.core.content.edit
 import com.google.gson.Gson
@@ -329,20 +331,21 @@ class DiagnosticLogManager(
             }
             _enabled.value = true
             appendLineBlocking(
-                """
-                |================================================================================
-                |JMX DIAGNOSTIC LOG SESSION START
-                |log_session_id=${session.id}
-                |process_session_id=$processSessionId
-                |start_reason=$startReason
-                |started_at=${ISO_FORMAT.format(Date(session.startedAt))}
-                |app_version=${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})
-                |build=${buildId()}
-                |device=${Build.MANUFACTURER} ${Build.MODEL}
-                |android=${Build.VERSION.RELEASE} api=${Build.VERSION.SDK_INT}
-                |network=${networkType()}
-                |================================================================================
-                """.trimMargin()
+                formatLine(
+                    level = "INFO",
+                    category = "Diagnostics",
+                    message = "Diagnostic log session started",
+                    throwable = null,
+                    metadata = mapOf(
+                        "log_session_id" to session.id,
+                        "start_reason" to startReason,
+                        "started_at_ms" to session.startedAt,
+                        "device_manufacturer" to Build.MANUFACTURER,
+                        "device_model" to Build.MODEL,
+                        "android_release" to Build.VERSION.RELEASE,
+                        "android_api" to Build.VERSION.SDK_INT
+                    )
+                )
             )
         }
     }
@@ -352,14 +355,16 @@ class DiagnosticLogManager(
             val activeId = preferences.getString(KEY_ACTIVE_SESSION_ID, null)
             val now = System.currentTimeMillis()
             appendLineBlocking(
-                """
-                |================================================================================
-                |JMX DIAGNOSTIC LOG SESSION END
-                |log_session_id=${activeId.orEmpty()}
-                |process_session_id=$processSessionId
-                |ended_at=${ISO_FORMAT.format(Date(now))}
-                |================================================================================
-                """.trimMargin()
+                formatLine(
+                    level = "INFO",
+                    category = "Diagnostics",
+                    message = "Diagnostic log session ended",
+                    throwable = null,
+                    metadata = mapOf(
+                        "log_session_id" to activeId.orEmpty(),
+                        "ended_at_ms" to now
+                    )
+                )
             )
             val nextSessions = _sessions.value.map { session ->
                 if (session.id == activeId && session.endedAt == null) {
@@ -622,7 +627,16 @@ class DiagnosticLogManager(
         val activeId = preferences.getString(KEY_ACTIVE_SESSION_ID, null) ?: return
         val session = _sessions.value.firstOrNull { it.id == activeId } ?: return
         val file = File(logDir, session.fileName)
-        file.appendText(line + "\n", Charsets.UTF_8)
+        runCatching {
+            ensureDirs()
+            file.appendText(line + "\n", Charsets.UTF_8)
+        }.onFailure { throwable ->
+            val failureCount = preferences.getInt(KEY_WRITE_FAILURE_COUNT, 0) + 1
+            preferences.edit {
+                putInt(KEY_WRITE_FAILURE_COUNT, failureCount)
+            }
+            Log.e("JmxDiagnostics", "Diagnostic log write failed, count=$failureCount", throwable)
+        }
     }
 
     private fun formatLine(
@@ -632,31 +646,40 @@ class DiagnosticLogManager(
         throwable: Throwable?,
         metadata: Map<String, Any?>
     ): String {
-        val values = linkedMapOf<String, Any?>(
+        val record = linkedMapOf<String, Any?>(
+            "schema" to LOG_SCHEMA,
             "timestamp" to ISO_FORMAT.format(Date()),
-            "level" to level,
+            "level" to level.uppercase(Locale.US),
             "tag" to category,
+            "message" to message,
             "process_session_id" to processSessionId,
-            "build" to buildId(),
-            "app_version" to "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+            "log_session_id" to preferences.getString(KEY_ACTIVE_SESSION_ID, null).orEmpty(),
+            "build" to linkedMapOf(
+                "type" to BuildConfig.BUILD_TYPE,
+                "id" to buildId(),
+                "application_id" to BuildConfig.APPLICATION_ID
+            ),
+            "app_version" to linkedMapOf(
+                "name" to BuildConfig.VERSION_NAME,
+                "code" to BuildConfig.VERSION_CODE
+            ),
             "user_id" to userId(),
             "pid" to android.os.Process.myPid(),
-            "thread" to Thread.currentThread().name,
+            "thread" to threadSnapshot(),
             "network" to networkType(),
-            "memory_mb" to "%.1f".format(Locale.US, usedMemoryMb()),
+            "memory" to memorySnapshot(),
             "app_state" to if (foreground) "foreground" else "background",
             "route" to currentRoute,
-            "message" to message
+            "data" to normalizeData(metadata)
         )
-        metadata.forEach { (key, value) ->
-            values[key] = value
-        }
         if (throwable != null) {
-            values["exception_class"] = throwable::class.java.name
-            values["exception_message"] = throwable.message.orEmpty()
-            values["stacktrace"] = throwable.stackTraceToString()
+            record["exception"] = linkedMapOf(
+                "class" to throwable::class.java.name,
+                "message" to throwable.message.orEmpty(),
+                "stacktrace" to throwable.stackTraceToString()
+            )
         }
-        return values.entries.joinToString(" ") { (key, value) -> "$key=${encodeValue(value)}" }
+        return gson.toJson(record)
     }
 
     private fun shouldWrite(level: String): Boolean {
@@ -670,18 +693,18 @@ class DiagnosticLogManager(
         }
     }
 
-    private fun encodeValue(value: Any?): String {
-        val raw = when (value) {
-            null -> "null"
-            is Boolean, is Number -> value.toString()
-            else -> value.toString()
+    private fun normalizeData(value: Any?): Any? {
+        return when (value) {
+            null -> null
+            is String -> value.limitForLog()
+            is Number, is Boolean -> value
+            is Map<*, *> -> value.entries.associate { (key, item) ->
+                key.toString() to normalizeData(item)
+            }
+            is Iterable<*> -> value.map { normalizeData(it) }
+            is Array<*> -> value.map { normalizeData(it) }
+            else -> value.toString().limitForLog()
         }
-        val escaped = raw
-            .replace("\\", "\\\\")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\"", "\\\"")
-        return if (escaped.matches(PLAIN_VALUE_REGEX)) escaped else "\"$escaped\""
     }
 
     private fun userId(): String {
@@ -695,9 +718,48 @@ class DiagnosticLogManager(
         return "${BuildConfig.BUILD_TYPE}/${BuildConfig.VERSION_CODE}/${BuildConfig.APPLICATION_ID}"
     }
 
+    private fun threadSnapshot(): Map<String, Any> {
+        val thread = Thread.currentThread()
+        return linkedMapOf(
+            "id" to thread.id,
+            "name" to thread.name.sanitizeThreadName()
+        )
+    }
+
+    private fun String.sanitizeThreadName(): String {
+        return when {
+            startsWith("OkHttp ", ignoreCase = true) -> "OkHttp-Dispatcher"
+            contains("://") -> substringBefore("://").take(40)
+            else -> take(80)
+        }
+    }
+
+    private fun memorySnapshot(): Map<String, Any> {
+        val runtime = Runtime.getRuntime()
+        val heapUsed = runtime.totalMemory() - runtime.freeMemory()
+        return linkedMapOf(
+            "heap_used_mb" to formatMb(heapUsed),
+            "heap_total_mb" to formatMb(runtime.totalMemory()),
+            "heap_max_mb" to formatMb(runtime.maxMemory()),
+            "native_heap_used_mb" to formatMb(Debug.getNativeHeapAllocatedSize()),
+            "native_heap_total_mb" to formatMb(Debug.getNativeHeapSize())
+        )
+    }
+
+    private fun formatMb(bytes: Long): Double {
+        return "%.1f".format(Locale.US, bytes.toDouble() / 1024.0 / 1024.0).toDouble()
+    }
+
     private fun usedMemoryMb(): Double {
         val runtime = Runtime.getRuntime()
         return (runtime.totalMemory() - runtime.freeMemory()).toDouble() / 1024.0 / 1024.0
+    }
+
+    private fun String.limitForLog(): String {
+        if (length <= MAX_LOG_STRING_LENGTH) {
+            return this
+        }
+        return take(MAX_LOG_STRING_LENGTH) + "...[truncated ${length - MAX_LOG_STRING_LENGTH} chars]"
     }
 
     private fun networkType(): String {
@@ -768,16 +830,18 @@ class DiagnosticLogManager(
         const val KEY_ENABLED = "enabled"
         const val KEY_ACTIVE_SESSION_ID = "active_session_id"
         const val KEY_DEBUG_ENABLED = "debug_enabled"
+        const val KEY_WRITE_FAILURE_COUNT = "write_failure_count"
+        const val LOG_SCHEMA = "jmx.diagnostic.v2"
         const val SHARED_ARCHIVE_TTL_MS = 10L * 60L * 1000L
         const val DELETE_ALL_SHARED_ARCHIVES = 0L
         const val MAIN_THREAD_WATCHDOG_INTERVAL_MS = 1_000L
         const val MAIN_THREAD_WARN_MS = 200L
         const val MAIN_THREAD_ERROR_MS = 1_000L
         const val RECENT_ACTION_LIMIT = 5
+        const val MAX_LOG_STRING_LENGTH = 32_768
         val FILE_TIME_FORMAT = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
         val ISO_FORMAT = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US)
         val SESSION_TITLE_FORMAT = SimpleDateFormat("yyyy.M.d HH:mm", Locale.CHINA)
         val SESSION_TIME_FORMAT = SimpleDateFormat("HH:mm", Locale.CHINA)
-        val PLAIN_VALUE_REGEX = Regex("[A-Za-z0-9_./:@+\\-]+")
     }
 }

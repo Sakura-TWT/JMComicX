@@ -39,6 +39,14 @@ class UserManager(
             )
         }
         userStorage.set(user)
+        JmxDiagnostics.i(
+            "Auth",
+            "User state persisted",
+            metadata = mapOf(
+                "user_id" to user.id,
+                "username_length" to user.username.orEmpty().length
+            )
+        )
     }
 
     fun clearUser() {
@@ -50,6 +58,7 @@ class UserManager(
         apiClient.clearCookie()
         userStorage.remove()
         cookieStorage.remove()
+        JmxDiagnostics.i("Auth", "User logged out and local auth state cleared")
     }
 
     suspend fun autoLogin(username: String, password: String) {
@@ -69,16 +78,33 @@ class UserManager(
                         data = User.create()
                     )
                 }
+                JmxDiagnostics.e(
+                    "Auth",
+                    "Auto login failed",
+                    metadata = mapOf(
+                        "username_length" to username.length,
+                        "error_message" to data.message
+                    )
+                )
             }
 
             is NetworkResult.Success<LoginResponse> -> {
+                val user = data.data.toUser(
+                    password = password
+                )
                 _userState.update {
                     it.copy(
-                        data = data.data.toUser(
-                            password = password
-                        )
+                        data = user
                     )
                 }
+                JmxDiagnostics.i(
+                    "Auth",
+                    "Auto login succeeded",
+                    metadata = mapOf(
+                        "user_id" to user.id,
+                        "username_length" to user.username.orEmpty().length
+                    )
+                )
             }
         }
         _userState.update {
@@ -96,6 +122,15 @@ class UserManager(
                 data = userStorage.get()
             )
         }
+        JmxDiagnostics.d(
+            "Storage",
+            "User state loaded",
+            metadata = mapOf(
+                "operation" to "read",
+                "target" to "user_storage",
+                "has_user" to ((_userState.value.data?.id ?: 0) > 0)
+            )
+        )
         log("已加载本地用户、cookie、登录信息")
         val cachedUser = _userState.value.data ?: User.create()
         val username = cachedUser.username.orEmpty()

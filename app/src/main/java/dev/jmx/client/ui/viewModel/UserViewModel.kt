@@ -14,6 +14,7 @@ import dev.jmx.client.data.remote.model.SignInDataResponse
 import dev.jmx.client.data.remote.model.SignInResponse
 import dev.jmx.client.store.ToastManager
 import dev.jmx.client.store.UserManager
+import dev.jmx.client.store.JmxDiagnostics
 import dev.jmx.client.ui.models.CommonUIState
 import dev.jmx.client.ui.pagingSource.CollectAlbumPagingSource
 import dev.jmx.client.ui.pagingSource.HistoryAlbumPagingSource
@@ -43,6 +44,15 @@ class UserViewModel(
             return
         }
         val normalizedUsername = username.trim()
+        JmxDiagnostics.userAction(
+            screen = "Login",
+            action = "submit_login",
+            target = "login_button",
+            metadata = mapOf(
+                "username_length" to normalizedUsername.length,
+                "password_length" to password.length
+            )
+        )
         loginJob = viewModelScope.launch {
             _loginState.update {
                 it.copy(
@@ -59,12 +69,27 @@ class UserViewModel(
                             errorMsg = data.message
                         )
                     }
+                    JmxDiagnostics.e(
+                        "Auth",
+                        "Manual login failed",
+                        metadata = mapOf(
+                            "username_length" to normalizedUsername.length,
+                            "error_message" to data.message
+                        )
+                    )
                 }
 
                 is NetworkResult.Success<LoginResponse> -> {
-                    userManager.updateUser(
-                        data.data.toUser(
-                            password = password
+                    val user = data.data.toUser(
+                        password = password
+                    )
+                    userManager.updateUser(user)
+                    JmxDiagnostics.i(
+                        "Auth",
+                        "Manual login succeeded",
+                        metadata = mapOf(
+                            "user_id" to user.id,
+                            "username_length" to user.username.orEmpty().length
                         )
                     )
                 }
@@ -78,6 +103,11 @@ class UserViewModel(
     }
 
     fun logout() {
+        JmxDiagnostics.userAction(
+            screen = "Profile",
+            action = "logout",
+            target = "logout_button"
+        )
         viewModelScope.launch {
             userManager.clearUser()
         }
