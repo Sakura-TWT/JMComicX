@@ -56,6 +56,7 @@ import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.getKoin
 import org.koin.compose.viewmodel.koinActivityViewModel
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -100,7 +101,7 @@ fun AlbumReadScreen(
             return Offset.Zero
         }
         val maxX = viewportSize.width * (targetScale - 1f) / 2f
-        val maxY = viewportSize.height * (targetScale - 1f) / 2f
+        val maxY = if (readMode == "scroll") 0f else viewportSize.height * (targetScale - 1f) / 2f
         return Offset(
             x = value.x.coerceIn(-maxX, maxX),
             y = value.y.coerceIn(-maxY, maxY)
@@ -220,9 +221,31 @@ fun AlbumReadScreen(
                                     val change = pressedChanges.first()
                                     val pan = change.positionChange()
                                     if (pan != Offset.Zero) {
-                                        offset = clampOffset(offset + pan * scale, scale)
-                                        change.consume()
-                                        consumedTransform = true
+                                        val horizontalDominant = abs(pan.x) >= abs(pan.y)
+                                        if (readMode == "scroll") {
+                                            offset = clampOffset(
+                                                Offset(
+                                                    x = offset.x + pan.x * scale,
+                                                    y = 0f
+                                                ),
+                                                scale
+                                            )
+                                            if (horizontalDominant) {
+                                                change.consume()
+                                                consumedTransform = true
+                                            }
+                                        } else {
+                                            val maxX = viewportSize.width * (scale - 1f) / 2f
+                                            val atLeftEdge = offset.x <= -maxX + viewConfiguration.touchSlop
+                                            val atRightEdge = offset.x >= maxX - viewConfiguration.touchSlop
+                                            val wantsNextPage = horizontalDominant && pan.x < 0f && atLeftEdge
+                                            val wantsPrevPage = horizontalDominant && pan.x > 0f && atRightEdge
+                                            offset = clampOffset(offset + pan * scale, scale)
+                                            if (!wantsNextPage && !wantsPrevPage) {
+                                                change.consume()
+                                                consumedTransform = true
+                                            }
+                                        }
                                     }
                                 }
                             }

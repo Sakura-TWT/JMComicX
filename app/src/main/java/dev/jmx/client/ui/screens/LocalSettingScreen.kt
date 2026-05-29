@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CloudQueue
 import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Route
 import androidx.compose.material.icons.outlined.Swipe
 import androidx.compose.material.icons.outlined.WbSunny
@@ -62,6 +63,7 @@ private sealed class SettingType {
     object Api : SettingType()
     object Shunt : SettingType()
     object PrefetchCount : SettingType()
+    object ImageLoadStrategy : SettingType()
     object ReadMode : SettingType()
 }
 
@@ -75,6 +77,11 @@ private val themeDescriptionMap = mapOf(
     "auto" to "根据系统外观自动切换",
     "light" to "始终使用浅色界面",
     "dark" to "始终使用深色界面",
+)
+
+private val imageLoadStrategyTextMap = mapOf(
+    "ahead" to "提前加载",
+    "nearby" to "附近加载",
 )
 
 @Composable
@@ -292,6 +299,16 @@ fun LocalSettingScreen(
                         }
                     )
                     SettingsRow(
+                        title = "漫画加载",
+                        value = imageLoadStrategyTextMap[localSetting.imageLoadStrategy] ?: "提前加载",
+                        icon = Icons.Outlined.Speed,
+                        showDivider = true,
+                        onClick = {
+                            settingType = SettingType.ImageLoadStrategy
+                            isOpenSettingSelectDialog = true
+                        }
+                    )
+                    SettingsRow(
                         title = "阅读模式",
                         value = if (localSetting.readMode == "scroll") "滚动" else "翻页",
                         icon = Icons.Outlined.Swipe,
@@ -348,6 +365,14 @@ fun LocalSettingScreen(
                     )
                 }
             }
+            val imageLoadStrategyOptionList by remember {
+                derivedStateOf {
+                    listOf(
+                        SelectOption("提前加载", "ahead", "优先加载后续页面，适合连续快速阅读"),
+                        SelectOption("附近加载", "nearby", "保留当前页前后均衡预载算法")
+                    )
+                }
+            }
             val readModeOptionList by remember {
                 derivedStateOf {
                     listOf(
@@ -361,6 +386,7 @@ fun LocalSettingScreen(
                 SettingType.Api -> "API 接口"
                 SettingType.Shunt -> "图片线路"
                 SettingType.PrefetchCount -> "图片预载"
+                SettingType.ImageLoadStrategy -> "漫画加载"
                 SettingType.ReadMode -> "阅读模式"
             }
             val value = when (settingType) {
@@ -368,6 +394,7 @@ fun LocalSettingScreen(
                 SettingType.Api -> localSetting.api
                 SettingType.Shunt -> localSetting.shunt
                 SettingType.PrefetchCount -> "${localSetting.prefetchCount}"
+                SettingType.ImageLoadStrategy -> localSetting.imageLoadStrategy
                 SettingType.ReadMode -> localSetting.readMode
             }
             val selectOptionList = when (settingType) {
@@ -375,6 +402,7 @@ fun LocalSettingScreen(
                 SettingType.Api -> apiSelectOptionList
                 SettingType.Shunt -> shuntOptionList
                 SettingType.PrefetchCount -> prefetchCountOptionList
+                SettingType.ImageLoadStrategy -> imageLoadStrategyOptionList
                 SettingType.ReadMode -> readModeOptionList
             }
 
@@ -388,6 +416,7 @@ fun LocalSettingScreen(
                         SettingType.Api -> localSettingManager.updateApi(it)
                         SettingType.Shunt -> localSettingManager.updateShunt(it)
                         SettingType.PrefetchCount -> localSettingManager.updatePrefetchCount(it)
+                        SettingType.ImageLoadStrategy -> localSettingManager.updateImageLoadStrategy(it)
                         SettingType.ReadMode -> localSettingManager.updateReadMode(it)
                     }
                     isOpenSettingSelectDialog = false

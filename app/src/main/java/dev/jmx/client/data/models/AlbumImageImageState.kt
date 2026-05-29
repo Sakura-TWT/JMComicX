@@ -25,6 +25,7 @@ import dev.jmx.client.cache.getCommonPicDecodeCacheDir
 import dev.jmx.client.cache.trimPicDecodeCache
 import dev.jmx.client.utils.md5
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -51,18 +52,42 @@ class AlbumImageImageState(
 
     companion object {
         private val seedMap = listOf(2, 4, 6, 8, 10, 12, 14, 16, 18, 20)
+        private const val DEFAULT_DECODE_ATTEMPTS = 3
+        private const val RETRY_DELAY_BASE_MS = 320L
     }
 
     var imageResultState by mutableStateOf<ImageResultState>(ImageResultState.Loading)
 
-    suspend fun decode(context: Context) {
+    suspend fun decode(context: Context, maxAttempts: Int = DEFAULT_DECODE_ATTEMPTS) {
         withContext(Dispatchers.Default) {
             imageResultState = ImageResultState.Loading
-            decodeImage(context)
+            val attempts = maxAttempts.coerceAtLeast(1)
+            var lastReason = "网络错误"
+            repeat(attempts) { attemptIndex ->
+                val result = runCatching {
+                    decodeImage(context)
+                }.getOrElse {
+                    Result.failure(it)
+                }
+                if (result.isSuccess) {
+                    return@withContext
+                }
+                val throwable = result.exceptionOrNull()
+                lastReason = throwable?.localizedMessage?.takeIf { it.isNotBlank() } ?: lastReason
+                Log.d(
+                    "album pic",
+                    "decode index=$index attempt=${attemptIndex + 1}/$attempts failed: " +
+                        throwable?.stackTraceToString()
+                )
+                if (attemptIndex < attempts - 1) {
+                    delay(RETRY_DELAY_BASE_MS * (attemptIndex + 1))
+                }
+            }
+            imageResultState = ImageResultState.Failure("加载失败，已自动重试 $attempts 次\n$lastReason")
         }
     }
 
-    private suspend fun decodeImage(context: Context) {
+    private suspend fun decodeImage(context: Context): Result<Unit> {
         val cacheDir = getCommonPicDecodeCacheDir(context, albumId)
         if (!cacheDir.exists()) {
             cacheDir.mkdirs()
@@ -72,12 +97,16 @@ class AlbumImageImageState(
 
         // 检查缓存文件是否存在
         if (cacheFile.exists()) {
-            val decodeImageBitmap =
-                BitmapFactory.decodeFile(cacheFile.absolutePath).asImageBitmap()
+            val cacheBitmap = BitmapFactory.decodeFile(cacheFile.absolutePath)
+                ?: run {
+                    cacheFile.delete()
+                    return Result.failure(IllegalStateException("缓存图片损坏，已重新请求"))
+                }
+            val decodeImageBitmap = cacheBitmap.asImageBitmap()
             val decodeImageAspectRatio =
                 decodeImageBitmap.width * 1.0f / decodeImageBitmap.height
             imageResultState = ImageResultState.Success(decodeImageBitmap, decodeImageAspectRatio)
-            return
+            return Result.success(Unit)
         }
 
         // 加载原始图片
@@ -89,7 +118,7 @@ class AlbumImageImageState(
             .memoryCachePolicy(CachePolicy.DISABLED)
             .build()
 
-        when (val result = imageLoader.execute(request)) {
+        return when (val result = imageLoader.execute(request)) {
             is SuccessResult -> {
                 val originalBitmap = result.drawable.toBitmap()
                 val originalImageBitmap = originalBitmap.asImageBitmap()
@@ -106,11 +135,12 @@ class AlbumImageImageState(
                 trimPicDecodeCache(context)
                 imageResultState =
                     ImageResultState.Success(decodedImageBitmap, decodeImageAspectRatio)
+                Result.success(Unit)
             }
 
             is ErrorResult -> {
                 Log.d("album pic", result.throwable.stackTraceToString())
-                imageResultState = ImageResultState.Failure("网络错误")
+                Result.failure(result.throwable)
             }
         }
     }

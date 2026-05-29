@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import coil.ImageLoader
 import dev.jmx.client.data.models.AlbumImageImageState
+import dev.jmx.client.data.models.ImageResultState
 import dev.jmx.client.repository.AlbumRepository
 import dev.jmx.client.data.remote.model.AlbumImageListResponse
 import dev.jmx.client.data.remote.model.NetworkResult
@@ -87,19 +88,44 @@ class AlbumReadViewModel(
         }
     }
     fun decodeIndex(index: Int, context: Context) {
-        log("decode index $index")
-        val count = localSettingManager.localSettingState.value.prefetchCount
+        if (size <= 0) return
+        val targetIndex = index.coerceIn(0, size - 1)
+        log("decode index $targetIndex")
+        val setting = localSettingManager.localSettingState.value
+        val count = setting.prefetchCount.coerceAtLeast(0)
+        decode(targetIndex, context) {
+            if (count <= 0) return@decode
+            when (setting.imageLoadStrategy) {
+                "nearby" -> decodeNearby(targetIndex, count, context)
+                else -> decodeAhead(targetIndex, count, context)
+            }
+        }
+    }
+
+    private fun decodeNearby(index: Int, count: Int, context: Context) {
         val start = max(0, index - count)
         val end = min(size - 1, index + count)
-        decode(index, context) {
-            for (i in index + 1..end) {
-                log("pre decode index $i")
-                decode(i, context)
-            }
-            for (i in index - 1 downTo start) {
-                log("pre decode index $i")
-                decode(i, context)
-            }
+        for (i in index + 1..end) {
+            log("pre decode nearby index $i")
+            decode(i, context)
+        }
+        for (i in index - 1 downTo start) {
+            log("pre decode nearby index $i")
+            decode(i, context)
+        }
+    }
+
+    private fun decodeAhead(index: Int, count: Int, context: Context) {
+        val aheadCount = max(count * 2, count + 2)
+        val end = min(size - 1, index + aheadCount)
+        for (i in index + 1..end) {
+            log("pre decode ahead index $i")
+            decode(i, context)
+        }
+        val behindStart = max(0, index - 1)
+        for (i in index - 1 downTo behindStart) {
+            log("pre decode keep-behind index $i")
+            decode(i, context)
         }
     }
 
@@ -119,15 +145,19 @@ class AlbumReadViewModel(
 
     private fun decode(index: Int, context: Context, onComplete: (() -> Unit)? = null) {
         val albumImageImageState = albumImageState.value.data?.getOrNull(index) ?: return
-        if (prefetchSet.contains(index)) {
+        val failed = albumImageImageState.imageResultState is ImageResultState.Failure
+        if (prefetchSet.contains(index) && !failed) {
             onComplete?.invoke()
             return
         }
+        prefetchSet.add(index)
         viewModelScope.launch {
             albumImageImageState.decode(context)
+            if (albumImageImageState.imageResultState is ImageResultState.Failure) {
+                prefetchSet.remove(index)
+            }
             onComplete?.invoke()
         }
-        prefetchSet.add(index)
     }
 
     fun triggerToolBar() {

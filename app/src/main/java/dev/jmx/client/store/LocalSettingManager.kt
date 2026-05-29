@@ -51,6 +51,15 @@ class LocalSettingManager(
         localSettingStorage.set(_localSettingState.value)
     }
 
+    fun updateImageLoadStrategy(imageLoadStrategy: String) {
+        _localSettingState.update {
+            it.copy(
+                imageLoadStrategy = imageLoadStrategy
+            )
+        }
+        localSettingStorage.set(_localSettingState.value)
+    }
+
     fun updateReadMode(readMode: String) {
         _localSettingState.update {
             it.copy(

@@ -9,6 +9,8 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -140,6 +143,8 @@ private fun AppUpdateDialog(
     onDisableAutoPrompt: () -> Unit
 ) {
     val palette = LocalJmxGlassPalette.current
+    val bodyScrollState = rememberScrollState()
+    val releaseBody = info.body.ifBlank { "新版本已发布，建议更新以获得更稳定的体验。" }
     Dialog(
         onDismissRequest = {
             if (!info.forceUpdate) {
@@ -180,19 +185,25 @@ private fun AppUpdateDialog(
                     fontWeight = FontWeight.SemiBold
                 )
             )
-            RazorText(
-                text = info.body.ifBlank { "新版本已发布，建议更新以获得更稳定的体验。" }
-                    .lineSequence()
-                    .filter { it.isNotBlank() }
-                    .take(5)
-                    .joinToString("\n"),
-                style = TextStyle(
-                    color = palette.secondaryText,
-                    fontSize = 14.sp,
-                    lineHeight = 22.sp,
-                    fontWeight = FontWeight.Medium
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 260.dp)
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(palette.page.copy(alpha = 0.46f))
+                    .verticalScroll(bodyScrollState)
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
+            ) {
+                RazorText(
+                    text = releaseBody,
+                    style = TextStyle(
+                        color = palette.secondaryText,
+                        fontSize = 14.sp,
+                        lineHeight = 22.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                 )
-            )
+            }
             Spacer(modifier = Modifier.height(2.dp))
             UpdateActionButton(
                 text = "立即更新",

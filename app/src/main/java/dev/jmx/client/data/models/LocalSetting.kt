@@ -33,6 +33,8 @@ data class LocalSetting(
     ),
     // 阅读页预先加载的图片张数
     val prefetchCount: Int = 3,
+    // ahead || nearby
+    val imageLoadStrategy: String = "ahead",
     // scroll || page
     val readMode: String = "scroll",
     val showAlbumScrollReadTip: Boolean = true,
