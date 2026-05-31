@@ -56,6 +56,8 @@ interface AlbumService {
         @Query("page") page: Int,
         @Query("o") order: String,
         @Query("search_query") searchContent: String,
+        @Query("main_tag") mainTag: Int = 0,
+        @Query("t") time: String = "a",
     ): ResponseWrapper<AlbumListResponse>
 
     @GET("week")

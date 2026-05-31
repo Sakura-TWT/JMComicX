@@ -1,6 +1,7 @@
 ﻿package dev.jmx.client.repository
 
 import dev.jmx.client.data.models.AlbumSearchOrderFilter
+import dev.jmx.client.data.models.AlbumSearchMainTag
 import dev.jmx.client.data.remote.model.CollectAlbumResponse
 import dev.jmx.client.data.remote.model.AlbumDetailResponse
 import dev.jmx.client.data.remote.model.AlbumListResponse
@@ -24,6 +25,7 @@ interface AlbumRepository {
         page: Int,
         order: AlbumSearchOrderFilter,
         searchContent: String,
+        mainTag: AlbumSearchMainTag = AlbumSearchMainTag.SITE_SEARCH,
     ): NetworkResult<AlbumListResponse>
 
     suspend fun getWeekData(): NetworkResult<WeekResponse>

@@ -1,6 +1,7 @@
 ﻿package dev.jmx.client.repository.impl
 
 import dev.jmx.client.data.models.AlbumSearchOrderFilter
+import dev.jmx.client.data.models.AlbumSearchMainTag
 import dev.jmx.client.repository.BaseRepository
 import dev.jmx.client.repository.AlbumRepository
 import dev.jmx.client.data.remote.model.CollectAlbumResponse
@@ -79,9 +80,10 @@ class AlbumRepositoryImpl(
         page: Int,
         order: AlbumSearchOrderFilter,
         searchContent: String,
+        mainTag: AlbumSearchMainTag,
     ): NetworkResult<AlbumListResponse> {
         return safeApiCall {
-            service.getAlbumList(page, order.value, searchContent)
+            service.getAlbumList(page, order.value, searchContent, mainTag.value)
         }
     }
 
