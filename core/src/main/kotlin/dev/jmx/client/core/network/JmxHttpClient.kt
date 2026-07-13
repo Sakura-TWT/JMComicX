@@ -21,11 +21,11 @@ class JmxHttpClient(
     private val endpointManager: ApiEndpointManager,
     private val tokenProvider: ApiTokenProvider = ApiTokenProvider(),
     private val okHttpClient: OkHttpClient = defaultOkHttpClient(),
-    private val maxAttempts: Int = 3
+    private val retryPolicy: RetryPolicy = DefaultRetryPolicy()
 ) {
     suspend fun execute(request: ApiRequest): JmxResult<RawNetworkResponse> {
         var lastError: JmxError? = null
-        repeat(maxAttempts.coerceAtLeast(1)) {
+        repeat(retryPolicy.maxAttempts.coerceAtLeast(1)) { attempt ->
             val baseUrl = when (val current = endpointManager.current()) {
                 is JmxResult.Success -> current.value
                 is JmxResult.Failure -> return current
@@ -37,8 +37,11 @@ class JmxHttpClient(
                 }
                 is JmxResult.Failure -> {
                     lastError = result.error
-                    endpointManager.markFailure(baseUrl, result.error.message)
-                    if (!result.error.retryable) return result
+                    val decision = retryPolicy.decide(result.error, attempt)
+                    if (decision.shouldFailover) {
+                        endpointManager.markFailure(baseUrl, result.error.message)
+                    }
+                    if (!decision.shouldRetry) return result
                 }
             }
         }

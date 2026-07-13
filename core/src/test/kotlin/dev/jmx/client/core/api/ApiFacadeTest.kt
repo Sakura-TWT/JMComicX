@@ -3,6 +3,7 @@ package dev.jmx.client.core.api
 import dev.jmx.client.core.crypto.AesEcbPkcs7
 import dev.jmx.client.core.crypto.JmxHash
 import dev.jmx.client.core.network.ApiEndpointManager
+import dev.jmx.client.core.network.DefaultRetryPolicy
 import dev.jmx.client.core.network.JmxApiClient
 import dev.jmx.client.core.network.JmxHttpClient
 import dev.jmx.client.core.protocol.ApiClock
@@ -77,7 +78,7 @@ class ApiFacadeTest {
             JmxHttpClient(
                 endpointManager = endpointManager,
                 tokenProvider = tokenProvider,
-                maxAttempts = 1
+                retryPolicy = DefaultRetryPolicy(maxAttempts = 1)
             )
         )
     }

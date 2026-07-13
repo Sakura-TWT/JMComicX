@@ -1,5 +1,6 @@
 package dev.jmx.client.core.network
 
+import dev.jmx.client.core.cache.ProtocolStateStore
 import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
@@ -14,12 +15,13 @@ data class ApiEndpoint(
 
 class ApiEndpointManager(
     initialHosts: List<String> = JmxProtocolConstants.DefaultApiHosts,
-    private val maxFailuresBeforeDemote: Int = 2
+    private val maxFailuresBeforeDemote: Int = 2,
+    private val protocolStateStore: ProtocolStateStore? = null
 ) {
     private val lock = Any()
-    private var endpoints: List<ApiEndpoint> = initialHosts
+    private var endpoints: List<ApiEndpoint> = (protocolStateStore?.apiHosts() ?: initialHosts)
         .mapNotNull { it.normalizedBaseUrlOrNull() }
-        .distinctBy { it.host }
+        .distinctBy { it.endpointKey() }
         .map { ApiEndpoint(it) }
 
     fun current(): JmxResult<HttpUrl> {
@@ -36,20 +38,21 @@ class ApiEndpointManager(
     fun replaceAll(hosts: List<String>): JmxResult<List<ApiEndpoint>> {
         val parsed = hosts
             .mapNotNull { it.normalizedBaseUrlOrNull() }
-            .distinctBy { it.host }
+            .distinctBy { it.endpointKey() }
         if (parsed.isEmpty()) {
             return JmxResult.Failure(JmxError.Domain("远程 API 域名列表为空"))
         }
         synchronized(lock) {
             endpoints = parsed.map { ApiEndpoint(it) }
         }
+        protocolStateStore?.updateApiHosts(parsed.map { it.toString() })
         return JmxResult.Success(all())
     }
 
     fun markSuccess(url: HttpUrl) {
         synchronized(lock) {
             endpoints = endpoints.map {
-                if (it.url.host == url.host) it.copy(failureCount = 0, lastFailureMessage = null) else it
+                if (it.url.endpointKey() == url.endpointKey()) it.copy(failureCount = 0, lastFailureMessage = null) else it
             }
         }
     }
@@ -57,7 +60,7 @@ class ApiEndpointManager(
     fun markFailure(url: HttpUrl, message: String?) {
         synchronized(lock) {
             endpoints = endpoints.map {
-                if (it.url.host == url.host) {
+                if (it.url.endpointKey() == url.endpointKey()) {
                     it.copy(failureCount = it.failureCount + 1, lastFailureMessage = message)
                 } else {
                     it
@@ -66,6 +69,8 @@ class ApiEndpointManager(
         }
     }
 }
+
+private fun HttpUrl.endpointKey(): String = "$scheme://$host:$port"
 
 fun String.normalizedBaseUrlOrNull(): HttpUrl? {
     val raw = trim()

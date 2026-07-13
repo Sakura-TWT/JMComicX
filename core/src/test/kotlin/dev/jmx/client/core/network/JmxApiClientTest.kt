@@ -17,16 +17,20 @@ import org.junit.Test
 
 class JmxApiClientTest {
     private lateinit var server: MockWebServer
+    private lateinit var secondaryServer: MockWebServer
 
     @Before
     fun setUp() {
         server = MockWebServer()
         server.start()
+        secondaryServer = MockWebServer()
+        secondaryServer.start()
     }
 
     @After
     fun tearDown() {
         server.shutdown()
+        secondaryServer.shutdown()
     }
 
     @Test
@@ -72,8 +76,36 @@ class JmxApiClientTest {
         assertEquals(JmxHash.md5Hex("$ts${JmxProtocolConstants.ChapterTokenSecret}"), recorded.headers["token"])
     }
 
-    private fun createClient(ts: Long): JmxApiClient {
-        val endpointManager = ApiEndpointManager(listOf(server.url("/").toString()))
+    @Test
+    fun retriesRetryableHttpFailureOnNextEndpoint() {
+        val ts = 1700566805L
+        val encrypted = AesEcbPkcs7.encryptStringToBase64(
+            plain = """{"name":"fallback"}""",
+            key = JmxHash.md5Hex("$ts${JmxProtocolConstants.DataSecret}")
+        )
+        server.enqueue(MockResponse().setResponseCode(502).setBody("bad gateway"))
+        secondaryServer.enqueue(MockResponse().setResponseCode(200).setBody("""{"code":200,"data":"$encrypted"}"""))
+        val endpointManager = ApiEndpointManager(
+            listOf(server.url("/").toString(), secondaryServer.url("/").toString()),
+            maxFailuresBeforeDemote = 1
+        )
+        val client = createClient(ts, endpointManager = endpointManager, maxAttempts = 2)
+
+        val result = kotlinx.coroutines.runBlocking {
+            client.requestJson(ApiRequest(route = ApiRoute.Album))
+        }
+
+        assertTrue(result is JmxResult.Success)
+        assertEquals("fallback", (result as JmxResult.Success).value.asJsonObject["name"].asString)
+        assertEquals("/album", server.takeRequest().path)
+        assertEquals("/album", secondaryServer.takeRequest().path)
+    }
+
+    private fun createClient(
+        ts: Long,
+        endpointManager: ApiEndpointManager = ApiEndpointManager(listOf(server.url("/").toString())),
+        maxAttempts: Int = 1
+    ): JmxApiClient {
         val tokenProvider = ApiTokenProvider(
             clock = object : ApiClock {
                 override fun nowSeconds(): Long = ts
@@ -84,7 +116,7 @@ class JmxApiClientTest {
             JmxHttpClient(
                 endpointManager = endpointManager,
                 tokenProvider = tokenProvider,
-                maxAttempts = 1
+                retryPolicy = DefaultRetryPolicy(maxAttempts = maxAttempts)
             )
         )
     }
