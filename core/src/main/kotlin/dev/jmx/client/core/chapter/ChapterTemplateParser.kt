@@ -45,22 +45,39 @@ data class ChapterTemplateInspection(
     }
 }
 
+data class ChapterTemplateDiagnostics(
+    val inspection: ChapterTemplateInspection,
+    val htmlSample: String
+) {
+    val missingFields: List<String> = inspection.missingFields
+
+    fun messageSuffix(): String {
+        return if (missingFields.isEmpty()) {
+            "；HTML 样本：$htmlSample"
+        } else {
+            "；缺失字段：${missingFields.joinToString(", ")}；HTML 样本：$htmlSample"
+        }
+    }
+}
+
 class ChapterTemplateParser(
-    private val gson: Gson = Gson().newBuilder().setStrictness(Strictness.LENIENT).create()
+    private val gson: Gson = Gson().newBuilder().setStrictness(Strictness.LENIENT).create(),
+    private val sampleLimit: Int = 240
 ) {
     fun parse(html: String): JmxResult<ChapterTemplate> {
-        val resultObject = extractObject(html, "result").unwrapOrReturn { return it }
-        val configObject = extractObject(html, "config").unwrapOrReturn { return it }
+        val diagnostics = diagnostics(html)
+        val resultObject = extractObject(html, "result", diagnostics).unwrapOrReturn { return it }
+        val configObject = extractObject(html, "config", diagnostics).unwrapOrReturn { return it }
         val images = resultObject.imageNamesOrEmpty()
         if (images.isEmpty()) {
-            return JmxResult.Failure(JmxError.Schema("章节模板缺少图片列表", field = "result.images"))
+            return schemaFailure("章节模板缺少图片列表", "result.images", diagnostics)
         }
-        val imageHost = configObject.requiredString("imghost").unwrapOrReturn { return it }
-        val chapterId = configObject.requiredString("jmid").unwrapOrReturn { return it }
-        val cache = configObject.requiredString("cache").unwrapOrReturn { return it }
-        val albumId = extractInt(html, "aid").unwrapOrReturn { return it }
-        val scrambleId = extractInt(html, "scramble_id").unwrapOrReturn { return it }
-        val speed = extractString(html, "speed").unwrapOrReturn { return it }
+        val imageHost = configObject.requiredString("imghost", diagnostics).unwrapOrReturn { return it }
+        val chapterId = configObject.requiredString("jmid", diagnostics).unwrapOrReturn { return it }
+        val cache = configObject.requiredString("cache", diagnostics).unwrapOrReturn { return it }
+        val albumId = extractInt(html, "aid", diagnostics).unwrapOrReturn { return it }
+        val scrambleId = extractInt(html, "scramble_id", diagnostics).unwrapOrReturn { return it }
+        val speed = extractString(html, "speed", diagnostics).unwrapOrReturn { return it }
         return JmxResult.Success(
             ChapterTemplate(
                 albumId = albumId,
@@ -71,6 +88,13 @@ class ChapterTemplateParser(
                 cacheSuffix = cache,
                 imageFileNames = images
             )
+        )
+    }
+
+    fun diagnostics(html: String): ChapterTemplateDiagnostics {
+        return ChapterTemplateDiagnostics(
+            inspection = inspect(html),
+            htmlSample = html.compactSample()
         )
     }
 
@@ -85,38 +109,40 @@ class ChapterTemplateParser(
             imageCount = imageCount,
             hasImageHost = configObject.hasString("imghost"),
             hasChapterId = configObject.hasString("jmid"),
-            hasCacheSuffix = configObject.hasString("cache"),
+            hasCacheSuffix = configObject.hasPrimitive("cache"),
             hasAlbumId = findAssignedInt(html, "aid") != null,
             hasScrambleId = findAssignedInt(html, "scramble_id") != null,
             hasSpeed = findAssignedString(html, "speed") != null
         )
     }
 
-    private fun extractObject(html: String, name: String): JmxResult<JsonObject> {
+    private fun extractObject(html: String, name: String, diagnostics: ChapterTemplateDiagnostics): JmxResult<JsonObject> {
         val json = extractAssignedObject(html, name)
-            ?: return JmxResult.Failure(JmxError.Schema("章节模板缺少 $name 对象", field = name))
+            ?: return schemaFailure("章节模板缺少 $name 对象", name, diagnostics)
         return runCatching { gson.fromJson(json, JsonObject::class.java) }.fold(
             onSuccess = { JmxResult.Success(it) },
-            onFailure = { JmxResult.Failure(JmxError.Schema("章节模板 $name 对象解析失败", field = name, cause = it)) }
+            onFailure = {
+                schemaFailure("章节模板 $name 对象解析失败", name, diagnostics, cause = it)
+            }
         )
     }
 
-    private fun extractInt(html: String, name: String): JmxResult<Int> {
+    private fun extractInt(html: String, name: String, diagnostics: ChapterTemplateDiagnostics): JmxResult<Int> {
         val value = findAssignedInt(html, name)
-            ?: return JmxResult.Failure(JmxError.Schema("章节模板缺少 $name", field = name))
+            ?: return schemaFailure("章节模板缺少 $name", name, diagnostics)
         return JmxResult.Success(value)
     }
 
-    private fun extractString(html: String, name: String): JmxResult<String> {
+    private fun extractString(html: String, name: String, diagnostics: ChapterTemplateDiagnostics): JmxResult<String> {
         val value = findAssignedString(html, name)
-            ?: return JmxResult.Failure(JmxError.Schema("章节模板缺少 $name", field = name))
+            ?: return schemaFailure("章节模板缺少 $name", name, diagnostics)
         return JmxResult.Success(value)
     }
 
-    private fun JsonObject.requiredString(name: String): JmxResult<String> {
+    private fun JsonObject.requiredString(name: String, diagnostics: ChapterTemplateDiagnostics): JmxResult<String> {
         val value = get(name)?.takeIf { it.isJsonPrimitive }?.asString
         return if (value == null) {
-            JmxResult.Failure(JmxError.Schema("章节模板 config 缺少 $name", field = "config.$name"))
+            schemaFailure("章节模板 config 缺少 $name", "config.$name", diagnostics)
         } else {
             JmxResult.Success(value)
         }
@@ -135,6 +161,10 @@ class ChapterTemplateParser(
         return this?.get(name)?.takeIf { it.isJsonPrimitive }?.asString?.isNotBlank() == true
     }
 
+    private fun JsonObject?.hasPrimitive(name: String): Boolean {
+        return this?.get(name)?.isJsonPrimitive == true
+    }
+
     private inline fun <T> JmxResult<T>.unwrapOrReturn(returnFailure: (JmxResult.Failure) -> Nothing): T {
         return when (this) {
             is JmxResult.Success -> value
@@ -143,7 +173,7 @@ class ChapterTemplateParser(
     }
 
     private fun extractAssignedObject(html: String, name: String): String? {
-        val assignment = Regex("""(?:const|let|var)\s+$name\s*=""").find(html) ?: return null
+        val assignment = assignmentRegex(name, """=""").find(html) ?: return null
         val start = html.indexOf('{', assignment.range.last + 1).takeIf { it >= 0 } ?: return null
         var depth = 0
         var inString: Char? = null
@@ -178,12 +208,36 @@ class ChapterTemplateParser(
     }
 
     private fun findAssignedInt(html: String, name: String): Int? {
-        val regex = Regex("""(?:const|let|var)\s+$name\s*=\s*(\d+)\s*;?""")
+        val regex = assignmentRegex(name, """=\s*(\d+)\s*;?""")
         return regex.find(html)?.groupValues?.getOrNull(1)?.toIntOrNull()
     }
 
     private fun findAssignedString(html: String, name: String): String? {
-        val regex = Regex("""(?:const|let|var)\s+$name\s*=\s*['"]([^'"]*)['"]\s*;?""")
+        val regex = assignmentRegex(name, """=\s*['"]([^'"]*)['"]\s*;?""")
         return regex.find(html)?.groupValues?.getOrNull(1)
+    }
+
+    private fun assignmentRegex(name: String, valuePattern: String): Regex {
+        return Regex("""(?:^|[^\w$])(?:const|let|var)\s+${Regex.escape(name)}\b\s*$valuePattern""")
+    }
+
+    private fun <T> schemaFailure(
+        message: String,
+        field: String,
+        diagnostics: ChapterTemplateDiagnostics,
+        cause: Throwable? = null
+    ): JmxResult<T> {
+        return JmxResult.Failure(
+            JmxError.Schema(
+                message = message + diagnostics.messageSuffix(),
+                field = field,
+                cause = cause
+            )
+        )
+    }
+
+    private fun String.compactSample(): String {
+        val compact = replace(Regex("""\s+"""), " ").trim()
+        return if (compact.length <= sampleLimit) compact else compact.take(sampleLimit) + "..."
     }
 }

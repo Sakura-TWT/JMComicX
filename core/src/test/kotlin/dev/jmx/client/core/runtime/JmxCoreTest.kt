@@ -11,6 +11,7 @@ import dev.jmx.client.core.image.RestoredImageBytes
 import dev.jmx.client.core.network.DefaultRetryPolicy
 import dev.jmx.client.core.protocol.ApiClock
 import dev.jmx.client.core.protocol.JmxProtocolConstants
+import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
 import dev.jmx.client.core.session.InMemoryCookieStore
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -284,6 +285,53 @@ class JmxCoreTest {
         assertTrue(report.setting.isSkipped)
         assertTrue(report.chapterTemplate.isSkipped)
         assertTrue(report.session.errorOrNull()!!.message.contains("AVS"))
+    }
+
+    @Test
+    fun probeRunnerKeepsChapterTemplateDiagnosticsOnFailure() {
+        val ts = 1700566805L
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/html")
+                .setBody(
+                    """
+                    const result = {"images":[]};
+                    const config = {"imghost":"https://img.test"};
+                    var aid = 300000;
+                    """.trimIndent()
+                )
+        )
+        val core = JmxCore.create(
+            JmxCoreConfig(
+                keyValueStore = InMemoryKeyValueStore(mapOf("protocol.api.hosts" to server.url("/").toString())),
+                apiClock = fixedClock(ts),
+                retryPolicy = DefaultRetryPolicy(maxAttempts = 1)
+            )
+        )
+
+        val report = kotlinx.coroutines.runBlocking {
+            core.probeRunner.run(
+                JmxCoreProbeScenario(
+                    refreshDomains = false,
+                    fetchSetting = false,
+                    chapterTemplate = ChapterTemplateProbe(
+                        chapterId = "123",
+                        shunt = "1",
+                        timestampSeconds = ts
+                    )
+                )
+            )
+        }
+
+        assertTrue(!report.isSuccessful)
+        val error = report.chapterTemplate.errorOrNull()
+        assertTrue(error is JmxError.Schema)
+        require(error is JmxError.Schema)
+        assertEquals("result.images", error.field)
+        assertTrue(error.message.contains("缺失字段：result.images"))
+        assertTrue(error.message.contains("config.jmid"))
+        assertTrue(error.message.contains("HTML 样本"))
     }
 
     @Test
