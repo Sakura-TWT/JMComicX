@@ -16,6 +16,12 @@ data class DomainServerPayload(
     val apiHosts: List<String>
 )
 
+data class DomainRefreshAttempt(
+    val url: String,
+    val success: Boolean,
+    val message: String
+)
+
 class DomainServerDecoder {
     fun decode(text: String): JmxResult<DomainServerPayload> {
         val cleanText = text.trimLeadingNonAscii()
@@ -37,6 +43,7 @@ class DomainServerDecoder {
             ?.asJsonArray
             ?.mapNotNull { item -> item.takeIf { it.isJsonPrimitive }?.asString?.trim() }
             ?.filter { it.isNotEmpty() }
+            ?.distinct()
             ?: emptyList()
         if (hosts.isEmpty()) {
             return JmxResult.Failure(JmxError.Domain("域名服务器未返回可用 API 域名"))
@@ -61,15 +68,29 @@ class DomainRefresher(
 ) {
     suspend fun refresh(): JmxResult<List<ApiEndpoint>> = withContext(Dispatchers.IO) {
         var lastError: JmxError? = null
+        val attempts = mutableListOf<DomainRefreshAttempt>()
         for (url in serverUrls) {
             val result = requestAndDecode(url)
             when (result) {
-                is JmxResult.Success -> return@withContext endpointManager.replaceAll(result.value.apiHosts)
-                is JmxResult.Failure -> lastError = result.error
+                is JmxResult.Success -> {
+                    attempts += DomainRefreshAttempt(url, success = true, message = "${result.value.apiHosts.size} hosts")
+                    return@withContext endpointManager.replaceAll(result.value.apiHosts)
+                }
+                is JmxResult.Failure -> {
+                    lastError = result.error
+                    attempts += DomainRefreshAttempt(url, success = false, message = result.error.message)
+                }
             }
         }
-        JmxResult.Failure(lastError ?: JmxError.Domain("全部域名服务器刷新失败"))
+        JmxResult.Failure(
+            JmxError.Domain(
+                message = buildFailureMessage(attempts, lastError),
+                cause = lastError?.cause
+            )
+        )
     }
+
+    fun serverUrls(): List<String> = serverUrls
 
     private fun requestAndDecode(url: String): JmxResult<DomainServerPayload> {
         return runCatching {
@@ -92,6 +113,17 @@ class DomainRefresher(
                 JmxError.Unknown(it.message ?: "域名服务器未知错误", it)
             }
             JmxResult.Failure(error)
+        }
+    }
+
+    private fun buildFailureMessage(attempts: List<DomainRefreshAttempt>, lastError: JmxError?): String {
+        if (attempts.isEmpty()) return lastError?.message ?: "全部域名服务器刷新失败"
+        return attempts.joinToString(
+            prefix = "全部域名服务器刷新失败：",
+            separator = "；"
+        ) { attempt ->
+            val status = if (attempt.success) "success" else "failed"
+            "$status ${attempt.url} ${attempt.message}"
         }
     }
 }
