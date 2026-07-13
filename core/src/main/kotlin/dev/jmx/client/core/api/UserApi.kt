@@ -1,8 +1,8 @@
 package dev.jmx.client.core.api
 
 import dev.jmx.client.core.network.ApiEndpointManager
-import dev.jmx.client.core.network.ApiRequest
 import dev.jmx.client.core.network.JmxApiClient
+import dev.jmx.client.core.network.apiRequest
 import dev.jmx.client.core.protocol.ApiRoute
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
@@ -19,10 +19,10 @@ class UserApi(
         }
         val data = when (
             val result = apiClient.requestJson(
-                ApiRequest(
-                    route = ApiRoute.Login,
-                    form = mapOf("username" to username, "password" to password)
-                )
+                apiRequest(ApiRoute.Login) {
+                    form("username", username)
+                    form("password", password)
+                }
             )
         ) {
             is JmxResult.Success -> result.value

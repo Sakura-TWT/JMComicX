@@ -1,7 +1,7 @@
 package dev.jmx.client.core.api
 
-import dev.jmx.client.core.network.ApiRequest
 import dev.jmx.client.core.network.JmxApiClient
+import dev.jmx.client.core.network.apiRequest
 import dev.jmx.client.core.protocol.ApiRoute
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
@@ -15,10 +15,9 @@ class AlbumApi(
         }
         val data = when (
             val result = apiClient.requestJson(
-                ApiRequest(
-                    route = ApiRoute.Album,
-                    query = mapOf("id" to albumId)
-                )
+                apiRequest(ApiRoute.Album) {
+                    query("id", albumId)
+                }
             )
         ) {
             is JmxResult.Success -> result.value
@@ -38,16 +37,13 @@ class AlbumApi(
     ): JmxResult<SearchPage> {
         val data = when (
             val result = apiClient.requestJson(
-                ApiRequest(
-                    route = ApiRoute.Search,
-                    query = mapOf(
-                        "search_query" to query,
-                        "page" to page.coerceAtLeast(1).toString(),
-                        "o" to order,
-                        "main_tag" to mainTag.toString(),
-                        "t" to time
-                    )
-                )
+                apiRequest(ApiRoute.Search) {
+                    query("search_query", query)
+                    queryAtLeast("page", page, minimum = 1)
+                    query("o", order)
+                    query("main_tag", mainTag)
+                    query("t", time)
+                }
             )
         ) {
             is JmxResult.Success -> result.value

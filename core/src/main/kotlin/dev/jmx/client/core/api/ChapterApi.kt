@@ -2,8 +2,8 @@ package dev.jmx.client.core.api
 
 import dev.jmx.client.core.chapter.ChapterTemplate
 import dev.jmx.client.core.chapter.ChapterTemplateParser
-import dev.jmx.client.core.network.ApiRequest
 import dev.jmx.client.core.network.JmxApiClient
+import dev.jmx.client.core.network.apiRequest
 import dev.jmx.client.core.protocol.ApiRoute
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
@@ -25,17 +25,14 @@ class ChapterApi(
         }
         val html = when (
             val result = apiClient.requestText(
-                ApiRequest(
-                    route = ApiRoute.ChapterViewTemplate,
-                    query = mapOf(
-                        "id" to chapterId,
-                        "app_img_shunt" to shunt,
-                        "mode" to mode,
-                        "page" to page.coerceAtLeast(0).toString(),
-                        "express" to express,
-                        "v" to timestampSeconds.toString()
-                    )
-                )
+                apiRequest(ApiRoute.ChapterViewTemplate) {
+                    query("id", chapterId)
+                    query("app_img_shunt", shunt)
+                    query("mode", mode)
+                    queryAtLeast("page", page, minimum = 0)
+                    query("express", express)
+                    query("v", timestampSeconds)
+                }
             )
         ) {
             is JmxResult.Success -> result.value

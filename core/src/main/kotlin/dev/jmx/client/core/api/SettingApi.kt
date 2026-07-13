@@ -1,7 +1,7 @@
 package dev.jmx.client.core.api
 
-import dev.jmx.client.core.network.ApiRequest
 import dev.jmx.client.core.network.JmxApiClient
+import dev.jmx.client.core.network.apiRequest
 import dev.jmx.client.core.protocol.ApiRoute
 import dev.jmx.client.core.protocol.ApiVersionProvider
 import dev.jmx.client.core.result.JmxError
@@ -12,7 +12,7 @@ class SettingApi(
     private val apiVersionProvider: ApiVersionProvider
 ) {
     suspend fun fetchSetting(): JmxResult<RemoteSetting> {
-        val data = when (val result = apiClient.requestJson(ApiRequest(ApiRoute.Setting))) {
+        val data = when (val result = apiClient.requestJson(apiRequest(ApiRoute.Setting))) {
             is JmxResult.Success -> result.value
             is JmxResult.Failure -> return result
         }
