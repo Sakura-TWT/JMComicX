@@ -9,6 +9,7 @@ import dev.jmx.client.core.image.ImageRowCodec
 import dev.jmx.client.core.image.InMemoryImageOutputStore
 import dev.jmx.client.core.image.RestoredImageBytes
 import dev.jmx.client.core.network.DefaultRetryPolicy
+import dev.jmx.client.core.network.ApiEndpointSelection
 import dev.jmx.client.core.protocol.ApiClock
 import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.result.JmxError
@@ -211,6 +212,58 @@ class JmxCoreTest {
         assertEquals(1, health.cookieCount)
         assertEquals(domainUrls, health.domainServerUrls)
         assertEquals(7, health.downloadConcurrency)
+    }
+
+    @Test
+    fun endpointControllerSwitchesManualEndpointAndSyncsSession() {
+        val cookieStore = InMemoryCookieStore()
+        val core = JmxCore.create(
+            JmxCoreConfig(
+                keyValueStore = InMemoryKeyValueStore(
+                    mapOf("protocol.api.hosts" to "https://api-a.test\nhttps://api-b.test")
+                ),
+                cookieStore = cookieStore
+            )
+        )
+        core.sessionManager.installAvsCookie("https://api-a.test", "secret")
+
+        val report = core.endpointController.useManualEndpoint("manual.test/path")
+
+        assertTrue(report is JmxResult.Success)
+        val value = (report as JmxResult.Success).value
+        assertTrue(value.selection is ApiEndpointSelection.Manual)
+        assertEquals(1, value.syncedAvsCookieCount)
+        assertEquals("manual", value.health.endpointSelection.mode)
+        assertEquals("https://manual.test/", value.health.endpointSelection.manualUrl)
+        assertEquals(1, cookieStore.load("https://manual.test/album".toHttpUrl()).size)
+    }
+
+    @Test
+    fun endpointControllerRestoresAutoSelection() {
+        val core = JmxCore.create(
+            JmxCoreConfig(
+                keyValueStore = InMemoryKeyValueStore(
+                    mapOf("protocol.api.hosts" to "https://api-a.test\nhttps://api-b.test")
+                )
+            )
+        )
+        core.endpointController.useManualEndpoint("manual.test")
+
+        val report = core.endpointController.useAutoSelection()
+
+        assertEquals("auto", report.health.endpointSelection.mode)
+        assertEquals(null, report.health.endpointSelection.manualUrl)
+        assertEquals(0, report.syncedAvsCookieCount)
+    }
+
+    @Test
+    fun endpointControllerRejectsInvalidManualEndpoint() {
+        val core = JmxCore.create()
+
+        val report = core.endpointController.useManualEndpoint("bad host")
+
+        assertTrue(report is JmxResult.Failure)
+        assertTrue((report as JmxResult.Failure).error.message.contains("手动 API 域名无效"))
     }
 
     @Test

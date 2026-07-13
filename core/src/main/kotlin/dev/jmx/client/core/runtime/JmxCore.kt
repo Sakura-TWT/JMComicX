@@ -61,6 +61,7 @@ class JmxCore private constructor(
 ) {
     val smokeRunner: JmxCoreSmokeRunner = JmxCoreSmokeRunner(this)
     val probeRunner: JmxCoreProbeRunner = JmxCoreProbeRunner(this)
+    val endpointController: JmxEndpointController = JmxEndpointController(this)
 
     fun healthSnapshot(): JmxCoreHealth {
         val nowMillis = System.currentTimeMillis()
