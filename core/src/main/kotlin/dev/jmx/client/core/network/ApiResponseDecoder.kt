@@ -28,11 +28,9 @@ class ApiResponseDecoder(
                 )
             )
         }
-        val encryptedData = root["data"]?.asStringOrNull()
-            ?: return JmxResult.Failure(JmxError.Schema("API 响应缺少加密 data 字段：${bodySampler.sample(body)}", field = "data"))
-        val key = JmxHash.md5Hex("$tokenTimestampSeconds${JmxProtocolConstants.DataSecret}")
-        val decrypted = AesEcbPkcs7.decryptBase64ToString(encryptedData, key).unwrapOrReturn { return it }
-        val data = parseJsonElement(decrypted).unwrapOrReturn { return it }
+        val dataElement = root["data"]
+            ?: return JmxResult.Failure(JmxError.Schema("API 响应缺少 data 字段：${bodySampler.sample(body)}", field = "data"))
+        val data = decodeDataElement(dataElement, tokenTimestampSeconds, body).unwrapOrReturn { return it }
         return JmxResult.Success(ApiEnvelope(code, data, null, body))
     }
 
@@ -69,8 +67,34 @@ class ApiResponseDecoder(
     private fun parseJsonElement(body: String): JmxResult<JsonElement> {
         return runCatching { JsonParser.parseString(body) }.fold(
             onSuccess = { JmxResult.Success(it) },
-            onFailure = { JmxResult.Failure(JmxError.Schema("JSON 解析失败", cause = it)) }
+            onFailure = { JmxResult.Failure(JmxError.Schema("JSON 解析失败：${bodySampler.sample(body)}", cause = it)) }
         )
+    }
+
+    private fun decodeDataElement(
+        dataElement: JsonElement,
+        tokenTimestampSeconds: Long,
+        body: String
+    ): JmxResult<JsonElement> {
+        if (dataElement.isJsonNull) {
+            return JmxResult.Failure(JmxError.Schema("API 响应 data 为 null：${bodySampler.sample(body)}", field = "data"))
+        }
+        if (dataElement.isJsonObject || dataElement.isJsonArray) {
+            return JmxResult.Success(dataElement)
+        }
+        val encryptedData = dataElement.asStringOrNull()
+            ?: return JmxResult.Failure(
+                JmxError.Schema(
+                    "API 响应 data 类型不支持：${dataElement.javaClass.simpleName}；${bodySampler.sample(body)}",
+                    field = "data"
+                )
+            )
+        if (encryptedData.isBlank()) {
+            return JmxResult.Failure(JmxError.Schema("API 响应加密 data 为空：${bodySampler.sample(body)}", field = "data"))
+        }
+        val key = JmxHash.md5Hex("$tokenTimestampSeconds${JmxProtocolConstants.DataSecret}")
+        val decrypted = AesEcbPkcs7.decryptBase64ToString(encryptedData, key).unwrapOrReturn { return it }
+        return parseJsonElement(decrypted)
     }
 
     private inline fun <T> JmxResult<T>.unwrapOrReturn(returnFailure: (JmxResult.Failure) -> Nothing): T {

@@ -63,6 +63,20 @@ class JmxApiClientTest {
     }
 
     @Test
+    fun encryptedRouteAcceptsPlainObjectDataEnvelope() {
+        val ts = 1700566805L
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"code":200,"data":{"name":"plain"}}"""))
+        val client = createClient(ts)
+
+        val result = kotlinx.coroutines.runBlocking {
+            client.requestJson(ApiRequest(route = ApiRoute.Album))
+        }
+
+        assertTrue(result is JmxResult.Success)
+        assertEquals("plain", (result as JmxResult.Success).value.asJsonObject["name"].asString)
+    }
+
+    @Test
     fun chapterTemplateRequestUsesChapterSecretAndReturnsText() {
         val ts = 1700566805L
         server.enqueue(MockResponse().setResponseCode(200).setBody("<html></html>"))
