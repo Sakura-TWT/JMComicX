@@ -11,6 +11,30 @@ internal fun JsonObject.toAlbumSummary(): AlbumSummary {
     )
 }
 
+internal fun JsonObject.toAlbumDetail(): AlbumDetail {
+    return AlbumDetail(
+        id = stringOrNull("id", "album_id", "aid") ?: "",
+        name = stringOrNull("name", "title"),
+        description = stringOrNull("description", "desc"),
+        authors = stringListOrEmpty("author", "authors"),
+        imageCount = intOrNull("total_photo", "page_count", "images"),
+        totalViews = intOrNull("total_views", "views"),
+        likes = intOrNull("likes", "like_count"),
+        commentTotal = intOrNull("comment_total", "comment_count"),
+        tags = stringListOrEmpty("tags"),
+        actors = stringListOrEmpty("actors", "roles"),
+        works = stringListOrEmpty("works"),
+        isFavorite = booleanOrNull("is_favorite", "favorite"),
+        liked = booleanOrNull("liked", "is_liked"),
+        related = firstObjectList("related_list", "related").mapNotNull { it.toRelatedAlbumOrNull() },
+        series = firstObjectList("series", "chapters").mapNotNull { it.toAlbumChapterOrNull() },
+        seriesId = stringOrNull("series_id", "seriesId"),
+        price = intOrNull("price"),
+        purchased = booleanOrNull("purchased", "is_buy", "isBuy"),
+        raw = toRawMap()
+    )
+}
+
 internal fun JsonObject.toAlbumPage(): AlbumPage {
     val content = firstObjectList("content", "list", "data", "albums", "photos")
         .map { it.toAlbumSummary() }
@@ -86,6 +110,25 @@ private fun JsonObject.toWeekCategoryOrNull(): WeekCategory? {
         id = id,
         time = stringOrNull("time"),
         title = stringOrNull("title", "name")
+    )
+}
+
+private fun JsonObject.toRelatedAlbumOrNull(): RelatedAlbum? {
+    val id = stringOrNull("id", "album_id", "aid") ?: return null
+    return RelatedAlbum(
+        id = id,
+        name = stringOrNull("name", "title"),
+        author = stringOrNull("author", "authors"),
+        image = stringOrNull("image", "cover")
+    )
+}
+
+private fun JsonObject.toAlbumChapterOrNull(): AlbumChapter? {
+    val id = stringOrNull("id", "chapter_id", "photo_id") ?: return null
+    return AlbumChapter(
+        id = id,
+        name = stringOrNull("name", "title"),
+        sort = stringOrNull("sort")
     )
 }
 

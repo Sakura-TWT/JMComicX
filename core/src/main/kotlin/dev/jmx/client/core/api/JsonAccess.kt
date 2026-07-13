@@ -33,6 +33,24 @@ internal fun JsonObject.booleanOrNull(vararg names: String): Boolean? {
     return null
 }
 
+internal fun JsonObject.stringListOrEmpty(vararg names: String): List<String> {
+    for (name in names) {
+        val value = get(name) ?: continue
+        if (value.isJsonArray) {
+            return value.asJsonArray
+                .mapNotNull { item ->
+                    item.takeIf { it.isJsonPrimitive }?.let { runCatching { it.asString }.getOrNull() }
+                }
+                .filter { it.isNotBlank() }
+        }
+        if (value.isJsonPrimitive) {
+            val text = runCatching { value.asString }.getOrNull()
+            if (!text.isNullOrBlank()) return listOf(text)
+        }
+    }
+    return emptyList()
+}
+
 internal fun JsonElement?.asObjectOrNull(): JsonObject? {
     return this?.takeIf { it.isJsonObject }?.asJsonObject
 }

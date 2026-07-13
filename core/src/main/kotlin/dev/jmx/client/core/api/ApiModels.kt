@@ -23,6 +23,48 @@ data class AlbumSummary(
     val imageCount: Int?
 )
 
+data class AlbumDetail(
+    val id: String,
+    val name: String?,
+    val description: String?,
+    val authors: List<String>,
+    val imageCount: Int?,
+    val totalViews: Int?,
+    val likes: Int?,
+    val commentTotal: Int?,
+    val tags: List<String>,
+    val actors: List<String>,
+    val works: List<String>,
+    val isFavorite: Boolean?,
+    val liked: Boolean?,
+    val related: List<RelatedAlbum>,
+    val series: List<AlbumChapter>,
+    val seriesId: String?,
+    val price: Int?,
+    val purchased: Boolean?,
+    val raw: Map<String, Any?>
+) {
+    val summary: AlbumSummary = AlbumSummary(
+        id = id,
+        name = name,
+        author = authors.firstOrNull(),
+        imageCount = imageCount
+    )
+}
+
+data class RelatedAlbum(
+    val id: String,
+    val name: String?,
+    val author: String?,
+    val image: String?
+)
+
+data class AlbumChapter(
+    val id: String,
+    val name: String?,
+    val sort: String?
+)
+
 data class SearchPage(
     val total: Int?,
     val redirectAlbumId: String?,

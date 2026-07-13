@@ -64,6 +64,67 @@ class ApiFacadeTest {
         assertEquals("username=user&password=pass", recorded.body.readUtf8())
     }
 
+    @Test
+    fun albumApiParsesFullAlbumDetail() {
+        server.enqueue(
+            encryptedResponse(
+                """
+                {
+                  "id":123,
+                  "name":"album",
+                  "description":"desc",
+                  "author":["alice","bob"],
+                  "total_views":99,
+                  "likes":10,
+                  "comment_total":3,
+                  "tags":["tag"],
+                  "actors":["role"],
+                  "works":["work"],
+                  "is_favorite":true,
+                  "liked":false,
+                  "related_list":[{"id":"8","name":"related","author":"carol","image":"cover.jpg"}],
+                  "series":[{"id":"9","name":"第1话","sort":"1"}],
+                  "series_id":"7",
+                  "price":"5",
+                  "purchased":true
+                }
+                """.trimIndent()
+            )
+        )
+        val albumApi = AlbumApi(createClient())
+
+        val result = kotlinx.coroutines.runBlocking { albumApi.detailFull("123") }
+
+        assertTrue(result is JmxResult.Success)
+        val detail = (result as JmxResult.Success).value
+        assertEquals("123", detail.id)
+        assertEquals("album", detail.name)
+        assertEquals(listOf("alice", "bob"), detail.authors)
+        assertEquals(99, detail.totalViews)
+        assertEquals(true, detail.isFavorite)
+        assertEquals("related", detail.related.single().name)
+        assertEquals("第1话", detail.series.single().name)
+        assertEquals(5, detail.price)
+        assertEquals(true, detail.purchased)
+        assertEquals("/album?id=123", server.takeRequest().path)
+    }
+
+    @Test
+    fun albumApiDetailKeepsSummaryCompatibility() {
+        server.enqueue(encryptedResponse("""{"id":"321","name":"summary","author":"solo","images":12}"""))
+        val albumApi = AlbumApi(createClient())
+
+        val result = kotlinx.coroutines.runBlocking { albumApi.detail("321") }
+
+        assertTrue(result is JmxResult.Success)
+        val summary = (result as JmxResult.Success).value
+        assertEquals("321", summary.id)
+        assertEquals("summary", summary.name)
+        assertEquals("solo", summary.author)
+        assertEquals(12, summary.imageCount)
+        assertEquals("/album?id=321", server.takeRequest().path)
+    }
+
     private fun createClient(
         endpointManager: ApiEndpointManager = ApiEndpointManager(listOf(server.url("/").toString())),
         versionProvider: MutableApiVersionProvider = MutableApiVersionProvider(JmxProtocolConstants.DefaultApiVersion)

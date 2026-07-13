@@ -10,6 +10,13 @@ class AlbumApi(
     private val apiClient: JmxApiClient
 ) {
     suspend fun detail(albumId: String): JmxResult<AlbumSummary> {
+        return when (val result = detailFull(albumId)) {
+            is JmxResult.Success -> JmxResult.Success(result.value.summary)
+            is JmxResult.Failure -> result
+        }
+    }
+
+    suspend fun detailFull(albumId: String): JmxResult<AlbumDetail> {
         if (albumId.isBlank()) {
             return JmxResult.Failure(JmxError.Schema("albumId 为空", field = "albumId"))
         }
@@ -25,7 +32,7 @@ class AlbumApi(
         }
         val root = data.asObjectOrNull()
             ?: return JmxResult.Failure(JmxError.Schema("album data 不是对象"))
-        return JmxResult.Success(root.toAlbumSummary())
+        return JmxResult.Success(root.toAlbumDetail())
     }
 
     suspend fun search(
