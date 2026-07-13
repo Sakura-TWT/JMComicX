@@ -15,11 +15,13 @@ class PersistentCookieStore(
 
     override fun save(url: HttpUrl, cookies: List<Cookie>) {
         synchronized(lock) {
-            val merged = (readCookies().filterNot { old ->
+            val retained = readCookies().filterNot { old ->
                 cookies.any { new -> old.identityKey() == new.identityKey() }
-            } + cookies)
-                .filter { !it.isExpired() }
-            writeCookies(merged)
+            }
+            writeCookies(
+                (retained + cookies.filter { !it.isExpired() })
+                    .filter { !it.isExpired() }
+            )
         }
     }
 

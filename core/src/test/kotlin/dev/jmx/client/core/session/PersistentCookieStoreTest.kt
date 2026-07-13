@@ -66,4 +66,31 @@ class PersistentCookieStoreTest {
         assertEquals(0, store.snapshot().size)
         assertEquals(null, keyValueStore.getString("session.cookies"))
     }
+
+    @Test
+    fun expiredReplacementRemovesPersistedCookie() {
+        val keyValueStore = InMemoryKeyValueStore()
+        val store = PersistentCookieStore(keyValueStore, nowMillis = { 1_000L })
+        val url = "https://api.test/".toHttpUrl()
+        val cookie = Cookie.Builder()
+            .name("AVS")
+            .value("secret")
+            .hostOnlyDomain("api.test")
+            .path("/")
+            .expiresAt(5_000L)
+            .build()
+        val deletion = Cookie.Builder()
+            .name("AVS")
+            .value("")
+            .hostOnlyDomain("api.test")
+            .path("/")
+            .expiresAt(500L)
+            .build()
+
+        store.save(url, listOf(cookie))
+        store.save(url, listOf(deletion))
+
+        assertEquals(0, store.load("https://api.test/album".toHttpUrl()).size)
+        assertEquals(null, keyValueStore.getString("session.cookies"))
+    }
 }

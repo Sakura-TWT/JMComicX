@@ -31,7 +31,7 @@ class SessionManager(
 
     fun syncAvsCookieToHosts(apiHosts: List<String>): JmxResult<List<Cookie>> {
         val avs = cookieStore.snapshot()
-            .firstOrNull { it.name.equals(AVS_COOKIE_NAME, ignoreCase = true) }
+            .lastOrNull { it.name.equals(AVS_COOKIE_NAME, ignoreCase = true) }
             ?.value
             ?: return JmxResult.Failure(JmxError.Schema("AVS 不存在", field = AVS_COOKIE_NAME))
         val installed = mutableListOf<Cookie>()
@@ -60,7 +60,7 @@ class SessionManager(
 
     private fun currentAvsValue(): String? {
         return cookieStore.snapshot()
-            .firstOrNull { it.name.equals(AVS_COOKIE_NAME, ignoreCase = true) }
+            .lastOrNull { it.name.equals(AVS_COOKIE_NAME, ignoreCase = true) }
             ?.value
     }
 

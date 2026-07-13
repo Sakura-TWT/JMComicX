@@ -58,6 +58,22 @@ class SessionManagerTest {
     }
 
     @Test
+    fun syncUsesMostRecentlyInstalledAvsCookie() {
+        val store = InMemoryCookieStore()
+        val session = SessionManager(store)
+        session.installAvsCookie("https://old.test", "old-secret")
+        session.installAvsCookie("https://new.test", "new-secret")
+
+        val result = session.syncAvsCookieToHosts(listOf("https://third.test"))
+
+        assertTrue(result is JmxResult.Success)
+        assertEquals(
+            "new-secret",
+            store.load("https://third.test/album".toHttpUrl()).single().value
+        )
+    }
+
+    @Test
     fun removesExpiredCookiesWhenLoading() {
         var now = 1_000L
         val store = InMemoryCookieStore(nowMillis = { now })
@@ -73,6 +89,34 @@ class SessionManagerTest {
 
         assertEquals(1, store.load("https://api.test/album".toHttpUrl()).size)
         now = 3_000L
+        assertEquals(0, store.load("https://api.test/album".toHttpUrl()).size)
+        assertEquals(0, store.snapshot().size)
+    }
+
+    @Test
+    fun expiredReplacementRemovesExistingCookie() {
+        val now = 1_000L
+        val store = InMemoryCookieStore(nowMillis = { now })
+        val url = "https://api.test/".toHttpUrl()
+        val cookie = Cookie.Builder()
+            .name("AVS")
+            .value("secret")
+            .hostOnlyDomain("api.test")
+            .path("/")
+            .expiresAt(5_000L)
+            .build()
+        val deletion = Cookie.Builder()
+            .name("AVS")
+            .value("")
+            .hostOnlyDomain("api.test")
+            .path("/")
+            .expiresAt(500L)
+            .build()
+
+        store.save(url, listOf(cookie))
+        assertEquals(1, store.load("https://api.test/album".toHttpUrl()).size)
+        store.save(url, listOf(deletion))
+
         assertEquals(0, store.load("https://api.test/album".toHttpUrl()).size)
         assertEquals(0, store.snapshot().size)
     }

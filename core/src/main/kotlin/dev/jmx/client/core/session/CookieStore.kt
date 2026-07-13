@@ -20,11 +20,11 @@ class InMemoryCookieStore(
 
     override fun save(url: HttpUrl, cookies: List<Cookie>) {
         synchronized(lock) {
-            val merged = (this.cookies.filterNot { old ->
+            val retained = this.cookies.filterNot { old ->
                 cookies.any { new -> old.identityKey() == new.identityKey() }
-            } + cookies)
+            }
+            this.cookies = (retained + cookies.filter { !it.isExpired() })
                 .filter { !it.isExpired() }
-            this.cookies = merged
         }
     }
 
