@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "JMComicX-V2"
-include(":foundation")
+rootProject.name = "JMComicX"
+include(":core")
