@@ -207,6 +207,86 @@ class JmxCoreTest {
     }
 
     @Test
+    fun probeRunnerChecksDomainSettingSessionAndChapterTemplate() {
+        val ts = 1700566805L
+        val imageHost = server.url("/").toString().trimEnd('/')
+        domainServer.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody(encryptDomain("""{"Server":["${server.url("/")}"]}"""))
+        )
+        server.enqueue(encryptedResponse(ts, """{"jm3_version":"2.6.0","img_host":"$imageHost","app_shunts":[{"id":"1","name":"线路 1"}]}"""))
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/html")
+                .setBody(chapterHtml(imageHost))
+        )
+        val core = JmxCore.create(
+            JmxCoreConfig(
+                keyValueStore = InMemoryKeyValueStore(mapOf("protocol.api.hosts" to "https://old.test")),
+                apiClock = fixedClock(ts),
+                retryPolicy = DefaultRetryPolicy(maxAttempts = 1),
+                domainServerUrls = listOf(domainServer.url("/domains").toString())
+            )
+        )
+        core.sessionManager.installAvsCookie("https://old.test", "secret")
+
+        val report = kotlinx.coroutines.runBlocking {
+            core.probeRunner.run(
+                JmxCoreProbeScenario(
+                    refreshDomains = true,
+                    fetchSetting = true,
+                    requireSession = true,
+                    chapterTemplate = ChapterTemplateProbe(
+                        chapterId = "123",
+                        shunt = "1",
+                        timestampSeconds = ts
+                    )
+                )
+            )
+        }
+
+        assertTrue(report.isSuccessful)
+        assertTrue(report.domainRefresh.isSuccessful)
+        assertEquals("2.6.0", report.setting.valueOrNull()!!.apiVersion)
+        assertTrue(report.session.valueOrNull()!!.hasAvs)
+        assertEquals(listOf("00001.webp"), report.chapterTemplate.valueOrNull()!!.imageFileNames)
+        assertEquals("2.6.0", report.afterHealth.apiVersion)
+        assertEquals(2, report.afterHealth.cookieCount)
+        assertEquals("/setting", server.takeRequest().path)
+        assertTrue(server.takeRequest().path!!.startsWith("/chapter_view_template?id=123&"))
+    }
+
+    @Test
+    fun probeRunnerReportsMissingRequiredSession() {
+        val core = JmxCore.create(
+            JmxCoreConfig(
+                keyValueStore = InMemoryKeyValueStore(mapOf("protocol.api.hosts" to server.url("/").toString())),
+                retryPolicy = DefaultRetryPolicy(maxAttempts = 1),
+                domainServerUrls = listOf(domainServer.url("/domains").toString())
+            )
+        )
+
+        val report = kotlinx.coroutines.runBlocking {
+            core.probeRunner.run(
+                JmxCoreProbeScenario(
+                    refreshDomains = false,
+                    fetchSetting = false,
+                    requireSession = true,
+                    chapterTemplate = null
+                )
+            )
+        }
+
+        assertTrue(!report.isSuccessful)
+        assertTrue(report.domainRefresh.isSkipped)
+        assertTrue(report.setting.isSkipped)
+        assertTrue(report.chapterTemplate.isSkipped)
+        assertTrue(report.session.errorOrNull()!!.message.contains("AVS"))
+    }
+
+    @Test
     fun smokeRunnerExercisesInitLoginAlbumChapterAndImageTransfer() {
         val ts = 1700566805L
         val imageBytes = byteArrayOf(0, 1, 2, 3, 4, 5)

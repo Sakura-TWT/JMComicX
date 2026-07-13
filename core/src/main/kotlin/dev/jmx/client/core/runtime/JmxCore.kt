@@ -59,6 +59,7 @@ class JmxCore private constructor(
     private val domainServerUrls: List<String>
 ) {
     val smokeRunner: JmxCoreSmokeRunner = JmxCoreSmokeRunner(this)
+    val probeRunner: JmxCoreProbeRunner = JmxCoreProbeRunner(this)
 
     fun healthSnapshot(): JmxCoreHealth {
         val nowMillis = System.currentTimeMillis()
