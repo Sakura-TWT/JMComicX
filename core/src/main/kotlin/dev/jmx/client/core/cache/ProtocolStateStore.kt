@@ -29,9 +29,18 @@ class ProtocolStateStore(
         store.putString(KEY_API_HOSTS, normalized.takeIf { it.isNotEmpty() }?.joinToString(HOST_SEPARATOR))
     }
 
+    fun manualApiHost(): String? {
+        return store.getString(KEY_MANUAL_API_HOST)?.takeIf { it.isNotBlank() }
+    }
+
+    fun updateManualApiHost(host: String?) {
+        store.putString(KEY_MANUAL_API_HOST, host?.takeIf { it.isNotBlank() })
+    }
+
     private companion object {
         const val KEY_API_VERSION = "protocol.api.version"
         const val KEY_API_HOSTS = "protocol.api.hosts"
+        const val KEY_MANUAL_API_HOST = "protocol.api.manual_host"
         const val HOST_SEPARATOR = "\n"
     }
 }

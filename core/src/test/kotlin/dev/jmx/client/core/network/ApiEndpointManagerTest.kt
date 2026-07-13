@@ -112,4 +112,61 @@ class ApiEndpointManagerTest {
         assertEquals(2_000L, endpoint.lastSuccessAtMillis)
         assertTrue(endpoint.healthScore(now) < manager.all()[1].healthScore(now) + 10)
     }
+
+    @Test
+    fun manualEndpointOverridesAutomaticHealthSelectionAndPersists() {
+        val stateStore = ProtocolStateStore(InMemoryKeyValueStore())
+        val manager = ApiEndpointManager(
+            initialHosts = listOf("https://first.test", "https://second.test"),
+            protocolStateStore = stateStore
+        )
+
+        val selected = manager.useManualEndpoint("manual.test/path")
+
+        assertTrue(selected is JmxResult.Success)
+        assertEquals("https://manual.test/", (selected as JmxResult.Success).value.toString())
+        assertEquals("https://manual.test/", (manager.current() as JmxResult.Success).value.toString())
+        assertEquals("https://manual.test/", stateStore.manualApiHost())
+        val reloaded = ApiEndpointManager(
+            initialHosts = listOf("https://first.test"),
+            protocolStateStore = stateStore
+        )
+        assertEquals("https://manual.test/", (reloaded.current() as JmxResult.Success).value.toString())
+        assertTrue(reloaded.selection() is ApiEndpointSelection.Manual)
+    }
+
+    @Test
+    fun autoSelectionCanBeRestoredAfterManualEndpoint() {
+        val stateStore = ProtocolStateStore(InMemoryKeyValueStore())
+        stateStore.updateApiHosts(listOf("https://first.test", "https://second.test"))
+        val manager = ApiEndpointManager(
+            initialHosts = listOf("https://first.test", "https://second.test"),
+            protocolStateStore = stateStore
+        )
+
+        manager.useManualEndpoint("manual.test")
+        manager.useAutoSelection()
+
+        assertEquals(null, stateStore.manualApiHost())
+        assertTrue(manager.selection() is ApiEndpointSelection.Auto)
+        assertEquals("https://first.test/", (manager.current() as JmxResult.Success).value.toString())
+    }
+
+    @Test
+    fun remoteRefreshDoesNotClearManualEndpoint() {
+        val stateStore = ProtocolStateStore(InMemoryKeyValueStore())
+        val manager = ApiEndpointManager(
+            initialHosts = listOf("https://first.test"),
+            protocolStateStore = stateStore
+        )
+        manager.useManualEndpoint("manual.test")
+
+        manager.replaceAll(listOf("https://fresh.test"))
+
+        assertEquals(listOf("https://fresh.test/"), stateStore.apiHosts())
+        assertEquals("https://manual.test/", stateStore.manualApiHost())
+        assertEquals("https://manual.test/", (manager.current() as JmxResult.Success).value.toString())
+        manager.useAutoSelection()
+        assertEquals("https://fresh.test/", (manager.current() as JmxResult.Success).value.toString())
+    }
 }

@@ -33,6 +33,14 @@ data class ApiEndpoint(
     }
 }
 
+sealed interface ApiEndpointSelection {
+    data object Auto : ApiEndpointSelection
+
+    data class Manual(
+        val url: HttpUrl
+    ) : ApiEndpointSelection
+}
+
 class ApiEndpointManager(
     initialHosts: List<String> = JmxProtocolConstants.DefaultApiHosts,
     private val maxFailuresBeforeDemote: Int = 2,
@@ -44,8 +52,12 @@ class ApiEndpointManager(
         .mapNotNull { it.normalizedBaseUrlOrNull() }
         .distinctBy { it.endpointKey() }
         .map { ApiEndpoint(it) }
+    private var manualEndpoint: HttpUrl? = protocolStateStore?.manualApiHost()?.normalizedBaseUrlOrNull()
 
     fun current(): JmxResult<HttpUrl> {
+        synchronized(lock) {
+            manualEndpoint?.let { return JmxResult.Success(it) }
+        }
         val now = nowMillis()
         val endpoint = synchronized(lock) {
             val available = endpoints.filter { it.isAvailableAt(now) }
@@ -56,6 +68,29 @@ class ApiEndpointManager(
     }
 
     fun all(): List<ApiEndpoint> = synchronized(lock) { endpoints }
+
+    fun selection(): ApiEndpointSelection {
+        return synchronized(lock) {
+            manualEndpoint?.let { ApiEndpointSelection.Manual(it) } ?: ApiEndpointSelection.Auto
+        }
+    }
+
+    fun useAutoSelection() {
+        synchronized(lock) {
+            manualEndpoint = null
+        }
+        protocolStateStore?.updateManualApiHost(null)
+    }
+
+    fun useManualEndpoint(host: String): JmxResult<HttpUrl> {
+        val url = host.normalizedBaseUrlOrNull()
+            ?: return JmxResult.Failure(JmxError.Domain("手动 API 域名无效", endpoint = host))
+        synchronized(lock) {
+            manualEndpoint = url
+        }
+        protocolStateStore?.updateManualApiHost(url.toString())
+        return JmxResult.Success(url)
+    }
 
     fun replaceAll(hosts: List<String>): JmxResult<List<ApiEndpoint>> {
         val parsed = hosts

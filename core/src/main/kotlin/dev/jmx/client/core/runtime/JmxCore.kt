@@ -12,6 +12,7 @@ import dev.jmx.client.core.cache.ProtocolStateStore
 import dev.jmx.client.core.download.BinaryDownloader
 import dev.jmx.client.core.download.DownloadBatchRunner
 import dev.jmx.client.core.network.ApiEndpointManager
+import dev.jmx.client.core.network.ApiEndpointSelection
 import dev.jmx.client.core.network.DefaultRetryPolicy
 import dev.jmx.client.core.network.DomainRefresher
 import dev.jmx.client.core.network.JmxApiClient
@@ -81,10 +82,18 @@ class JmxCore private constructor(
                     lastFailureMessage = it.lastFailureMessage
                 )
             },
+            endpointSelection = endpointManager.selection().toHealth(),
             cookieCount = sessionManager.cookies().size,
             domainServerUrls = domainServerUrls,
             downloadConcurrency = downloadBatchRunner.maxConcurrency
         )
+    }
+
+    private fun ApiEndpointSelection.toHealth(): EndpointSelectionHealth {
+        return when (this) {
+            ApiEndpointSelection.Auto -> EndpointSelectionHealth(mode = "auto", manualUrl = null)
+            is ApiEndpointSelection.Manual -> EndpointSelectionHealth(mode = "manual", manualUrl = url.toString())
+        }
     }
 
     companion object {

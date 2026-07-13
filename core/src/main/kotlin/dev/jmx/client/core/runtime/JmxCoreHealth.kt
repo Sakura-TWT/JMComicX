@@ -3,9 +3,15 @@ package dev.jmx.client.core.runtime
 data class JmxCoreHealth(
     val apiVersion: String,
     val endpoints: List<EndpointHealth>,
+    val endpointSelection: EndpointSelectionHealth,
     val cookieCount: Int,
     val domainServerUrls: List<String>,
     val downloadConcurrency: Int
+)
+
+data class EndpointSelectionHealth(
+    val mode: String,
+    val manualUrl: String?
 )
 
 data class EndpointHealth(
