@@ -60,13 +60,4 @@ class AlbumApi(
             )
         )
     }
-
-    private fun com.google.gson.JsonObject.toAlbumSummary(): AlbumSummary {
-        return AlbumSummary(
-            id = stringOrNull("id", "album_id", "aid") ?: "",
-            name = stringOrNull("name", "title"),
-            author = stringOrNull("author"),
-            imageCount = intOrNull("total_photo", "page_count", "images")
-        )
-    }
 }

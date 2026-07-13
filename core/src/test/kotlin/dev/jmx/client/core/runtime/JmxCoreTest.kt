@@ -87,6 +87,30 @@ class JmxCoreTest {
     }
 
     @Test
+    fun coreExposesExtendedApiFacades() {
+        val ts = 1700566805L
+        val core = JmxCore.create(
+            JmxCoreConfig(
+                keyValueStore = InMemoryKeyValueStore(
+                    mapOf("protocol.api.hosts" to server.url("/").toString())
+                ),
+                apiClock = fixedClock(ts),
+                retryPolicy = DefaultRetryPolicy(maxAttempts = 1)
+            )
+        )
+        server.enqueue(encryptedResponse(ts, """{"status":"ok","msg":"liked"}"""))
+        server.enqueue(encryptedResponse(ts, """{"total":1,"content":[{"id":"1","name":"fav"}]}"""))
+
+        val like = kotlinx.coroutines.runBlocking { core.interactionApi.likeAlbum("1") }
+        val favorites = kotlinx.coroutines.runBlocking { core.libraryApi.favoriteAlbums(page = 1, order = "mr") }
+
+        assertTrue(like is JmxResult.Success)
+        assertTrue(favorites is JmxResult.Success)
+        assertEquals("/like", server.takeRequest().path)
+        assertEquals("/favorite?page=1&o=mr&folder_id=0", server.takeRequest().path)
+    }
+
+    @Test
     fun initializerRefreshesDomainsThenFetchesSetting() {
         val ts = 1700566805L
         domainServer.enqueue(

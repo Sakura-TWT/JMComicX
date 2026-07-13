@@ -23,6 +23,16 @@ internal fun JsonObject.intOrNull(vararg names: String): Int? {
     return null
 }
 
+internal fun JsonObject.booleanOrNull(vararg names: String): Boolean? {
+    for (name in names) {
+        val value = get(name)
+        if (value != null && value.isJsonPrimitive) {
+            return runCatching { value.asBoolean }.getOrNull()
+        }
+    }
+    return null
+}
+
 internal fun JsonElement?.asObjectOrNull(): JsonObject? {
     return this?.takeIf { it.isJsonObject }?.asJsonObject
 }

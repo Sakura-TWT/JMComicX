@@ -13,6 +13,7 @@ enum class ApiRoute(
     Search("/search"),
     CategoriesFilter("/categories/filter"),
     Favorite("/favorite"),
+    FavoriteAction("/favorite", method = HttpMethod.Post),
     Like("/like", method = HttpMethod.Post),
     Promote("/promote"),
     Week("/week"),

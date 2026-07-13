@@ -2,6 +2,8 @@ package dev.jmx.client.core.runtime
 
 import dev.jmx.client.core.api.AlbumApi
 import dev.jmx.client.core.api.ChapterApi
+import dev.jmx.client.core.api.InteractionApi
+import dev.jmx.client.core.api.LibraryApi
 import dev.jmx.client.core.api.SettingApi
 import dev.jmx.client.core.api.UserApi
 import dev.jmx.client.core.cache.InMemoryKeyValueStore
@@ -48,6 +50,8 @@ class JmxCore private constructor(
     val chapterApi: ChapterApi,
     val settingApi: SettingApi,
     val userApi: UserApi,
+    val interactionApi: InteractionApi,
+    val libraryApi: LibraryApi,
     val domainRefresher: DomainRefresher,
     val initializer: JmxCoreInitializer,
     val downloader: BinaryDownloader,
@@ -94,6 +98,8 @@ class JmxCore private constructor(
             val chapterApi = ChapterApi(apiClient)
             val settingApi = SettingApi(apiClient, apiVersionProvider)
             val userApi = UserApi(apiClient, endpointManager, sessionManager)
+            val interactionApi = InteractionApi(apiClient)
+            val libraryApi = LibraryApi(apiClient)
             val domainRefresher = DomainRefresher(
                 endpointManager = endpointManager,
                 okHttpClient = okHttpClient,
@@ -110,6 +116,8 @@ class JmxCore private constructor(
                 chapterApi = chapterApi,
                 settingApi = settingApi,
                 userApi = userApi,
+                interactionApi = interactionApi,
+                libraryApi = libraryApi,
                 domainRefresher = domainRefresher,
                 initializer = JmxCoreInitializer(domainRefresher, settingApi),
                 downloader = downloader,
