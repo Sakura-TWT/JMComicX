@@ -60,4 +60,32 @@ class ImagePipeline {
             )
         }
     }
+
+    fun restoreRows(
+        source: ByteArray,
+        imageHeight: Int,
+        bytesPerRow: Int,
+        segmentCount: Int
+    ): ByteArray {
+        require(imageHeight >= 0) { "imageHeight must be >= 0" }
+        require(bytesPerRow >= 0) { "bytesPerRow must be >= 0" }
+        require(source.size == imageHeight * bytesPerRow) {
+            "source size ${source.size} does not match imageHeight * bytesPerRow ${imageHeight * bytesPerRow}"
+        }
+        val moves = restoreMoves(imageHeight, segmentCount)
+        if (moves.isEmpty()) return source.copyOf()
+        val restored = ByteArray(source.size)
+        for (move in moves) {
+            val sourceOffset = move.sourceY * bytesPerRow
+            val targetOffset = move.targetY * bytesPerRow
+            val length = move.height * bytesPerRow
+            source.copyInto(
+                destination = restored,
+                destinationOffset = targetOffset,
+                startIndex = sourceOffset,
+                endIndex = sourceOffset + length
+            )
+        }
+        return restored
+    }
 }

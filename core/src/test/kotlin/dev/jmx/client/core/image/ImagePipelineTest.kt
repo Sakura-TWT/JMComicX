@@ -1,6 +1,7 @@
 package dev.jmx.client.core.image
 
 import dev.jmx.client.core.crypto.JmxHash
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -53,5 +54,59 @@ class ImagePipelineTest {
     fun restoreMovesAreEmptyWhenImageDoesNotNeedRestore() {
         assertEquals(emptyList<ImageSegmentMove>(), ImagePipeline().restoreMoves(imageHeight = 100, segmentCount = 1))
         assertEquals(emptyList<ImageSegmentMove>(), ImagePipeline().restoreMoves(imageHeight = 0, segmentCount = 4))
+    }
+
+    @Test
+    fun restoreRowsAppliesReferenceMoves() {
+        val sourceRows = byteArrayOf(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+
+        val restored = ImagePipeline().restoreRows(
+            source = sourceRows,
+            imageHeight = 11,
+            bytesPerRow = 1,
+            segmentCount = 4
+        )
+
+        assertArrayEquals(
+            byteArrayOf(6, 7, 8, 9, 10, 4, 5, 2, 3, 0, 1),
+            restored
+        )
+    }
+
+    @Test
+    fun restoreRowsPreservesMultiByteRows() {
+        val sourceRows = byteArrayOf(
+            0, 10,
+            1, 11,
+            2, 12,
+            3, 13
+        )
+
+        val restored = ImagePipeline().restoreRows(
+            source = sourceRows,
+            imageHeight = 4,
+            bytesPerRow = 2,
+            segmentCount = 2
+        )
+
+        assertArrayEquals(
+            byteArrayOf(
+                2, 12,
+                3, 13,
+                0, 10,
+                1, 11
+            ),
+            restored
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun restoreRowsRejectsMismatchedBufferSize() {
+        ImagePipeline().restoreRows(
+            source = byteArrayOf(1, 2, 3),
+            imageHeight = 2,
+            bytesPerRow = 2,
+            segmentCount = 2
+        )
     }
 }
