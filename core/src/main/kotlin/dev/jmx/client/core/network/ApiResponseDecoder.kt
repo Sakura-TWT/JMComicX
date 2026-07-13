@@ -16,16 +16,14 @@ class ApiResponseDecoder(
 ) {
     fun decodeEncryptedEnvelope(body: String, tokenTimestampSeconds: Long): JmxResult<ApiEnvelope> {
         val root = parseJsonObject(body).unwrapOrReturn { return it }
-        val code = root["code"]?.asIntOrNull()
+        val code = root.apiCodeOrNull()
             ?: return JmxResult.Failure(JmxError.Schema("API 响应缺少 code 字段：${bodySampler.sample(body)}", field = "code"))
         if (code != 200) {
             return JmxResult.Success(
                 ApiEnvelope(
                     code = code,
                     data = null,
-                    errorMessage = root["errorMsg"]?.asStringOrNull()
-                        ?: root["msg"]?.asStringOrNull()
-                        ?: "接口返回错误：$code",
+                    errorMessage = root.apiErrorMessageOrNull() ?: defaultApiErrorMessage(code),
                     rawBody = body
                 )
             )
@@ -40,13 +38,13 @@ class ApiResponseDecoder(
 
     fun decodePlainEnvelope(body: String): JmxResult<ApiEnvelope> {
         val root = parseJsonObject(body).unwrapOrReturn { return it }
-        val code = root["code"]?.asIntOrNull()
+        val code = root.apiCodeOrNull()
             ?: return JmxResult.Failure(JmxError.Schema("API 响应缺少 code 字段：${bodySampler.sample(body)}", field = "code"))
         return JmxResult.Success(
             ApiEnvelope(
                 code = code,
                 data = root["data"],
-                errorMessage = root["errorMsg"]?.asStringOrNull() ?: root["msg"]?.asStringOrNull(),
+                errorMessage = root.apiErrorMessageOrNull(),
                 rawBody = body
             )
         )
@@ -87,6 +85,24 @@ class ApiResponseDecoder(
     private fun JsonElement.asStringOrNull(): String? {
         return takeIf { it.isJsonPrimitive }?.let { runCatching { it.asString }.getOrNull() }
     }
+
+    private fun JsonObject.apiCodeOrNull(): Int? {
+        return firstPrimitive("code", "status", "status_code")?.asIntOrNull()
+    }
+
+    private fun JsonObject.apiErrorMessageOrNull(): String? {
+        return firstPrimitive("errorMsg", "error_msg", "msg", "message", "error")
+            ?.asStringOrNull()
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun JsonObject.firstPrimitive(vararg names: String): JsonElement? {
+        return names.asSequence()
+            .mapNotNull { this[it] }
+            .firstOrNull { it.isJsonPrimitive }
+    }
+
+    private fun defaultApiErrorMessage(code: Int): String = "接口返回错误：$code"
 }
 
 class BodySampler(
