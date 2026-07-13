@@ -11,12 +11,13 @@ import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
 
 class ApiResponseDecoder(
-    private val gson: Gson = Gson()
+    private val gson: Gson = Gson(),
+    private val bodySampler: BodySampler = BodySampler()
 ) {
     fun decodeEncryptedEnvelope(body: String, tokenTimestampSeconds: Long): JmxResult<ApiEnvelope> {
         val root = parseJsonObject(body).unwrapOrReturn { return it }
         val code = root["code"]?.asIntOrNull()
-            ?: return JmxResult.Failure(JmxError.Schema("API 响应缺少 code 字段", field = "code"))
+            ?: return JmxResult.Failure(JmxError.Schema("API 响应缺少 code 字段：${bodySampler.sample(body)}", field = "code"))
         if (code != 200) {
             return JmxResult.Success(
                 ApiEnvelope(
@@ -30,7 +31,7 @@ class ApiResponseDecoder(
             )
         }
         val encryptedData = root["data"]?.asStringOrNull()
-            ?: return JmxResult.Failure(JmxError.Schema("API 响应缺少加密 data 字段", field = "data"))
+            ?: return JmxResult.Failure(JmxError.Schema("API 响应缺少加密 data 字段：${bodySampler.sample(body)}", field = "data"))
         val key = JmxHash.md5Hex("$tokenTimestampSeconds${JmxProtocolConstants.DataSecret}")
         val decrypted = AesEcbPkcs7.decryptBase64ToString(encryptedData, key).unwrapOrReturn { return it }
         val data = parseJsonElement(decrypted).unwrapOrReturn { return it }
@@ -40,7 +41,7 @@ class ApiResponseDecoder(
     fun decodePlainEnvelope(body: String): JmxResult<ApiEnvelope> {
         val root = parseJsonObject(body).unwrapOrReturn { return it }
         val code = root["code"]?.asIntOrNull()
-            ?: return JmxResult.Failure(JmxError.Schema("API 响应缺少 code 字段", field = "code"))
+            ?: return JmxResult.Failure(JmxError.Schema("API 响应缺少 code 字段：${bodySampler.sample(body)}", field = "code"))
         return JmxResult.Success(
             ApiEnvelope(
                 code = code,
@@ -63,7 +64,7 @@ class ApiResponseDecoder(
         return if (element.isJsonObject) {
             JmxResult.Success(element.asJsonObject)
         } else {
-            JmxResult.Failure(JmxError.Schema("响应不是 JSON Object"))
+            JmxResult.Failure(JmxError.Schema("响应不是 JSON Object：${bodySampler.sample(body)}"))
         }
     }
 
@@ -85,5 +86,19 @@ class ApiResponseDecoder(
 
     private fun JsonElement.asStringOrNull(): String? {
         return takeIf { it.isJsonPrimitive }?.let { runCatching { it.asString }.getOrNull() }
+    }
+}
+
+class BodySampler(
+    private val maxChars: Int = 160
+) {
+    fun sample(body: String): String {
+        return body
+            .replace(Regex("""(?i)(token|tokenparam|password|cookie|avs)["'=:\s]+[^,"'\s}]+""")) {
+                "${it.groupValues[1]}=<redacted>"
+            }
+            .lineSequence()
+            .joinToString(" ") { it.trim() }
+            .take(maxChars.coerceAtLeast(1))
     }
 }

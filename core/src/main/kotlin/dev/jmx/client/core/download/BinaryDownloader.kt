@@ -33,12 +33,29 @@ class BinaryDownloader(
                         )
                     }
                     val body = response.body
+                    val contentType = body.contentType()?.toString()
+                    if (!request.acceptedContentTypes.matches(contentType)) {
+                        return@withContext JmxResult.Failure(
+                            JmxError.Schema("下载响应类型不匹配：${contentType ?: "unknown"}", field = "content-type")
+                        )
+                    }
+                    val contentLength = body.contentLength()
+                    if (request.maxBytes != null && contentLength > request.maxBytes) {
+                        return@withContext JmxResult.Failure(
+                            JmxError.Schema("下载响应超过大小限制：$contentLength > ${request.maxBytes}", field = "content-length")
+                        )
+                    }
                     val buffer = ByteArray(bufferSize.coerceAtLeast(1))
                     var written = 0L
                     body.byteStream().use { stream ->
                         while (true) {
                             val read = stream.read(buffer)
                             if (read == -1) break
+                            if (request.maxBytes != null && written + read > request.maxBytes) {
+                                return@withContext JmxResult.Failure(
+                                    JmxError.Schema("下载数据超过大小限制：${written + read} > ${request.maxBytes}", field = "body")
+                                )
+                            }
                             sink.write(buffer.copyOf(read))
                             written += read
                         }
@@ -47,8 +64,8 @@ class BinaryDownloader(
                         DownloadResult(
                             url = response.request.url.toString(),
                             statusCode = response.code,
-                            contentType = body.contentType()?.toString(),
-                            contentLength = body.contentLength(),
+                            contentType = contentType,
+                            contentLength = contentLength,
                             bytesWritten = written
                         )
                     )
@@ -65,5 +82,14 @@ class BinaryDownloader(
 
     private companion object {
         const val DEFAULT_BUFFER_SIZE = 8 * 1024
+    }
+}
+
+private fun Set<String>.matches(contentType: String?): Boolean {
+    if (isEmpty()) return true
+    val actual = contentType?.substringBefore(';')?.trim()?.lowercase() ?: return false
+    return any { expected ->
+        val value = expected.substringBefore(';').trim().lowercase()
+        value == actual || value.endsWith("/*") && actual.startsWith("${value.substringBefore('/')}/")
     }
 }

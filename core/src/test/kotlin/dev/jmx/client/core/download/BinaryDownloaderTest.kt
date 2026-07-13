@@ -1,6 +1,7 @@
 package dev.jmx.client.core.download
 
 import dev.jmx.client.core.result.JmxResult
+import dev.jmx.client.core.result.JmxError
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -37,7 +38,11 @@ class BinaryDownloaderTest {
 
         val result = kotlinx.coroutines.runBlocking {
             BinaryDownloader(bufferSize = 2).download(
-                DownloadRequest(server.url("/image.webp").toString()),
+                DownloadRequest(
+                    url = server.url("/image.webp").toString(),
+                    acceptedContentTypes = setOf("image/*"),
+                    maxBytes = 10
+                ),
                 sink
             )
         }
@@ -47,5 +52,52 @@ class BinaryDownloaderTest {
         assertEquals(5L, value.bytesWritten)
         assertEquals("image/webp", value.contentType)
         assertArrayEquals(bytes, sink.bytes())
+    }
+
+    @Test
+    fun rejectsUnexpectedContentType() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/html")
+                .setBody("<html></html>")
+        )
+
+        val result = kotlinx.coroutines.runBlocking {
+            BinaryDownloader().download(
+                DownloadRequest(
+                    url = server.url("/image.webp").toString(),
+                    acceptedContentTypes = setOf("image/*")
+                ),
+                MemoryByteSink()
+            )
+        }
+
+        assertTrue(result is JmxResult.Failure)
+        assertTrue((result as JmxResult.Failure).error is JmxError.Schema)
+    }
+
+    @Test
+    fun rejectsBodyThatExceedsMaxBytes() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "image/webp")
+                .setBody("123456")
+        )
+
+        val result = kotlinx.coroutines.runBlocking {
+            BinaryDownloader(bufferSize = 4).download(
+                DownloadRequest(
+                    url = server.url("/image.webp").toString(),
+                    acceptedContentTypes = setOf("image/webp"),
+                    maxBytes = 5
+                ),
+                MemoryByteSink()
+            )
+        }
+
+        assertTrue(result is JmxResult.Failure)
+        assertTrue((result as JmxResult.Failure).error is JmxError.Schema)
     }
 }
