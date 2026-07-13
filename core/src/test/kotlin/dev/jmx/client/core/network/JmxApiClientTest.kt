@@ -86,6 +86,28 @@ class JmxApiClientTest {
     }
 
     @Test
+    fun successfulManualEndpointRequestCreatesHealthEntry() {
+        val ts = 1700566805L
+        val encrypted = AesEcbPkcs7.encryptStringToBase64(
+            plain = """{"name":"manual"}""",
+            key = JmxHash.md5Hex("$ts${JmxProtocolConstants.DataSecret}")
+        )
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"code":200,"data":"$encrypted"}"""))
+        val endpointManager = ApiEndpointManager(listOf("https://auto.test"))
+        endpointManager.useManualEndpoint(server.url("/").toString())
+        val client = createClient(ts, endpointManager = endpointManager)
+
+        val result = kotlinx.coroutines.runBlocking {
+            client.requestJson(ApiRequest(route = ApiRoute.Album))
+        }
+
+        assertTrue(result is JmxResult.Success)
+        val manualEndpoint = endpointManager.all().single { it.url == server.url("/") }
+        assertEquals(1, manualEndpoint.successCount)
+        assertTrue(manualEndpoint.lastLatencyMillis != null)
+    }
+
+    @Test
     fun encryptedRouteAcceptsPlainObjectDataEnvelope() {
         val ts = 1700566805L
         server.enqueue(MockResponse().setResponseCode(200).setBody("""{"code":200,"data":{"name":"plain"}}"""))

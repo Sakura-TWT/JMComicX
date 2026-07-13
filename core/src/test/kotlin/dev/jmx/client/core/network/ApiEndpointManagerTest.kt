@@ -169,4 +169,29 @@ class ApiEndpointManagerTest {
         manager.useAutoSelection()
         assertEquals("https://fresh.test/", (manager.current() as JmxResult.Success).value.toString())
     }
+
+    @Test
+    fun manualEndpointHealthIsTrackedWithoutPersistingToAutoHosts() {
+        var now = 1_000L
+        val stateStore = ProtocolStateStore(InMemoryKeyValueStore())
+        stateStore.updateApiHosts(listOf("https://auto.test"))
+        val manager = ApiEndpointManager(
+            initialHosts = listOf("https://auto.test"),
+            protocolStateStore = stateStore,
+            nowMillis = { now }
+        )
+        val manual = (manager.useManualEndpoint("manual.test") as JmxResult.Success).value
+
+        manager.markSuccess(manual, latencyMillis = 123)
+        now = 2_000L
+        manager.markFailure(manual, "manual failed")
+
+        val endpoint = manager.all().single { it.url.toString() == "https://manual.test/" }
+        assertEquals(1, endpoint.successCount)
+        assertEquals(1, endpoint.failureCount)
+        assertEquals(1, endpoint.consecutiveFailureCount)
+        assertEquals(123L, endpoint.lastLatencyMillis)
+        assertEquals("manual failed", endpoint.lastFailureMessage)
+        assertEquals(listOf("https://auto.test"), stateStore.apiHosts())
+    }
 }

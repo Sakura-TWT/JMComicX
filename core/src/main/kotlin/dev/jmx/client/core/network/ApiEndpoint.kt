@@ -109,7 +109,7 @@ class ApiEndpointManager(
     fun markSuccess(url: HttpUrl, latencyMillis: Long? = null) {
         val now = nowMillis()
         synchronized(lock) {
-            endpoints = endpoints.map {
+            endpoints = endpoints.ensureEndpoint(url).map {
                 if (it.url.endpointKey() == url.endpointKey()) {
                     val normalizedLatency = latencyMillis?.coerceAtLeast(0L)
                     it.copy(
@@ -138,7 +138,7 @@ class ApiEndpointManager(
     fun markFailure(url: HttpUrl, message: String?) {
         val now = nowMillis()
         synchronized(lock) {
-            endpoints = endpoints.map {
+            endpoints = endpoints.ensureEndpoint(url).map {
                 if (it.url.endpointKey() == url.endpointKey()) {
                     val consecutiveFailures = it.consecutiveFailureCount + 1
                     it.copy(
@@ -152,6 +152,14 @@ class ApiEndpointManager(
                     it
                 }
             }
+        }
+    }
+
+    private fun List<ApiEndpoint>.ensureEndpoint(url: HttpUrl): List<ApiEndpoint> {
+        return if (any { it.url.endpointKey() == url.endpointKey() }) {
+            this
+        } else {
+            this + ApiEndpoint(url)
         }
     }
 
