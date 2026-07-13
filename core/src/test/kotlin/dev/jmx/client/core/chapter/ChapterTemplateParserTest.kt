@@ -62,4 +62,41 @@ class ChapterTemplateParserTest {
         assertEquals(listOf("00001.webp"), value.imageFileNames)
         assertEquals("1", value.speed)
     }
+
+    @Test
+    fun parsesAssignmentsWithoutTrailingSemicolon() {
+        val html = """
+            const result = {"images":["00001.webp"]}
+            const config = {"imghost":"https://img.test","jmid":"654321","cache":"?v=2"}
+            let aid = 300000
+            let scramble_id = 1
+            let speed = "1"
+        """.trimIndent()
+
+        val result = parser.parse(html)
+
+        assertTrue(result is JmxResult.Success)
+        val value = (result as JmxResult.Success).value
+        assertEquals(300000, value.albumId)
+        assertEquals("https://img.test/media/photos/654321/00001.webp?v=2", value.imageUrls.single())
+    }
+
+    @Test
+    fun inspectsMissingTemplateFields() {
+        val html = """
+            const result = {"images":[]};
+            const config = {"imghost":"https://img.test"};
+            var aid = 300000;
+        """.trimIndent()
+
+        val inspection = parser.inspect(html)
+
+        assertTrue(inspection.hasResultObject)
+        assertTrue(inspection.hasConfigObject)
+        assertEquals(0, inspection.imageCount)
+        assertEquals(
+            listOf("result.images", "config.jmid", "config.cache", "scramble_id", "speed"),
+            inspection.missingFields
+        )
+    }
 }
