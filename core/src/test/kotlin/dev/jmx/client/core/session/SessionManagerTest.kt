@@ -18,7 +18,9 @@ class SessionManagerTest {
         assertTrue(result is JmxResult.Success)
         assertEquals(1, store.load("https://api.test/album".toHttpUrl()).size)
         assertEquals(0, store.load("https://other.test/album".toHttpUrl()).size)
+        assertEquals(0, store.load("https://sub.api.test/album".toHttpUrl()).size)
         assertEquals("AVS", session.cookies().single().name)
+        assertTrue(session.cookies().single().hostOnly)
     }
 
     @Test
@@ -34,6 +36,25 @@ class SessionManagerTest {
         assertEquals(1, store.load("https://api.test/album".toHttpUrl()).size)
         assertEquals(1, store.load("https://first.test/album".toHttpUrl()).size)
         assertEquals(1, store.load("https://second.test/album".toHttpUrl()).size)
+    }
+
+    @Test
+    fun syncsAvsCookieOnlyWhenPresent() {
+        val store = InMemoryCookieStore()
+        val session = SessionManager(store)
+
+        val empty = session.syncAvsCookieToHostsIfPresent(listOf("https://first.test"))
+
+        assertTrue(empty is JmxResult.Success)
+        assertEquals(0, (empty as JmxResult.Success).value.size)
+        assertEquals(0, session.cookies().size)
+
+        session.installAvsCookie("https://api.test", "secret")
+        val synced = session.syncAvsCookieToHostsIfPresent(listOf("https://first.test"))
+
+        assertTrue(synced is JmxResult.Success)
+        assertEquals(1, (synced as JmxResult.Success).value.size)
+        assertEquals(1, store.load("https://first.test/album".toHttpUrl()).size)
     }
 
     @Test

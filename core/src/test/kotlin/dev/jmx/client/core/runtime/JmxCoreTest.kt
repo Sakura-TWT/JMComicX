@@ -134,6 +134,7 @@ class JmxCoreTest {
                 domainServerUrls = listOf(domainServer.url("/domains").toString())
             )
         )
+        core.sessionManager.installAvsCookie("https://old.test", "secret")
 
         val result = kotlinx.coroutines.runBlocking { core.initializer.initialize() }
 
@@ -142,7 +143,10 @@ class JmxCoreTest {
         assertTrue(result.isFullySuccessful)
         assertEquals("2.2.0", core.protocolStateStore.apiVersion())
         assertEquals(server.url("/").toString(), core.protocolStateStore.apiHosts().single())
-        assertEquals("/setting", server.takeRequest().path)
+        assertEquals(2, core.sessionManager.cookies().count { it.value == "secret" })
+        val settingRequest = server.takeRequest()
+        assertEquals("AVS=secret", settingRequest.headers["Cookie"])
+        assertEquals("/setting", settingRequest.path)
     }
 
     @Test

@@ -6,6 +6,7 @@ import dev.jmx.client.core.crypto.JmxHash
 import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
+import dev.jmx.client.core.session.SessionManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -64,7 +65,8 @@ class DomainRefresher(
     private val endpointManager: ApiEndpointManager,
     private val okHttpClient: OkHttpClient = defaultOkHttpClient(),
     private val decoder: DomainServerDecoder = DomainServerDecoder(),
-    private val serverUrls: List<String> = JmxProtocolConstants.DomainServerUrls
+    private val serverUrls: List<String> = JmxProtocolConstants.DomainServerUrls,
+    private val sessionManager: SessionManager? = null
 ) {
     suspend fun refresh(): JmxResult<List<ApiEndpoint>> = withContext(Dispatchers.IO) {
         var lastError: JmxError? = null
@@ -74,7 +76,16 @@ class DomainRefresher(
             when (result) {
                 is JmxResult.Success -> {
                     attempts += DomainRefreshAttempt(url, success = true, message = "${result.value.apiHosts.size} hosts")
-                    return@withContext endpointManager.replaceAll(result.value.apiHosts)
+                    val endpoints = when (val replaced = endpointManager.replaceAll(result.value.apiHosts)) {
+                        is JmxResult.Success -> replaced.value
+                        is JmxResult.Failure -> return@withContext replaced
+                    }
+                    when (val synced = sessionManager?.syncAvsCookieToHostsIfPresent(endpoints.map { it.url.toString() })) {
+                        is JmxResult.Failure -> return@withContext synced
+                        is JmxResult.Success,
+                        null -> Unit
+                    }
+                    return@withContext JmxResult.Success(endpoints)
                 }
                 is JmxResult.Failure -> {
                     lastError = result.error

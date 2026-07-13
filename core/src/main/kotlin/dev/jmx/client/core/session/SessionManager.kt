@@ -21,7 +21,7 @@ class SessionManager(
         val cookie = Cookie.Builder()
             .name("AVS")
             .value(avs)
-            .domain(url.host)
+            .hostOnlyDomain(url.host)
             .path("/")
             .httpOnly()
             .build()
@@ -44,7 +44,25 @@ class SessionManager(
         return JmxResult.Success(installed)
     }
 
+    fun syncAvsCookieToHostsIfPresent(apiHosts: List<String>): JmxResult<List<Cookie>> {
+        val avs = currentAvsValue() ?: return JmxResult.Success(emptyList())
+        val installed = mutableListOf<Cookie>()
+        for (host in apiHosts) {
+            when (val result = installAvsCookie(host, avs)) {
+                is JmxResult.Success -> installed += result.value
+                is JmxResult.Failure -> return result
+            }
+        }
+        return JmxResult.Success(installed)
+    }
+
     fun cookies(): List<Cookie> = cookieStore.snapshot()
+
+    private fun currentAvsValue(): String? {
+        return cookieStore.snapshot()
+            .firstOrNull { it.name.equals(AVS_COOKIE_NAME, ignoreCase = true) }
+            ?.value
+    }
 
     private companion object {
         const val AVS_COOKIE_NAME = "AVS"

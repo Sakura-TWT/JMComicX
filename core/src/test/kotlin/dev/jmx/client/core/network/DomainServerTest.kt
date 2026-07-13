@@ -7,6 +7,9 @@ import dev.jmx.client.core.crypto.JmxHash
 import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
+import dev.jmx.client.core.session.InMemoryCookieStore
+import dev.jmx.client.core.session.SessionManager
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -60,6 +63,29 @@ class DomainServerTest {
         assertEquals("https://www.a.test/", manager.all()[0].url.toString())
         assertEquals("https://www.b.test/", manager.all()[1].url.toString())
         assertEquals(listOf("https://www.a.test/", "https://www.b.test/"), stateStore.apiHosts())
+    }
+
+    @Test
+    fun refreshSyncsExistingAvsCookieToNewEndpoints() {
+        val encrypted = encrypt("""{"Server":["www.a.test","https://www.b.test"]}""")
+        server.enqueue(MockResponse().setResponseCode(200).setBody(encrypted))
+        val manager = ApiEndpointManager(initialHosts = listOf("old.test"))
+        val cookieStore = InMemoryCookieStore()
+        val sessionManager = SessionManager(cookieStore)
+        sessionManager.installAvsCookie("https://old.test", "secret")
+        val refresher = DomainRefresher(
+            endpointManager = manager,
+            serverUrls = listOf(server.url("/domains").toString()),
+            sessionManager = sessionManager
+        )
+
+        val result = kotlinx.coroutines.runBlocking { refresher.refresh() }
+
+        assertTrue(result is JmxResult.Success)
+        assertEquals(1, cookieStore.load("https://old.test/album".toHttpUrl()).size)
+        assertEquals(1, cookieStore.load("https://www.a.test/album".toHttpUrl()).size)
+        assertEquals(1, cookieStore.load("https://www.b.test/album".toHttpUrl()).size)
+        assertEquals(0, cookieStore.load("https://sub.www.a.test/album".toHttpUrl()).size)
     }
 
     @Test

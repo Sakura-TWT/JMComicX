@@ -113,7 +113,8 @@ class JmxCore private constructor(
             val domainRefresher = DomainRefresher(
                 endpointManager = endpointManager,
                 okHttpClient = okHttpClient,
-                serverUrls = config.domainServerUrls
+                serverUrls = config.domainServerUrls,
+                sessionManager = sessionManager
             )
             return JmxCore(
                 protocolStateStore = protocolStateStore,
