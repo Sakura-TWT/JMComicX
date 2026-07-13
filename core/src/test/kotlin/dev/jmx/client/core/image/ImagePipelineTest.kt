@@ -33,4 +33,25 @@ class ImagePipelineTest {
         assertEquals(0, plan.segmentCount)
         assertFalse(plan.requiresRestore)
     }
+
+    @Test
+    fun restoreMovesMatchReferenceScrambleGeometry() {
+        val moves = ImagePipeline().restoreMoves(imageHeight = 11, segmentCount = 4)
+
+        assertEquals(
+            listOf(
+                ImageSegmentMove(sourceY = 6, targetY = 0, height = 5),
+                ImageSegmentMove(sourceY = 4, targetY = 5, height = 2),
+                ImageSegmentMove(sourceY = 2, targetY = 7, height = 2),
+                ImageSegmentMove(sourceY = 0, targetY = 9, height = 2)
+            ),
+            moves
+        )
+    }
+
+    @Test
+    fun restoreMovesAreEmptyWhenImageDoesNotNeedRestore() {
+        assertEquals(emptyList<ImageSegmentMove>(), ImagePipeline().restoreMoves(imageHeight = 100, segmentCount = 1))
+        assertEquals(emptyList<ImageSegmentMove>(), ImagePipeline().restoreMoves(imageHeight = 0, segmentCount = 4))
+    }
 }

@@ -44,4 +44,22 @@ class ChapterTemplateParserTest {
 
         assertTrue(result is JmxResult.Failure)
     }
+
+    @Test
+    fun parsesNestedObjectsWithoutTruncatingResult() {
+        val html = """
+            var result = {"images":["00001.webp"],"meta":{"nested":true}};
+            var config = {"imghost":"https://img.test","jmid":"654321","cache":""};
+            var aid = 300000;
+            var scramble_id = 1;
+            var speed = "1";
+        """.trimIndent()
+
+        val result = parser.parse(html)
+
+        assertTrue(result is JmxResult.Success)
+        val value = (result as JmxResult.Success).value
+        assertEquals(listOf("00001.webp"), value.imageFileNames)
+        assertEquals("1", value.speed)
+    }
 }

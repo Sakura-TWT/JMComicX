@@ -55,8 +55,7 @@ class ChapterTemplateParser(
     }
 
     private fun extractObject(html: String, name: String): JmxResult<JsonObject> {
-        val regex = Regex("""(?:const|let|var)\s+$name\s*=\s*(\{[\s\S]*?});""")
-        val json = regex.find(html)?.groupValues?.getOrNull(1)
+        val json = extractAssignedObject(html, name)
             ?: return JmxResult.Failure(JmxError.Schema("章节模板缺少 $name 对象", field = name))
         return runCatching { gson.fromJson(json, JsonObject::class.java) }.fold(
             onSuccess = { JmxResult.Success(it) },
@@ -92,5 +91,35 @@ class ChapterTemplateParser(
             is JmxResult.Success -> value
             is JmxResult.Failure -> returnFailure(this)
         }
+    }
+
+    private fun extractAssignedObject(html: String, name: String): String? {
+        val assignment = Regex("""(?:const|let|var)\s+$name\s*=""").find(html) ?: return null
+        val start = html.indexOf('{', assignment.range.last + 1).takeIf { it >= 0 } ?: return null
+        var depth = 0
+        var inString: Char? = null
+        var escaping = false
+        for (index in start until html.length) {
+            val char = html[index]
+            if (inString != null) {
+                if (escaping) {
+                    escaping = false
+                } else if (char == '\\') {
+                    escaping = true
+                } else if (char == inString) {
+                    inString = null
+                }
+                continue
+            }
+            when (char) {
+                '\'', '"' -> inString = char
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return html.substring(start, index + 1)
+                }
+            }
+        }
+        return null
     }
 }
