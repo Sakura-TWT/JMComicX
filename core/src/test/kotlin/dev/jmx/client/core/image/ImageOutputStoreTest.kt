@@ -56,6 +56,8 @@ class ImageOutputStoreTest {
         assertEquals(1, stored.single().item.index)
         assertTrue(stored.single().result is JmxResult.Success)
         assertEquals("00002", stored.single().item.outputKey.filename)
+        assertEquals("00002.gif", stored.single().item.outputKey.displayFilename)
+        assertEquals("gif", stored.single().item.outputKey.extension)
         assertArrayEquals(byteArrayOf(7, 8), store.bytes(stored.single().item.outputKey))
     }
 

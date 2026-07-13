@@ -60,10 +60,18 @@ class FileImageOutputStore(
     fun path(key: ImageOutputKey): Path? = synchronized(lock) { paths[key] }
 
     private fun ImageOutputKey.toFileName(contentType: String?): String {
-        val extension = extensionFromContentType(contentType) ?: "img"
-        val safeName = filename.replace(Regex("""[^A-Za-z0-9._-]"""), "_").ifBlank { "image" }
+        val extension = extension?.toSafeExtension()
+            ?: extensionFromContentType(contentType)
+            ?: "img"
+        val name = displayFilename.substringBeforeLast('.', displayFilename).ifBlank { filename }
+        val safeName = name.replace(Regex("""[^A-Za-z0-9._-]"""), "_").ifBlank { "image" }
         val cachePrefix = cacheKey.take(12).replace(Regex("""[^A-Za-z0-9._-]"""), "_")
         return "${index.toString().padStart(5, '0')}_${safeName}_$cachePrefix.$extension"
+    }
+
+    private fun String.toSafeExtension(): String? {
+        val safe = lowercase().replace(Regex("""[^a-z0-9]"""), "")
+        return safe.takeIf { it.isNotBlank() && it.length <= 8 }
     }
 
     private fun extensionFromContentType(contentType: String?): String? {

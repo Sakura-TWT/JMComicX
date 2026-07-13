@@ -67,6 +67,39 @@ class FileImageOutputStoreTest {
         assertEquals("00001_image_cache.img", path.fileName.toString())
     }
 
+    @Test
+    fun samePageWithDifferentQueryWritesDistinctFiles() {
+        val directory = Files.createTempDirectory("jmx-images")
+        val store = FileImageOutputStore(directory)
+        val first = restoreResult(
+            "https://img.test/media/photos/123/00001.webp?cache=a",
+            byteArrayOf(1),
+            contentType = null,
+            restored = true
+        )
+        val second = restoreResult(
+            "https://img.test/media/photos/123/00001.webp?cache=b",
+            byteArrayOf(2),
+            contentType = null,
+            restored = true
+        )
+        val firstKey = ImageStoreBatchItem(index = 0, result = first).outputKey
+        val secondKey = ImageStoreBatchItem(index = 0, result = second).outputKey
+
+        val firstStored = store.putFile(firstKey, first)
+        val secondStored = store.putFile(secondKey, second)
+
+        assertTrue(firstStored is JmxResult.Success)
+        assertTrue(secondStored is JmxResult.Success)
+        val firstPath = (firstStored as JmxResult.Success).value.path
+        val secondPath = (secondStored as JmxResult.Success).value.path
+        assertTrue(firstPath != secondPath)
+        assertEquals("webp", firstKey.extension)
+        assertEquals("00001.webp", firstKey.displayFilename)
+        assertArrayEquals(byteArrayOf(1), Files.readAllBytes(firstPath))
+        assertArrayEquals(byteArrayOf(2), Files.readAllBytes(secondPath))
+    }
+
     private fun restoreResult(
         url: String,
         bytes: ByteArray,

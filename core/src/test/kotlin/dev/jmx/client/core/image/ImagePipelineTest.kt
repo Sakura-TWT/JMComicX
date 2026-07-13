@@ -15,6 +15,8 @@ class ImagePipelineTest {
         val plan = ImagePipeline().plan(url, albumId = 300000, scrambleId = 1)
 
         assertEquals("00001", plan.filename)
+        assertEquals("webp", plan.extension)
+        assertEquals("00001.webp", plan.displayFilename)
         assertFalse(plan.isGif)
         assertTrue(plan.segmentCount > 1)
         assertTrue(plan.requiresRestore)
@@ -30,6 +32,8 @@ class ImagePipelineTest {
         )
 
         assertEquals("00002", plan.filename)
+        assertEquals("gif", plan.extension)
+        assertEquals("00002.gif", plan.displayFilename)
         assertTrue(plan.isGif)
         assertEquals(0, plan.segmentCount)
         assertFalse(plan.requiresRestore)

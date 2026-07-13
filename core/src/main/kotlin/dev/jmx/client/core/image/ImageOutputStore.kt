@@ -5,7 +5,9 @@ import dev.jmx.client.core.result.JmxResult
 data class ImageOutputKey(
     val index: Int,
     val filename: String,
-    val cacheKey: String
+    val cacheKey: String,
+    val displayFilename: String = filename,
+    val extension: String? = null
 )
 
 data class ImageOutputRecord(
@@ -70,7 +72,9 @@ data class ImageStoreBatchItem(
     val outputKey: ImageOutputKey = ImageOutputKey(
         index = index,
         filename = result.plan.filename,
-        cacheKey = result.plan.cacheKey
+        cacheKey = result.plan.cacheKey,
+        displayFilename = result.plan.displayFilename,
+        extension = result.plan.extension
     )
 }
 

@@ -22,16 +22,30 @@ object ImageScramble {
     }
 
     fun imageFilename(url: String): String {
-        val httpUrl = url.toHttpUrlOrNull()
-        val lastSegment = httpUrl?.pathSegments?.lastOrNull()?.takeIf { it.isNotBlank() }
-            ?: url.substringAfterLast('/').substringBefore('?').substringBefore('#')
+        val lastSegment = imageLastPathSegment(url)
         return lastSegment.substringBeforeLast('.', lastSegment)
     }
 
+    fun imageExtension(url: String): String? {
+        val lastSegment = imageLastPathSegment(url)
+        return lastSegment
+            .substringAfterLast('.', missingDelimiterValue = "")
+            .takeIf { it.isNotBlank() && it != lastSegment }
+            ?.lowercase()
+    }
+
+    fun imageDisplayFilename(url: String): String {
+        val lastSegment = imageLastPathSegment(url)
+        return lastSegment.takeIf { it.isNotBlank() } ?: imageFilename(url)
+    }
+
     fun isGif(url: String): Boolean {
+        return imageExtension(url).equals("gif", ignoreCase = true)
+    }
+
+    private fun imageLastPathSegment(url: String): String {
         val httpUrl = url.toHttpUrlOrNull()
-        val lastSegment = httpUrl?.pathSegments?.lastOrNull()
+        return httpUrl?.pathSegments?.lastOrNull()?.takeIf { it.isNotBlank() }
             ?: url.substringAfterLast('/').substringBefore('?').substringBefore('#')
-        return lastSegment.substringAfterLast('.', "").equals("gif", ignoreCase = true)
     }
 }

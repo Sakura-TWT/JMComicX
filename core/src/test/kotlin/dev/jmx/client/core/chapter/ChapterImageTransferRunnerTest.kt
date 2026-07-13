@@ -49,6 +49,8 @@ class ChapterImageTransferRunnerTest {
         assertEquals(listOf(0, 1), report.storeResults.map { it.item.index })
         val firstKey = report.storeResults.first().item.outputKey
         assertEquals("00001", firstKey.filename)
+        assertEquals("00001.gif", firstKey.displayFilename)
+        assertEquals("gif", firstKey.extension)
         assertArrayEquals("00001.gif".encodeToByteArray(), store.bytes(firstKey))
     }
 

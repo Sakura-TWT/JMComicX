@@ -21,6 +21,8 @@ class ImageScrambleTest {
         val url = "https://img.test/media/photos/123/00001.gif?cache=abc"
 
         assertEquals("00001", ImageScramble.imageFilename(url))
+        assertEquals("gif", ImageScramble.imageExtension(url))
+        assertEquals("00001.gif", ImageScramble.imageDisplayFilename(url))
         assertTrue(ImageScramble.isGif(url))
         assertFalse(ImageScramble.isGif("https://img.test/00002.webp?x=1"))
     }

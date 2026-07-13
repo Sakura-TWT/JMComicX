@@ -295,6 +295,8 @@ class JmxCoreTest {
         assertEquals("00001", record.key.filename)
         assertTrue(record.restored)
         assertArrayEquals(restored.bytes, outputStore.bytes(record.key))
+        assertEquals("00001.webp", record.key.displayFilename)
+        assertEquals("webp", record.key.extension)
         assertEquals("2.5.2", report.health.apiVersion)
         assertEquals(1, report.health.cookieCount)
         assertEquals("/setting", server.takeRequest().path)

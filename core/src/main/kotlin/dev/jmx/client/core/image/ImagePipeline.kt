@@ -7,6 +7,8 @@ data class ImagePlan(
     val albumId: Int,
     val scrambleId: Int,
     val filename: String,
+    val extension: String?,
+    val displayFilename: String,
     val isGif: Boolean,
     val segmentCount: Int,
     val cacheKey: String
@@ -23,6 +25,8 @@ data class ImageSegmentMove(
 class ImagePipeline {
     fun plan(sourceUrl: String, albumId: Int, scrambleId: Int): ImagePlan {
         val filename = ImageScramble.imageFilename(sourceUrl)
+        val extension = ImageScramble.imageExtension(sourceUrl)
+        val displayFilename = ImageScramble.imageDisplayFilename(sourceUrl)
         val isGif = ImageScramble.isGif(sourceUrl)
         val segmentCount = if (isGif) {
             0
@@ -34,6 +38,8 @@ class ImagePipeline {
             albumId = albumId,
             scrambleId = scrambleId,
             filename = filename,
+            extension = extension,
+            displayFilename = displayFilename,
             isGif = isGif,
             segmentCount = segmentCount,
             cacheKey = JmxHash.md5Hex(sourceUrl)
