@@ -73,6 +73,8 @@ class JmxCore private constructor(
                     consecutiveFailureCount = it.consecutiveFailureCount,
                     lastSuccessAtMillis = it.lastSuccessAtMillis,
                     lastFailureAtMillis = it.lastFailureAtMillis,
+                    lastLatencyMillis = it.lastLatencyMillis,
+                    averageLatencyMillis = it.averageLatencyMillis,
                     unavailableUntilMillis = it.unavailableUntilMillis,
                     healthScore = it.healthScore(nowMillis),
                     isAvailable = it.isAvailableAt(nowMillis),

@@ -15,6 +15,8 @@ data class EndpointHealth(
     val consecutiveFailureCount: Int,
     val lastSuccessAtMillis: Long?,
     val lastFailureAtMillis: Long?,
+    val lastLatencyMillis: Long?,
+    val averageLatencyMillis: Long?,
     val unavailableUntilMillis: Long?,
     val healthScore: Int,
     val isAvailable: Boolean,

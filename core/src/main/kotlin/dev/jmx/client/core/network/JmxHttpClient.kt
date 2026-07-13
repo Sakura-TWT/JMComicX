@@ -32,9 +32,10 @@ class JmxHttpClient(
                 is JmxResult.Success -> current.value
                 is JmxResult.Failure -> return current
             }
+            val startedAt = System.nanoTime()
             when (val result = executeOnce(baseUrl, request)) {
                 is JmxResult.Success -> {
-                    endpointManager.markSuccess(baseUrl)
+                    endpointManager.markSuccess(baseUrl, elapsedMillisSince(startedAt))
                     return result
                 }
                 is JmxResult.Failure -> {
@@ -48,6 +49,10 @@ class JmxHttpClient(
             }
         }
         return JmxResult.Failure(lastError ?: JmxError.Network("请求失败，未获得有效响应"))
+    }
+
+    private fun elapsedMillisSince(startedAtNanos: Long): Long {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos).coerceAtLeast(0L)
     }
 
     private suspend fun executeOnce(baseUrl: HttpUrl, apiRequest: ApiRequest): JmxResult<RawNetworkResponse> =

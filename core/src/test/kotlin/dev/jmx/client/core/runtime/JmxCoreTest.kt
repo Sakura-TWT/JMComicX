@@ -189,6 +189,7 @@ class JmxCoreTest {
             )
         )
         core.endpointManager.markFailure("https://api-a.test/".toHttpUrl(), "timeout")
+        core.endpointManager.markSuccess("https://api-b.test/".toHttpUrl(), latencyMillis = 750)
         core.sessionManager.installAvsCookie("https://api-a.test", "secret")
 
         val health = core.healthSnapshot()
@@ -202,6 +203,8 @@ class JmxCoreTest {
         assertTrue(health.endpoints[0].unavailableUntilMillis == null)
         assertTrue(health.endpoints[0].isAvailable)
         assertEquals("timeout", health.endpoints[0].lastFailureMessage)
+        assertEquals(750L, health.endpoints[1].lastLatencyMillis)
+        assertEquals(750L, health.endpoints[1].averageLatencyMillis)
         assertEquals(1, health.cookieCount)
         assertEquals(domainUrls, health.domainServerUrls)
         assertEquals(7, health.downloadConcurrency)

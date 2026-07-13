@@ -14,6 +14,8 @@ data class ApiEndpoint(
     val consecutiveFailureCount: Int = 0,
     val lastSuccessAtMillis: Long? = null,
     val lastFailureAtMillis: Long? = null,
+    val lastLatencyMillis: Long? = null,
+    val averageLatencyMillis: Long? = null,
     val unavailableUntilMillis: Long? = null,
     val lastFailureMessage: String? = null
 ) {
@@ -26,7 +28,8 @@ data class ApiEndpoint(
         val successBonus = successCount.coerceAtMost(10) * 3
         val failurePenalty = failureCount.coerceAtMost(20) * 4
         val consecutivePenalty = consecutiveFailureCount.coerceAtMost(10) * 30
-        return 100 + successBonus - failurePenalty - consecutivePenalty
+        val latencyPenalty = ((averageLatencyMillis ?: 0L) / 250L).coerceAtMost(20L).toInt()
+        return 100 + successBonus - failurePenalty - consecutivePenalty - latencyPenalty
     }
 }
 
@@ -68,16 +71,19 @@ class ApiEndpointManager(
         return JmxResult.Success(all())
     }
 
-    fun markSuccess(url: HttpUrl) {
+    fun markSuccess(url: HttpUrl, latencyMillis: Long? = null) {
         val now = nowMillis()
         synchronized(lock) {
             endpoints = endpoints.map {
                 if (it.url.endpointKey() == url.endpointKey()) {
+                    val normalizedLatency = latencyMillis?.coerceAtLeast(0L)
                     it.copy(
                         successCount = it.successCount + 1,
                         failureCount = 0,
                         consecutiveFailureCount = 0,
                         lastSuccessAtMillis = now,
+                        lastLatencyMillis = normalizedLatency ?: it.lastLatencyMillis,
+                        averageLatencyMillis = it.nextAverageLatency(normalizedLatency),
                         unavailableUntilMillis = null,
                         lastFailureMessage = null
                     )
@@ -86,6 +92,12 @@ class ApiEndpointManager(
                 }
             }
         }
+    }
+
+    private fun ApiEndpoint.nextAverageLatency(latencyMillis: Long?): Long? {
+        if (latencyMillis == null) return averageLatencyMillis
+        val current = averageLatencyMillis ?: return latencyMillis
+        return (current * 7 + latencyMillis) / 8
     }
 
     fun markFailure(url: HttpUrl, message: String?) {

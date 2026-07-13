@@ -91,4 +91,25 @@ class ApiEndpointManagerTest {
         assertEquals(null, restored.lastFailureMessage)
         assertEquals("https://first.test/", (manager.current() as JmxResult.Success).value.toString())
     }
+
+    @Test
+    fun successTracksLatencyWithWeightedAverage() {
+        var now = 1_000L
+        val manager = ApiEndpointManager(
+            initialHosts = listOf("https://first.test", "https://second.test"),
+            nowMillis = { now }
+        )
+        val first = manager.all()[0].url
+
+        manager.markSuccess(first, latencyMillis = 800)
+        now = 2_000L
+        manager.markSuccess(first, latencyMillis = 1600)
+
+        val endpoint = manager.all()[0]
+        assertEquals(2, endpoint.successCount)
+        assertEquals(1600L, endpoint.lastLatencyMillis)
+        assertEquals(900L, endpoint.averageLatencyMillis)
+        assertEquals(2_000L, endpoint.lastSuccessAtMillis)
+        assertTrue(endpoint.healthScore(now) < manager.all()[1].healthScore(now) + 10)
+    }
 }
