@@ -28,6 +28,7 @@ class BinaryDownloaderTest {
     @Test
     fun writesResponseBytesToSink() {
         val bytes = byteArrayOf(1, 2, 3, 4, 5)
+        val events = mutableListOf<DownloadEvent>()
         server.enqueue(
             MockResponse()
                 .setResponseCode(200)
@@ -41,7 +42,8 @@ class BinaryDownloaderTest {
                 DownloadRequest(
                     url = server.url("/image.webp").toString(),
                     acceptedContentTypes = setOf("image/*"),
-                    maxBytes = 10
+                    maxBytes = 10,
+                    observer = events::add
                 ),
                 sink
             )
@@ -52,10 +54,14 @@ class BinaryDownloaderTest {
         assertEquals(5L, value.bytesWritten)
         assertEquals("image/webp", value.contentType)
         assertArrayEquals(bytes, sink.bytes())
+        assertTrue(events[0] is DownloadEvent.Started)
+        assertEquals(listOf(2L, 4L, 5L), events.filterIsInstance<DownloadEvent.Progress>().map { it.bytesRead })
+        assertTrue(events.last() is DownloadEvent.Completed)
     }
 
     @Test
     fun rejectsUnexpectedContentType() {
+        val events = mutableListOf<DownloadEvent>()
         server.enqueue(
             MockResponse()
                 .setResponseCode(200)
@@ -67,7 +73,8 @@ class BinaryDownloaderTest {
             BinaryDownloader().download(
                 DownloadRequest(
                     url = server.url("/image.webp").toString(),
-                    acceptedContentTypes = setOf("image/*")
+                    acceptedContentTypes = setOf("image/*"),
+                    observer = events::add
                 ),
                 MemoryByteSink()
             )
@@ -75,6 +82,8 @@ class BinaryDownloaderTest {
 
         assertTrue(result is JmxResult.Failure)
         assertTrue((result as JmxResult.Failure).error is JmxError.Schema)
+        assertTrue(events.first() is DownloadEvent.Started)
+        assertTrue(events.last() is DownloadEvent.Failed)
     }
 
     @Test

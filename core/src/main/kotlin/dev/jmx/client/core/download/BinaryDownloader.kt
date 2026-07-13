@@ -19,6 +19,7 @@ class BinaryDownloader(
 ) : Downloader {
     override suspend fun download(request: DownloadRequest, sink: ByteSink): JmxResult<DownloadResult> =
         withContext(Dispatchers.IO) {
+            request.observer.onEvent(DownloadEvent.Started(request.url))
             runCatching {
                 val httpRequest = Request.Builder()
                     .url(request.url)
@@ -29,25 +30,33 @@ class BinaryDownloader(
                     .build()
                 okHttpClient.newCall(httpRequest).execute().use { response ->
                     if (!response.isSuccessful) {
+                        val error = JmxError.Http(
+                            code = response.code,
+                            message = "下载请求失败：${response.code}"
+                        )
+                        request.observer.onEvent(DownloadEvent.Failed(request.url, error))
                         return@withContext JmxResult.Failure(
-                            JmxError.Http(
-                                code = response.code,
-                                message = "下载请求失败：${response.code}"
-                            )
+                            error
                         )
                     }
                     val body = response.body
                     val contentType = body.contentType()?.toString()
                     if (!request.acceptedContentTypes.matches(contentType)) {
-                        return@withContext JmxResult.Failure(
-                            JmxError.Schema("下载响应类型不匹配：${contentType ?: "unknown"}", field = "content-type")
+                        val error = JmxError.Schema(
+                            "下载响应类型不匹配：${contentType ?: "unknown"}",
+                            field = "content-type"
                         )
+                        request.observer.onEvent(DownloadEvent.Failed(request.url, error))
+                        return@withContext JmxResult.Failure(error)
                     }
                     val contentLength = body.contentLength()
                     if (request.maxBytes != null && contentLength > request.maxBytes) {
-                        return@withContext JmxResult.Failure(
-                            JmxError.Schema("下载响应超过大小限制：$contentLength > ${request.maxBytes}", field = "content-length")
+                        val error = JmxError.Schema(
+                            "下载响应超过大小限制：$contentLength > ${request.maxBytes}",
+                            field = "content-length"
                         )
+                        request.observer.onEvent(DownloadEvent.Failed(request.url, error))
+                        return@withContext JmxResult.Failure(error)
                     }
                     val buffer = ByteArray(bufferSize.coerceAtLeast(1))
                     var written = 0L
@@ -56,23 +65,33 @@ class BinaryDownloader(
                             val read = stream.read(buffer)
                             if (read == -1) break
                             if (request.maxBytes != null && written + read > request.maxBytes) {
-                                return@withContext JmxResult.Failure(
-                                    JmxError.Schema("下载数据超过大小限制：${written + read} > ${request.maxBytes}", field = "body")
+                                val error = JmxError.Schema(
+                                    "下载数据超过大小限制：${written + read} > ${request.maxBytes}",
+                                    field = "body"
                                 )
+                                request.observer.onEvent(DownloadEvent.Failed(request.url, error))
+                                return@withContext JmxResult.Failure(error)
                             }
                             sink.write(buffer.copyOf(read))
                             written += read
+                            request.observer.onEvent(
+                                DownloadEvent.Progress(
+                                    url = request.url,
+                                    bytesRead = written,
+                                    contentLength = contentLength
+                                )
+                            )
                         }
                     }
-                    JmxResult.Success(
-                        DownloadResult(
-                            url = response.request.url.toString(),
-                            statusCode = response.code,
-                            contentType = contentType,
-                            contentLength = contentLength,
-                            bytesWritten = written
-                        )
+                    val result = DownloadResult(
+                        url = response.request.url.toString(),
+                        statusCode = response.code,
+                        contentType = contentType,
+                        contentLength = contentLength,
+                        bytesWritten = written
                     )
+                    request.observer.onEvent(DownloadEvent.Completed(request.url, result))
+                    JmxResult.Success(result)
                 }
             }.getOrElse {
                 val error = if (it is IOException) {
@@ -80,6 +99,7 @@ class BinaryDownloader(
                 } else {
                     JmxError.Unknown(it.message ?: "下载未知错误", it)
                 }
+                request.observer.onEvent(DownloadEvent.Failed(request.url, error))
                 JmxResult.Failure(error)
             }
         }
