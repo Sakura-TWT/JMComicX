@@ -44,6 +44,14 @@ data class JmxCoreSmokeStep<T>(
         }
     }
 
+    fun errorOrNull(): JmxError? {
+        return when (result) {
+            is JmxResult.Failure -> result.error
+            is JmxResult.Success,
+            null -> null
+        }
+    }
+
     companion object {
         fun <T> success(name: String, value: T): JmxCoreSmokeStep<T> {
             return JmxCoreSmokeStep(name = name, result = JmxResult.Success(value))
@@ -75,6 +83,22 @@ data class JmxCoreSmokeReport(
             chapterTemplate.isSuccessful &&
             imageTransfer.isSuccessful &&
             imageTransfer.valueOrNull()?.failedCount == 0
+
+    val issues: List<JmxDiagnosticIssue> = buildList {
+        listOf(initialization, login, albumDetail, chapterTemplate, imageTransfer).forEach { step ->
+            step.toIssueOrNull()?.let(::add)
+        }
+        initialization.valueOrNull()?.toDiagnosticIssues()?.let(::addAll)
+        imageTransfer.valueOrNull()?.toDiagnosticIssues("image_transfer")?.let(::addAll)
+    }
+
+    val failedSteps: List<String> = issues
+        .filter { it.severity != JmxDiagnosticSeverity.Info }
+        .map { it.step }
+
+    val skippedSteps: List<String> = issues
+        .filter { it.severity == JmxDiagnosticSeverity.Info }
+        .map { it.step }
 }
 
 class JmxCoreSmokeRunner(
@@ -161,4 +185,61 @@ class JmxCoreSmokeRunner(
             onFailure = { JmxCoreSmokeStep.failure(name, JmxError.Unknown(it.message ?: "自检步骤异常", it)) }
         )
     }
+}
+
+private fun JmxCoreSmokeStep<*>.toIssueOrNull(): JmxDiagnosticIssue? {
+    errorOrNull()?.let { error ->
+        return JmxDiagnosticIssue(
+            step = name,
+            severity = error.diagnosticSeverity(),
+            message = error.message,
+            error = error
+        )
+    }
+    return skippedReason?.let {
+        JmxDiagnosticIssue(
+            step = name,
+            severity = JmxDiagnosticSeverity.Info,
+            message = it
+        )
+    }
+}
+
+private fun JmxCoreInitResult.toDiagnosticIssues(): List<JmxDiagnosticIssue> {
+    return buildList {
+        when (val domain = domainRefresh) {
+            is InitStepResult.Success -> Unit
+            is InitStepResult.Failure -> add(domain.error.toIssue("initialize.domain_refresh"))
+        }
+        when (val setting = settingFetch) {
+            is InitStepResult.Success -> Unit
+            is InitStepResult.Failure -> add(setting.error.toIssue("initialize.setting"))
+        }
+    }
+}
+
+private fun ChapterImageTransferReport.toDiagnosticIssues(stepPrefix: String): List<JmxDiagnosticIssue> {
+    return buildList {
+        restoreResults.forEach { item ->
+            when (val result = item.result) {
+                is JmxResult.Success -> Unit
+                is JmxResult.Failure -> add(result.error.toIssue("$stepPrefix.restore[${item.item.index}]"))
+            }
+        }
+        storeResults.forEach { item ->
+            when (val result = item.result) {
+                is JmxResult.Success -> Unit
+                is JmxResult.Failure -> add(result.error.toIssue("$stepPrefix.store[${item.item.index}]"))
+            }
+        }
+    }
+}
+
+private fun JmxError.toIssue(step: String): JmxDiagnosticIssue {
+    return JmxDiagnosticIssue(
+        step = step,
+        severity = diagnosticSeverity(),
+        message = message,
+        error = this
+    )
 }

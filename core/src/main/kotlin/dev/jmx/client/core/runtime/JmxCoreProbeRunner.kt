@@ -78,6 +78,20 @@ data class JmxCoreProbeReport(
         listOf(domainRefresh, setting, session, chapterTemplate)
             .filterNot { it.isSkipped }
             .all { it.isSuccessful }
+
+    val issues: List<JmxDiagnosticIssue> = buildList {
+        listOf(domainRefresh, setting, session, chapterTemplate).forEach { step ->
+            step.toIssueOrNull()?.let(::add)
+        }
+    }
+
+    val failedSteps: List<String> = issues
+        .filter { it.severity != JmxDiagnosticSeverity.Info }
+        .map { it.step }
+
+    val skippedSteps: List<String> = issues
+        .filter { it.severity == JmxDiagnosticSeverity.Info }
+        .map { it.step }
 }
 
 class JmxCoreProbeRunner(
@@ -138,6 +152,24 @@ class JmxCoreProbeRunner(
         return runCatching { block() }.fold(
             onSuccess = { JmxCoreProbeStep(name = name, result = it) },
             onFailure = { JmxCoreProbeStep.failure(name, JmxError.Unknown(it.message ?: "探测步骤异常", it)) }
+        )
+    }
+}
+
+private fun JmxCoreProbeStep<*>.toIssueOrNull(): JmxDiagnosticIssue? {
+    errorOrNull()?.let { error ->
+        return JmxDiagnosticIssue(
+            step = name,
+            severity = error.diagnosticSeverity(),
+            message = error.message,
+            error = error
+        )
+    }
+    return skippedReason?.let {
+        JmxDiagnosticIssue(
+            step = name,
+            severity = JmxDiagnosticSeverity.Info,
+            message = it
         )
     }
 }

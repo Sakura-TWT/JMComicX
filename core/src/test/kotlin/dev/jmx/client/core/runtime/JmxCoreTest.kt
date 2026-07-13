@@ -252,6 +252,7 @@ class JmxCoreTest {
         }
 
         assertTrue(report.isSuccessful)
+        assertEquals(emptyList<JmxDiagnosticIssue>(), report.issues)
         assertTrue(report.domainRefresh.isSuccessful)
         assertEquals("2.6.0", report.setting.valueOrNull()!!.apiVersion)
         assertTrue(report.session.valueOrNull()!!.hasAvs)
@@ -288,6 +289,9 @@ class JmxCoreTest {
         assertTrue(report.setting.isSkipped)
         assertTrue(report.chapterTemplate.isSkipped)
         assertTrue(report.session.errorOrNull()!!.message.contains("AVS"))
+        assertEquals(listOf("session"), report.failedSteps)
+        assertEquals(listOf("domain_refresh", "setting", "chapter_template"), report.skippedSteps)
+        assertEquals(JmxDiagnosticSeverity.Error, report.issues.first { it.step == "session" }.severity)
     }
 
     @Test
@@ -335,6 +339,8 @@ class JmxCoreTest {
         assertTrue(error.message.contains("缺失字段：result.images"))
         assertTrue(error.message.contains("config.jmid"))
         assertTrue(error.message.contains("HTML 样本"))
+        assertEquals(listOf("chapter_template"), report.failedSteps)
+        assertTrue(report.issues.single { it.step == "chapter_template" }.message.contains("HTML 样本"))
     }
 
     @Test
@@ -403,6 +409,7 @@ class JmxCoreTest {
         }
 
         assertTrue(report.isSuccessful)
+        assertEquals(emptyList<JmxDiagnosticIssue>(), report.issues)
         assertTrue(report.initialization.valueOrNull()!!.isFullySuccessful)
         assertEquals("avs-value", report.login.valueOrNull()!!.avs)
         assertEquals("album", report.albumDetail.valueOrNull()!!.name)
@@ -435,6 +442,54 @@ class JmxCoreTest {
         assertEquals("/album?id=321", server.takeRequest().path)
         assertTrue(server.takeRequest().path!!.startsWith("/chapter_view_template?id=123&"))
         assertEquals("/media/photos/123/00001.webp", server.takeRequest().path)
+    }
+
+    @Test
+    fun smokeRunnerReportsPartialInitializationIssues() {
+        val ts = 1700566805L
+        domainServer.enqueue(MockResponse().setResponseCode(503).setBody("down"))
+        server.enqueue(encryptedResponse(ts, """{"jm3_version":"2.7.0","img_host":"https://img.test","app_shunts":[]}"""))
+        server.enqueue(encryptedResponse(ts, """{"s":"avs-value","uid":"42"}"""))
+        server.enqueue(encryptedResponse(ts, """{"id":"321","name":"album","author":["author"],"images":1}"""))
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/html")
+                .setBody(chapterHtml(server.url("/").toString().trimEnd('/')))
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "image/webp")
+                .setBody(Buffer().write(byteArrayOf(0, 1, 2, 3, 4, 5)))
+        )
+        val core = JmxCore.create(
+            JmxCoreConfig(
+                keyValueStore = InMemoryKeyValueStore(mapOf("protocol.api.hosts" to server.url("/").toString())),
+                apiClock = fixedClock(ts),
+                retryPolicy = DefaultRetryPolicy(maxAttempts = 1),
+                domainServerUrls = listOf(domainServer.url("/domains").toString())
+            )
+        )
+
+        val report = kotlinx.coroutines.runBlocking {
+            core.smokeRunner.run(
+                JmxCoreSmokeScenario(
+                    username = "user",
+                    password = "pass",
+                    albumId = "321",
+                    chapterId = "123",
+                    shunt = "1",
+                    imageRowCodec = RowBytesCodec(width = 1, height = 6, contentType = "image/webp"),
+                    imageOutputStore = InMemoryImageOutputStore()
+                )
+            )
+        }
+
+        assertTrue(!report.isSuccessful)
+        assertEquals(listOf("initialize.domain_refresh"), report.failedSteps)
+        assertEquals(JmxDiagnosticSeverity.Warning, report.issues.single().severity)
+        assertTrue(report.issues.single().message.contains("域名服务器"))
     }
 
     private fun encryptedResponse(ts: Long, dataJson: String): MockResponse {
