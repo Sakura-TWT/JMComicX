@@ -1,5 +1,7 @@
 package dev.jmx.client.core.download
 
+import dev.jmx.client.core.result.JmxResult
+
 data class DownloadRequest(
     val url: String,
     val headers: Map<String, String> = emptyMap(),
@@ -13,4 +15,14 @@ data class DownloadResult(
     val contentType: String?,
     val contentLength: Long,
     val bytesWritten: Long
+)
+
+data class DownloadBatchItem(
+    val index: Int,
+    val request: DownloadRequest
+)
+
+data class DownloadBatchResult(
+    val item: DownloadBatchItem,
+    val result: JmxResult<DownloadResult>
 )

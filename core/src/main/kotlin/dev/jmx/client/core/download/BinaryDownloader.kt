@@ -9,11 +9,15 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
 
+interface Downloader {
+    suspend fun download(request: DownloadRequest, sink: ByteSink): JmxResult<DownloadResult>
+}
+
 class BinaryDownloader(
     private val okHttpClient: OkHttpClient = defaultOkHttpClient(),
     private val bufferSize: Int = DEFAULT_BUFFER_SIZE
-) {
-    suspend fun download(request: DownloadRequest, sink: ByteSink): JmxResult<DownloadResult> =
+) : Downloader {
+    override suspend fun download(request: DownloadRequest, sink: ByteSink): JmxResult<DownloadResult> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val httpRequest = Request.Builder()
