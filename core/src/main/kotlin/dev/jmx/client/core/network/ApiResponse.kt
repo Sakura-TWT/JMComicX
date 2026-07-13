@@ -1,6 +1,7 @@
 package dev.jmx.client.core.network
 
 import com.google.gson.JsonElement
+import dev.jmx.client.core.result.NetworkExchange
 
 data class ApiEnvelope(
     val code: Int,
@@ -15,4 +16,9 @@ data class RawNetworkResponse(
     val contentType: String?,
     val requestUrl: String,
     val tokenTimestampSeconds: Long
+)
+
+data class TextNetworkResponse(
+    val text: String,
+    val exchange: NetworkExchange
 )

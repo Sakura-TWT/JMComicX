@@ -40,8 +40,20 @@ class JmxApiClient(
     }
 
     suspend fun requestText(request: ApiRequest): JmxResult<String> {
+        return when (val raw = requestTextResponse(request)) {
+            is JmxResult.Success -> JmxResult.Success(raw.value.text)
+            is JmxResult.Failure -> raw
+        }
+    }
+
+    suspend fun requestTextResponse(request: ApiRequest): JmxResult<TextNetworkResponse> {
         return when (val raw = httpClient.execute(request)) {
-            is JmxResult.Success -> JmxResult.Success(raw.value.body)
+            is JmxResult.Success -> JmxResult.Success(
+                TextNetworkResponse(
+                    text = raw.value.body,
+                    exchange = raw.value.toExchange(request)
+                )
+            )
             is JmxResult.Failure -> raw
         }
     }
@@ -56,16 +68,16 @@ class JmxApiClient(
             bodySample = bodySampler.sample(body)
         )
     }
+}
 
-    private fun JmxError.withExchange(exchange: NetworkExchange): JmxError {
-        return when (this) {
-            is JmxError.Api -> copy(exchange = exchange)
-            is JmxError.Decode -> copy(exchange = exchange)
-            is JmxError.Http -> copy(exchange = exchange)
-            is JmxError.Schema -> copy(exchange = exchange)
-            is JmxError.Domain,
-            is JmxError.Network,
-            is JmxError.Unknown -> this
-        }
+fun JmxError.withExchange(exchange: NetworkExchange): JmxError {
+    return when (this) {
+        is JmxError.Api -> copy(exchange = exchange)
+        is JmxError.Decode -> copy(exchange = exchange)
+        is JmxError.Http -> copy(exchange = exchange)
+        is JmxError.Schema -> copy(exchange = exchange)
+        is JmxError.Domain,
+        is JmxError.Network,
+        is JmxError.Unknown -> this
     }
 }

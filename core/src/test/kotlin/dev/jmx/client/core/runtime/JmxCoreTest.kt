@@ -197,7 +197,7 @@ class JmxCoreTest {
         val health = core.healthSnapshot()
 
         assertEquals("2.5.0", health.apiVersion)
-        assertEquals(2, health.endpoints.size)
+        assertEquals(3, health.endpoints.size)
         assertEquals("https://api-a.test/", health.endpoints[0].url)
         assertEquals(1, health.endpoints[0].failureCount)
         assertEquals(1, health.endpoints[0].consecutiveFailureCount)
@@ -207,6 +207,7 @@ class JmxCoreTest {
         assertEquals("timeout", health.endpoints[0].lastFailureMessage)
         assertEquals(750L, health.endpoints[1].lastLatencyMillis)
         assertEquals(750L, health.endpoints[1].averageLatencyMillis)
+        assertEquals("https://manual.test/", health.endpoints[2].url)
         assertEquals("manual", health.endpointSelection.mode)
         assertEquals("https://manual.test/", health.endpointSelection.manualUrl)
         assertEquals(1, health.cookieCount)
@@ -235,6 +236,7 @@ class JmxCoreTest {
         assertEquals(1, value.syncedAvsCookieCount)
         assertEquals("manual", value.health.endpointSelection.mode)
         assertEquals("https://manual.test/", value.health.endpointSelection.manualUrl)
+        assertEquals("https://manual.test/", value.health.endpoints.last().url)
         assertEquals(1, cookieStore.load("https://manual.test/album".toHttpUrl()).size)
     }
 
@@ -253,6 +255,7 @@ class JmxCoreTest {
 
         assertEquals("auto", report.health.endpointSelection.mode)
         assertEquals(null, report.health.endpointSelection.manualUrl)
+        assertTrue(report.health.endpoints.none { it.url == "https://manual.test/" })
         assertEquals(0, report.syncedAvsCookieCount)
     }
 

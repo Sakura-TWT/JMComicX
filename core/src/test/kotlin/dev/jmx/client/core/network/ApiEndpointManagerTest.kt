@@ -126,12 +126,14 @@ class ApiEndpointManagerTest {
         assertTrue(selected is JmxResult.Success)
         assertEquals("https://manual.test/", (selected as JmxResult.Success).value.toString())
         assertEquals("https://manual.test/", (manager.current() as JmxResult.Success).value.toString())
+        assertEquals("https://manual.test/", manager.all().last().url.toString())
         assertEquals("https://manual.test/", stateStore.manualApiHost())
         val reloaded = ApiEndpointManager(
             initialHosts = listOf("https://first.test"),
             protocolStateStore = stateStore
         )
         assertEquals("https://manual.test/", (reloaded.current() as JmxResult.Success).value.toString())
+        assertEquals("https://manual.test/", reloaded.all().last().url.toString())
         assertTrue(reloaded.selection() is ApiEndpointSelection.Manual)
     }
 
@@ -150,6 +152,7 @@ class ApiEndpointManagerTest {
         assertEquals(null, stateStore.manualApiHost())
         assertTrue(manager.selection() is ApiEndpointSelection.Auto)
         assertEquals("https://first.test/", (manager.current() as JmxResult.Success).value.toString())
+        assertTrue(manager.all().none { it.url.toString() == "https://manual.test/" })
     }
 
     @Test
@@ -166,8 +169,13 @@ class ApiEndpointManagerTest {
         assertEquals(listOf("https://fresh.test/"), stateStore.apiHosts())
         assertEquals("https://manual.test/", stateStore.manualApiHost())
         assertEquals("https://manual.test/", (manager.current() as JmxResult.Success).value.toString())
+        assertEquals(
+            listOf("https://fresh.test/", "https://manual.test/"),
+            manager.all().map { it.url.toString() }
+        )
         manager.useAutoSelection()
         assertEquals("https://fresh.test/", (manager.current() as JmxResult.Success).value.toString())
+        assertEquals(listOf("https://fresh.test/"), manager.all().map { it.url.toString() })
     }
 
     @Test

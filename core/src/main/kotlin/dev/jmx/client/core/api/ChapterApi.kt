@@ -4,6 +4,7 @@ import dev.jmx.client.core.chapter.ChapterTemplate
 import dev.jmx.client.core.chapter.ChapterTemplateParser
 import dev.jmx.client.core.network.JmxApiClient
 import dev.jmx.client.core.network.apiRequest
+import dev.jmx.client.core.network.withExchange
 import dev.jmx.client.core.protocol.ApiRoute
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
@@ -23,8 +24,8 @@ class ChapterApi(
         if (chapterId.isBlank()) {
             return JmxResult.Failure(JmxError.Schema("chapterId 为空", field = "chapterId"))
         }
-        val html = when (
-            val result = apiClient.requestText(
+        val response = when (
+            val result = apiClient.requestTextResponse(
                 apiRequest(ApiRoute.ChapterViewTemplate) {
                     query("id", chapterId)
                     query("app_img_shunt", shunt)
@@ -38,6 +39,9 @@ class ChapterApi(
             is JmxResult.Success -> result.value
             is JmxResult.Failure -> return result
         }
-        return parser.parse(html)
+        return when (val parsed = parser.parse(response.text)) {
+            is JmxResult.Success -> parsed
+            is JmxResult.Failure -> JmxResult.Failure(parsed.error.withExchange(response.exchange))
+        }
     }
 }

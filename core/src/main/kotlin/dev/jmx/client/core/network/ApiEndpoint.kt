@@ -52,7 +52,12 @@ class ApiEndpointManager(
         .mapNotNull { it.normalizedBaseUrlOrNull() }
         .distinctBy { it.endpointKey() }
         .map { ApiEndpoint(it) }
+    private var autoEndpointKeys: Set<String> = endpoints.map { it.url.endpointKey() }.toSet()
     private var manualEndpoint: HttpUrl? = protocolStateStore?.manualApiHost()?.normalizedBaseUrlOrNull()
+
+    init {
+        manualEndpoint?.let { endpoints = endpoints.ensureEndpoint(it) }
+    }
 
     fun current(): JmxResult<HttpUrl> {
         synchronized(lock) {
@@ -77,7 +82,11 @@ class ApiEndpointManager(
 
     fun useAutoSelection() {
         synchronized(lock) {
+            val previousManualEndpoint = manualEndpoint
             manualEndpoint = null
+            previousManualEndpoint?.let {
+                endpoints = endpoints.removeManualOnlyEndpoint(it)
+            }
         }
         protocolStateStore?.updateManualApiHost(null)
     }
@@ -87,6 +96,7 @@ class ApiEndpointManager(
             ?: return JmxResult.Failure(JmxError.Domain("手动 API 域名无效", endpoint = host))
         synchronized(lock) {
             manualEndpoint = url
+            endpoints = endpoints.ensureEndpoint(url)
         }
         protocolStateStore?.updateManualApiHost(url.toString())
         return JmxResult.Success(url)
@@ -100,7 +110,9 @@ class ApiEndpointManager(
             return JmxResult.Failure(JmxError.Domain("远程 API 域名列表为空"))
         }
         synchronized(lock) {
+            autoEndpointKeys = parsed.map { it.endpointKey() }.toSet()
             endpoints = parsed.map { ApiEndpoint(it) }
+                .let { refreshed -> manualEndpoint?.let { refreshed.ensureEndpoint(it) } ?: refreshed }
         }
         protocolStateStore?.updateApiHosts(parsed.map { it.toString() })
         return JmxResult.Success(all())
@@ -160,6 +172,15 @@ class ApiEndpointManager(
             this
         } else {
             this + ApiEndpoint(url)
+        }
+    }
+
+    private fun List<ApiEndpoint>.removeManualOnlyEndpoint(url: HttpUrl): List<ApiEndpoint> {
+        val key = url.endpointKey()
+        return if (key in autoEndpointKeys) {
+            this
+        } else {
+            filterNot { it.url.endpointKey() == key }
         }
     }
 
