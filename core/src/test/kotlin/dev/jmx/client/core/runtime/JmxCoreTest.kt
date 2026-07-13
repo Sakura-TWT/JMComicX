@@ -8,6 +8,7 @@ import dev.jmx.client.core.protocol.ApiClock
 import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.result.JmxResult
 import dev.jmx.client.core.session.InMemoryCookieStore
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -134,6 +135,36 @@ class JmxCoreTest {
         assertTrue(!result.isFullySuccessful)
         assertEquals("2.3.0", core.protocolStateStore.apiVersion())
         assertEquals("/setting", server.takeRequest().path)
+    }
+
+    @Test
+    fun healthSnapshotReportsRuntimeState() {
+        val domainUrls = listOf("https://domain-a.test/domains", "https://domain-b.test/domains")
+        val core = JmxCore.create(
+            JmxCoreConfig(
+                keyValueStore = InMemoryKeyValueStore(
+                    mapOf(
+                        "protocol.api.version" to "2.5.0",
+                        "protocol.api.hosts" to "https://api-a.test\nhttps://api-b.test"
+                    )
+                ),
+                downloadConcurrency = 7,
+                domainServerUrls = domainUrls
+            )
+        )
+        core.endpointManager.markFailure("https://api-a.test/".toHttpUrl(), "timeout")
+        core.sessionManager.installAvsCookie("https://api-a.test", "secret")
+
+        val health = core.healthSnapshot()
+
+        assertEquals("2.5.0", health.apiVersion)
+        assertEquals(2, health.endpoints.size)
+        assertEquals("https://api-a.test/", health.endpoints[0].url)
+        assertEquals(1, health.endpoints[0].failureCount)
+        assertEquals("timeout", health.endpoints[0].lastFailureMessage)
+        assertEquals(1, health.cookieCount)
+        assertEquals(domainUrls, health.domainServerUrls)
+        assertEquals(7, health.downloadConcurrency)
     }
 
     private fun encryptedResponse(ts: Long, dataJson: String): MockResponse {

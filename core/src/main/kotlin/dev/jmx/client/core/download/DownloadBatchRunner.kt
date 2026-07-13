@@ -9,7 +9,7 @@ import kotlinx.coroutines.sync.withPermit
 
 class DownloadBatchRunner(
     private val downloader: Downloader,
-    private val maxConcurrency: Int = DEFAULT_CONCURRENCY
+    val maxConcurrency: Int = DEFAULT_CONCURRENCY
 ) {
     suspend fun download(
         requests: List<DownloadRequest>,

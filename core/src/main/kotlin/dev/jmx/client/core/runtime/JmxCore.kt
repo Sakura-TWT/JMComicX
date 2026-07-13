@@ -51,8 +51,25 @@ class JmxCore private constructor(
     val domainRefresher: DomainRefresher,
     val initializer: JmxCoreInitializer,
     val downloader: BinaryDownloader,
-    val downloadBatchRunner: DownloadBatchRunner
+    val downloadBatchRunner: DownloadBatchRunner,
+    private val domainServerUrls: List<String>
 ) {
+    fun healthSnapshot(): JmxCoreHealth {
+        return JmxCoreHealth(
+            apiVersion = apiVersionProvider.current(),
+            endpoints = endpointManager.all().map {
+                EndpointHealth(
+                    url = it.url.toString(),
+                    failureCount = it.failureCount,
+                    lastFailureMessage = it.lastFailureMessage
+                )
+            },
+            cookieCount = sessionManager.cookies().size,
+            domainServerUrls = domainServerUrls,
+            downloadConcurrency = downloadBatchRunner.maxConcurrency
+        )
+    }
+
     companion object {
         fun create(config: JmxCoreConfig = JmxCoreConfig()): JmxCore {
             val protocolStateStore = ProtocolStateStore(config.keyValueStore)
@@ -96,7 +113,8 @@ class JmxCore private constructor(
                 domainRefresher = domainRefresher,
                 initializer = JmxCoreInitializer(domainRefresher, settingApi),
                 downloader = downloader,
-                downloadBatchRunner = DownloadBatchRunner(downloader, config.downloadConcurrency)
+                downloadBatchRunner = DownloadBatchRunner(downloader, config.downloadConcurrency),
+                domainServerUrls = config.domainServerUrls
             )
         }
     }
