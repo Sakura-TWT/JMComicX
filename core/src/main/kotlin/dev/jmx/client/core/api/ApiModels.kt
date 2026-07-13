@@ -35,6 +35,31 @@ data class AlbumPage(
     val raw: Map<String, Any?>
 )
 
+data class WeekInfo(
+    val categories: List<WeekCategory>,
+    val types: List<WeekType>,
+    val raw: Map<String, Any?>
+)
+
+data class WeekCategory(
+    val id: String,
+    val time: String?,
+    val title: String?
+)
+
+data class WeekType(
+    val id: String,
+    val title: String?
+)
+
+data class CategoryFilter(
+    val page: Int,
+    val time: String,
+    val category: String,
+    val order: String = "mr",
+    val mainTag: Int = 0
+)
+
 data class ActionResult(
     val status: String?,
     val message: String?,

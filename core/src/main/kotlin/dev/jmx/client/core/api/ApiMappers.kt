@@ -21,6 +21,16 @@ internal fun JsonObject.toAlbumPage(): AlbumPage {
     )
 }
 
+internal fun JsonObject.toWeekInfo(): WeekInfo {
+    return WeekInfo(
+        categories = firstObjectList("categories", "category")
+            .mapNotNull { it.toWeekCategoryOrNull() },
+        types = firstObjectList("type", "types")
+            .mapNotNull { it.toWeekTypeOrNull() },
+        raw = toRawMap()
+    )
+}
+
 internal fun JsonObject.toActionResult(): ActionResult {
     return ActionResult(
         status = stringOrNull("status", "state"),
@@ -68,6 +78,23 @@ private fun JsonObject.firstObjectList(vararg names: String): List<JsonObject> {
         if (list.isNotEmpty()) return list
     }
     return emptyList()
+}
+
+private fun JsonObject.toWeekCategoryOrNull(): WeekCategory? {
+    val id = stringOrNull("id") ?: return null
+    return WeekCategory(
+        id = id,
+        time = stringOrNull("time"),
+        title = stringOrNull("title", "name")
+    )
+}
+
+private fun JsonObject.toWeekTypeOrNull(): WeekType? {
+    val id = stringOrNull("id") ?: return null
+    return WeekType(
+        id = id,
+        title = stringOrNull("title", "name")
+    )
 }
 
 private fun JsonObject.recordList(): List<DailyRecord> {

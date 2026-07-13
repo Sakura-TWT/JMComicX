@@ -28,7 +28,17 @@ class LibraryApi(
         return JmxResult.Success(albums)
     }
 
-    suspend fun week(): JmxResult<Map<String, Any?>> {
+    suspend fun week(): JmxResult<WeekInfo> {
+        val data = when (val result = apiClient.requestJson(apiRequest(ApiRoute.Week))) {
+            is JmxResult.Success -> result.value
+            is JmxResult.Failure -> return result
+        }
+        val root = data.asObjectOrNull()
+            ?: return JmxResult.Failure(JmxError.Schema("/week data 不是对象"))
+        return JmxResult.Success(root.toWeekInfo())
+    }
+
+    suspend fun weekRaw(): JmxResult<Map<String, Any?>> {
         return rawObject(ApiRoute.Week)
     }
 
@@ -47,6 +57,26 @@ class LibraryApi(
         }
         val root = data.asObjectOrNull()
             ?: return JmxResult.Failure(JmxError.Schema("week/filter data 不是对象"))
+        return JmxResult.Success(root.toAlbumPage())
+    }
+
+    suspend fun categoriesFilter(filter: CategoryFilter): JmxResult<AlbumPage> {
+        val data = when (
+            val result = apiClient.requestJson(
+                apiRequest(ApiRoute.CategoriesFilter) {
+                    queryAtLeast("page", filter.page, minimum = 1)
+                    query("t", filter.time)
+                    query("c", filter.category)
+                    query("o", filter.order)
+                    query("main_tag", filter.mainTag)
+                }
+            )
+        ) {
+            is JmxResult.Success -> result.value
+            is JmxResult.Failure -> return result
+        }
+        val root = data.asObjectOrNull()
+            ?: return JmxResult.Failure(JmxError.Schema("categories/filter data 不是对象"))
         return JmxResult.Success(root.toAlbumPage())
     }
 

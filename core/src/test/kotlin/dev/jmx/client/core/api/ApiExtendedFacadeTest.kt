@@ -121,6 +121,44 @@ class ApiExtendedFacadeTest {
         assertEquals("user_id=42&daily_id=7", request.body.readUtf8())
     }
 
+    @Test
+    fun libraryApiParsesWeekInfoAndCategoryFilter() {
+        val api = LibraryApi(createClient())
+        server.enqueue(
+            encryptedResponse(
+                """{"categories":[{"id":"w","time":"week","title":"本周"}],"type":[{"id":"a","title":"全部"}]}"""
+            )
+        )
+        server.enqueue(
+            encryptedResponse(
+                """{"total":1,"list":[{"id":"9","name":"category album","author":"tester"}]}"""
+            )
+        )
+
+        val week = kotlinx.coroutines.runBlocking { api.week() }
+        val filtered = kotlinx.coroutines.runBlocking {
+            api.categoriesFilter(
+                CategoryFilter(
+                    page = 0,
+                    time = "week",
+                    category = "doujin",
+                    order = "mv",
+                    mainTag = 2
+                )
+            )
+        }
+
+        assertTrue(week is JmxResult.Success)
+        val weekInfo = (week as JmxResult.Success).value
+        assertEquals("w", weekInfo.categories.single().id)
+        assertEquals("本周", weekInfo.categories.single().title)
+        assertEquals("a", weekInfo.types.single().id)
+        assertTrue(filtered is JmxResult.Success)
+        assertEquals("category album", (filtered as JmxResult.Success).value.content.single().name)
+        assertEquals("/week", server.takeRequest().path)
+        assertEquals("/categories/filter?page=1&t=week&c=doujin&o=mv&main_tag=2", server.takeRequest().path)
+    }
+
     private fun createClient(): JmxApiClient {
         val tokenProvider = ApiTokenProvider(
             clock = object : ApiClock {
