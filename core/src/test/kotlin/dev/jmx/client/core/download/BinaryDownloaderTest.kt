@@ -81,18 +81,23 @@ class BinaryDownloaderTest {
         }
 
         assertTrue(result is JmxResult.Failure)
-        assertTrue((result as JmxResult.Failure).error is JmxError.Schema)
+        val error = (result as JmxResult.Failure).error
+        assertTrue(error is JmxError.Schema)
+        assertTrue(error.message.contains("url=${server.url("/image.webp")}"))
+        assertTrue(error.message.contains("contentType=text/html"))
         assertTrue(events.first() is DownloadEvent.Started)
         assertTrue(events.last() is DownloadEvent.Failed)
     }
 
     @Test
-    fun rejectsBodyThatExceedsMaxBytes() {
+    fun rejectsContentLengthThatExceedsMaxBytes() {
+        val bytes = ByteArray(6) { it.toByte() }
         server.enqueue(
             MockResponse()
                 .setResponseCode(200)
                 .setHeader("Content-Type", "image/webp")
-                .setBody("123456")
+                .setHeader("Content-Length", bytes.size)
+                .setBody(okio.Buffer().write(bytes))
         )
 
         val result = kotlinx.coroutines.runBlocking {
@@ -107,6 +112,63 @@ class BinaryDownloaderTest {
         }
 
         assertTrue(result is JmxResult.Failure)
-        assertTrue((result as JmxResult.Failure).error is JmxError.Schema)
+        val error = (result as JmxResult.Failure).error
+        assertTrue(error is JmxError.Schema)
+        assertTrue(error.message.contains("contentLength=6"))
+        assertTrue(error.message.contains("maxBytes=5"))
+    }
+
+    @Test
+    fun rejectsStreamingBodyThatExceedsMaxBytesWhenLengthIsUnknown() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "image/webp")
+                .setChunkedBody("123456", 2)
+        )
+
+        val result = kotlinx.coroutines.runBlocking {
+            BinaryDownloader(bufferSize = 4).download(
+                DownloadRequest(
+                    url = server.url("/image.webp").toString(),
+                    acceptedContentTypes = setOf("image/webp"),
+                    maxBytes = 5
+                ),
+                MemoryByteSink()
+            )
+        }
+
+        assertTrue(result is JmxResult.Failure)
+        val error = (result as JmxResult.Failure).error
+        assertTrue(error is JmxError.Schema)
+        assertTrue(error.message.contains("bytesRead=6"))
+        assertTrue(error.message.contains("maxBytes=5"))
+    }
+
+    @Test
+    fun httpFailureIncludesDownloadContext() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(503)
+                .setHeader("Content-Type", "text/plain")
+                .setBody("down")
+        )
+
+        val result = kotlinx.coroutines.runBlocking {
+            BinaryDownloader().download(
+                DownloadRequest(
+                    url = server.url("/image.webp").toString(),
+                    acceptedContentTypes = setOf("image/*")
+                ),
+                MemoryByteSink()
+            )
+        }
+
+        assertTrue(result is JmxResult.Failure)
+        val error = (result as JmxResult.Failure).error
+        assertTrue(error is JmxError.Http)
+        assertTrue(error.message.contains("status=503"))
+        assertTrue(error.message.contains("contentType=text/plain"))
+        assertTrue(error.message.contains("url=${server.url("/image.webp")}"))
     }
 }
