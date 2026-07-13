@@ -1,5 +1,14 @@
 package dev.jmx.client.core.result
 
+data class NetworkExchange(
+    val route: String,
+    val requestUrl: String,
+    val statusCode: Int,
+    val contentType: String?,
+    val tokenTimestampSeconds: Long?,
+    val bodySample: String
+)
+
 sealed interface JmxError {
     val message: String
     val cause: Throwable?
@@ -14,6 +23,7 @@ sealed interface JmxError {
     data class Http(
         val code: Int,
         override val message: String,
+        val exchange: NetworkExchange? = null,
         override val cause: Throwable? = null,
         override val retryable: Boolean = code >= 500 || code == 408 || code == 429
     ) : JmxError
@@ -21,12 +31,14 @@ sealed interface JmxError {
     data class Api(
         val code: Int,
         override val message: String,
+        val exchange: NetworkExchange? = null,
         override val cause: Throwable? = null,
         override val retryable: Boolean = false
     ) : JmxError
 
     data class Decode(
         override val message: String,
+        val exchange: NetworkExchange? = null,
         override val cause: Throwable? = null,
         override val retryable: Boolean = false
     ) : JmxError
@@ -34,6 +46,7 @@ sealed interface JmxError {
     data class Schema(
         override val message: String,
         val field: String? = null,
+        val exchange: NetworkExchange? = null,
         override val cause: Throwable? = null,
         override val retryable: Boolean = false
     ) : JmxError

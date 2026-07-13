@@ -16,7 +16,7 @@ object AesEcbPkcs7 {
             cipher.doFinal(encryptedBytes).toString(Charsets.UTF_8)
         }.fold(
             onSuccess = { JmxResult.Success(it) },
-            onFailure = { JmxResult.Failure(JmxError.Decode("响应数据解密失败", it)) }
+            onFailure = { JmxResult.Failure(JmxError.Decode("响应数据解密失败", cause = it)) }
         )
     }
 

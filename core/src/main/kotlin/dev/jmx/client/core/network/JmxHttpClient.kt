@@ -4,6 +4,7 @@ import dev.jmx.client.core.protocol.ApiTokenProvider
 import dev.jmx.client.core.protocol.HttpMethod
 import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.result.JmxError
+import dev.jmx.client.core.result.NetworkExchange
 import dev.jmx.client.core.result.JmxResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -21,7 +22,8 @@ class JmxHttpClient(
     private val endpointManager: ApiEndpointManager,
     private val tokenProvider: ApiTokenProvider = ApiTokenProvider(),
     private val okHttpClient: OkHttpClient = defaultOkHttpClient(),
-    private val retryPolicy: RetryPolicy = DefaultRetryPolicy()
+    private val retryPolicy: RetryPolicy = DefaultRetryPolicy(),
+    private val bodySampler: BodySampler = BodySampler()
 ) {
     suspend fun execute(request: ApiRequest): JmxResult<RawNetworkResponse> {
         var lastError: JmxError? = null
@@ -61,6 +63,14 @@ class JmxHttpClient(
                             JmxError.Http(
                                 code = response.code,
                                 message = "HTTP 请求失败：${response.code}",
+                                exchange = NetworkExchange(
+                                    route = apiRequest.route.path,
+                                    requestUrl = response.request.url.toString(),
+                                    statusCode = response.code,
+                                    contentType = response.body.contentType()?.toString(),
+                                    tokenTimestampSeconds = token.timestampSeconds,
+                                    bodySample = bodySampler.sample(body)
+                                ),
                                 retryable = response.code >= 500 || response.code == 408 || response.code == 429
                             )
                         )

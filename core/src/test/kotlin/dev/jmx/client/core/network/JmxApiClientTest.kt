@@ -6,6 +6,7 @@ import dev.jmx.client.core.protocol.ApiClock
 import dev.jmx.client.core.protocol.ApiRoute
 import dev.jmx.client.core.protocol.ApiTokenProvider
 import dev.jmx.client.core.protocol.JmxProtocolConstants
+import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -99,6 +100,74 @@ class JmxApiClientTest {
         assertEquals("fallback", (result as JmxResult.Success).value.asJsonObject["name"].asString)
         assertEquals("/album", server.takeRequest().path)
         assertEquals("/album", secondaryServer.takeRequest().path)
+    }
+
+    @Test
+    fun apiCodeFailureCarriesNetworkExchange() {
+        val ts = 1700566805L
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"code":403,"msg":"denied"}"""))
+        val client = createClient(ts)
+
+        val result = kotlinx.coroutines.runBlocking {
+            client.requestJson(ApiRequest(route = ApiRoute.Album, query = mapOf("id" to "123")))
+        }
+
+        assertTrue(result is JmxResult.Failure)
+        val error = (result as JmxResult.Failure).error
+        assertTrue(error is JmxError.Api)
+        val exchange = (error as JmxError.Api).exchange
+        requireNotNull(exchange)
+        assertEquals("/album", exchange.route)
+        assertTrue(exchange.requestUrl.endsWith("/album?id=123"))
+        assertEquals(200, exchange.statusCode)
+        assertEquals(ts, exchange.tokenTimestampSeconds)
+        assertTrue(exchange.bodySample.contains("403"))
+    }
+
+    @Test
+    fun schemaFailureCarriesRedactedNetworkExchange() {
+        val ts = 1700566805L
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"token":"secret","data":[]}"""))
+        val client = createClient(ts)
+
+        val result = kotlinx.coroutines.runBlocking {
+            client.requestJson(ApiRequest(route = ApiRoute.Album))
+        }
+
+        assertTrue(result is JmxResult.Failure)
+        val error = (result as JmxResult.Failure).error
+        assertTrue(error is JmxError.Schema)
+        val exchange = (error as JmxError.Schema).exchange
+        requireNotNull(exchange)
+        assertEquals("/album", exchange.route)
+        assertTrue(exchange.bodySample.contains("token=<redacted>"))
+        assertTrue(!exchange.bodySample.contains("secret"))
+    }
+
+    @Test
+    fun httpFailureCarriesNetworkExchange() {
+        val ts = 1700566805L
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(403)
+                .setHeader("Content-Type", "text/html")
+                .setBody("<html>forbidden</html>")
+        )
+        val client = createClient(ts)
+
+        val result = kotlinx.coroutines.runBlocking {
+            client.requestJson(ApiRequest(route = ApiRoute.Search))
+        }
+
+        assertTrue(result is JmxResult.Failure)
+        val error = (result as JmxResult.Failure).error
+        assertTrue(error is JmxError.Http)
+        val exchange = (error as JmxError.Http).exchange
+        requireNotNull(exchange)
+        assertEquals("/search", exchange.route)
+        assertEquals(403, exchange.statusCode)
+        assertEquals("text/html", exchange.contentType)
+        assertTrue(exchange.bodySample.contains("forbidden"))
     }
 
     private fun createClient(

@@ -10,8 +10,8 @@ class RetryPolicyTest {
     fun retryableHttpFailureCanFailoverUntilAttemptLimit() {
         val policy = DefaultRetryPolicy(maxAttempts = 2)
 
-        val first = policy.decide(JmxError.Http(502, "bad gateway"), attemptIndex = 0)
-        val second = policy.decide(JmxError.Http(502, "bad gateway"), attemptIndex = 1)
+        val first = policy.decide(JmxError.Http(code = 502, message = "bad gateway"), attemptIndex = 0)
+        val second = policy.decide(JmxError.Http(code = 502, message = "bad gateway"), attemptIndex = 1)
 
         assertTrue(first.shouldRetry)
         assertTrue(first.shouldFailover)
