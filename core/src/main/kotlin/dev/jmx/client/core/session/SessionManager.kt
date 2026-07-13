@@ -29,5 +29,24 @@ class SessionManager(
         return JmxResult.Success(cookie)
     }
 
+    fun syncAvsCookieToHosts(apiHosts: List<String>): JmxResult<List<Cookie>> {
+        val avs = cookieStore.snapshot()
+            .firstOrNull { it.name.equals(AVS_COOKIE_NAME, ignoreCase = true) }
+            ?.value
+            ?: return JmxResult.Failure(JmxError.Schema("AVS 不存在", field = AVS_COOKIE_NAME))
+        val installed = mutableListOf<Cookie>()
+        for (host in apiHosts) {
+            when (val result = installAvsCookie(host, avs)) {
+                is JmxResult.Success -> installed += result.value
+                is JmxResult.Failure -> return result
+            }
+        }
+        return JmxResult.Success(installed)
+    }
+
     fun cookies(): List<Cookie> = cookieStore.snapshot()
+
+    private companion object {
+        const val AVS_COOKIE_NAME = "AVS"
+    }
 }

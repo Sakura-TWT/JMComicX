@@ -12,7 +12,9 @@ interface CookieStore {
     fun clear()
 }
 
-class InMemoryCookieStore : CookieStore {
+class InMemoryCookieStore(
+    private val nowMillis: () -> Long = { System.currentTimeMillis() }
+) : CookieStore {
     private val lock = Any()
     private var cookies: List<Cookie> = emptyList()
 
@@ -49,7 +51,7 @@ class InMemoryCookieStore : CookieStore {
 
     private fun Cookie.identityKey(): String = "${domain}|${path}|${name}"
 
-    private fun Cookie.isExpired(): Boolean = expiresAt < System.currentTimeMillis()
+    private fun Cookie.isExpired(): Boolean = expiresAt < nowMillis()
 }
 
 class StoreBackedCookieJar(
