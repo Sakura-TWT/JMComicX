@@ -18,6 +18,7 @@ import dev.jmx.client.core.network.RetryPolicy
 import dev.jmx.client.core.network.defaultOkHttpClient
 import dev.jmx.client.core.protocol.ApiClock
 import dev.jmx.client.core.protocol.ApiTokenProvider
+import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.protocol.StoredApiVersionProvider
 import dev.jmx.client.core.protocol.SystemApiClock
 import dev.jmx.client.core.session.CookieStore
@@ -32,7 +33,8 @@ data class JmxCoreConfig(
     val okHttpClient: OkHttpClient? = null,
     val apiClock: ApiClock = SystemApiClock,
     val retryPolicy: RetryPolicy = DefaultRetryPolicy(),
-    val downloadConcurrency: Int = 4
+    val downloadConcurrency: Int = 4,
+    val domainServerUrls: List<String> = JmxProtocolConstants.DomainServerUrls
 )
 
 class JmxCore private constructor(
@@ -47,6 +49,7 @@ class JmxCore private constructor(
     val settingApi: SettingApi,
     val userApi: UserApi,
     val domainRefresher: DomainRefresher,
+    val initializer: JmxCoreInitializer,
     val downloader: BinaryDownloader,
     val downloadBatchRunner: DownloadBatchRunner
 ) {
@@ -70,6 +73,15 @@ class JmxCore private constructor(
             )
             val apiClient = JmxApiClient(httpClient)
             val downloader = BinaryDownloader(okHttpClient = okHttpClient)
+            val albumApi = AlbumApi(apiClient)
+            val chapterApi = ChapterApi(apiClient)
+            val settingApi = SettingApi(apiClient, apiVersionProvider)
+            val userApi = UserApi(apiClient, endpointManager, sessionManager)
+            val domainRefresher = DomainRefresher(
+                endpointManager = endpointManager,
+                okHttpClient = okHttpClient,
+                serverUrls = config.domainServerUrls
+            )
             return JmxCore(
                 protocolStateStore = protocolStateStore,
                 apiVersionProvider = apiVersionProvider,
@@ -77,11 +89,12 @@ class JmxCore private constructor(
                 sessionManager = sessionManager,
                 httpClient = httpClient,
                 apiClient = apiClient,
-                albumApi = AlbumApi(apiClient),
-                chapterApi = ChapterApi(apiClient),
-                settingApi = SettingApi(apiClient, apiVersionProvider),
-                userApi = UserApi(apiClient, endpointManager, sessionManager),
-                domainRefresher = DomainRefresher(endpointManager, okHttpClient),
+                albumApi = albumApi,
+                chapterApi = chapterApi,
+                settingApi = settingApi,
+                userApi = userApi,
+                domainRefresher = domainRefresher,
+                initializer = JmxCoreInitializer(domainRefresher, settingApi),
                 downloader = downloader,
                 downloadBatchRunner = DownloadBatchRunner(downloader, config.downloadConcurrency)
             )

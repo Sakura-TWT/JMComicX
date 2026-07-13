@@ -18,16 +18,20 @@ import org.junit.Test
 
 class JmxCoreTest {
     private lateinit var server: MockWebServer
+    private lateinit var domainServer: MockWebServer
 
     @Before
     fun setUp() {
         server = MockWebServer()
         server.start()
+        domainServer = MockWebServer()
+        domainServer.start()
     }
 
     @After
     fun tearDown() {
         server.shutdown()
+        domainServer.shutdown()
     }
 
     @Test
@@ -81,12 +85,70 @@ class JmxCoreTest {
         assertEquals("username=user&password=pass", server.takeRequest().body.readUtf8())
     }
 
+    @Test
+    fun initializerRefreshesDomainsThenFetchesSetting() {
+        val ts = 1700566805L
+        domainServer.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody(encryptDomain("""{"Server":["${server.url("/")}"]}"""))
+        )
+        server.enqueue(encryptedResponse(ts, """{"jm3_version":"2.2.0","img_host":"https://img.test","app_shunts":[]}"""))
+        val core = JmxCore.create(
+            JmxCoreConfig(
+                keyValueStore = InMemoryKeyValueStore(mapOf("protocol.api.hosts" to "https://old.test")),
+                apiClock = fixedClock(ts),
+                retryPolicy = DefaultRetryPolicy(maxAttempts = 1),
+                domainServerUrls = listOf(domainServer.url("/domains").toString())
+            )
+        )
+
+        val result = kotlinx.coroutines.runBlocking { core.initializer.initialize() }
+
+        assertTrue(result.domainRefresh is InitStepResult.Success)
+        assertTrue(result.settingFetch is InitStepResult.Success)
+        assertTrue(result.isFullySuccessful)
+        assertEquals("2.2.0", core.protocolStateStore.apiVersion())
+        assertEquals(server.url("/").toString(), core.protocolStateStore.apiHosts().single())
+        assertEquals("/setting", server.takeRequest().path)
+    }
+
+    @Test
+    fun initializerKeepsGoingWhenDomainRefreshFails() {
+        val ts = 1700566805L
+        domainServer.enqueue(MockResponse().setResponseCode(503).setBody("down"))
+        server.enqueue(encryptedResponse(ts, """{"jm3_version":"2.3.0","img_host":"https://img.test","app_shunts":[]}"""))
+        val core = JmxCore.create(
+            JmxCoreConfig(
+                keyValueStore = InMemoryKeyValueStore(mapOf("protocol.api.hosts" to server.url("/").toString())),
+                apiClock = fixedClock(ts),
+                retryPolicy = DefaultRetryPolicy(maxAttempts = 1),
+                domainServerUrls = listOf(domainServer.url("/domains").toString())
+            )
+        )
+
+        val result = kotlinx.coroutines.runBlocking { core.initializer.initialize() }
+
+        assertTrue(result.domainRefresh is InitStepResult.Failure)
+        assertTrue(result.settingFetch is InitStepResult.Success)
+        assertTrue(!result.isFullySuccessful)
+        assertEquals("2.3.0", core.protocolStateStore.apiVersion())
+        assertEquals("/setting", server.takeRequest().path)
+    }
+
     private fun encryptedResponse(ts: Long, dataJson: String): MockResponse {
         val encrypted = AesEcbPkcs7.encryptStringToBase64(
             dataJson,
             JmxHash.md5Hex("$ts${JmxProtocolConstants.DataSecret}")
         )
         return MockResponse().setResponseCode(200).setBody("""{"code":200,"data":"$encrypted"}""")
+    }
+
+    private fun encryptDomain(json: String): String {
+        return AesEcbPkcs7.encryptStringToBase64(
+            json,
+            JmxHash.md5Hex(JmxProtocolConstants.DomainServerSecret)
+        )
     }
 
     private fun fixedClock(ts: Long): ApiClock {
