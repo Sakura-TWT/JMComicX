@@ -58,6 +58,8 @@ class JmxCore private constructor(
     val downloadBatchRunner: DownloadBatchRunner,
     private val domainServerUrls: List<String>
 ) {
+    val smokeRunner: JmxCoreSmokeRunner = JmxCoreSmokeRunner(this)
+
     fun healthSnapshot(): JmxCoreHealth {
         return JmxCoreHealth(
             apiVersion = apiVersionProvider.current(),
