@@ -40,4 +40,55 @@ class ApiEndpointManagerTest {
 
         assertEquals(listOf("https://new.test/", "https://second.test/"), stateStore.apiHosts())
     }
+
+    @Test
+    fun currentSkipsEndpointDuringBackoffWindow() {
+        var now = 1_000L
+        val manager = ApiEndpointManager(
+            initialHosts = listOf("https://first.test", "https://second.test"),
+            maxFailuresBeforeDemote = 1,
+            nowMillis = { now }
+        )
+        val first = manager.all()[0].url
+
+        manager.markFailure(first, "timeout")
+
+        val currentDuringBackoff = manager.current()
+        assertTrue(currentDuringBackoff is JmxResult.Success)
+        assertEquals("https://second.test/", (currentDuringBackoff as JmxResult.Success).value.toString())
+        val demoted = manager.all()[0]
+        assertEquals(1, demoted.failureCount)
+        assertEquals(1, demoted.consecutiveFailureCount)
+        assertEquals(2_000L, demoted.unavailableUntilMillis)
+        assertTrue(demoted.healthScore(now) < manager.all()[1].healthScore(now))
+
+        now = 2_000L
+        val currentAfterBackoff = manager.current()
+        assertTrue(currentAfterBackoff is JmxResult.Success)
+        assertEquals("https://second.test/", (currentAfterBackoff as JmxResult.Success).value.toString())
+    }
+
+    @Test
+    fun successRestoresEndpointHealth() {
+        var now = 1_000L
+        val manager = ApiEndpointManager(
+            initialHosts = listOf("https://first.test", "https://second.test"),
+            maxFailuresBeforeDemote = 1,
+            nowMillis = { now }
+        )
+        val first = manager.all()[0].url
+
+        manager.markFailure(first, "timeout")
+        now = 3_000L
+        manager.markSuccess(first)
+
+        val restored = manager.all()[0]
+        assertEquals(1, restored.successCount)
+        assertEquals(0, restored.failureCount)
+        assertEquals(0, restored.consecutiveFailureCount)
+        assertEquals(3_000L, restored.lastSuccessAtMillis)
+        assertEquals(null, restored.unavailableUntilMillis)
+        assertEquals(null, restored.lastFailureMessage)
+        assertEquals("https://first.test/", (manager.current() as JmxResult.Success).value.toString())
+    }
 }

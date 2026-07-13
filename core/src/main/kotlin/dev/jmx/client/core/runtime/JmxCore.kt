@@ -61,12 +61,20 @@ class JmxCore private constructor(
     val smokeRunner: JmxCoreSmokeRunner = JmxCoreSmokeRunner(this)
 
     fun healthSnapshot(): JmxCoreHealth {
+        val nowMillis = System.currentTimeMillis()
         return JmxCoreHealth(
             apiVersion = apiVersionProvider.current(),
             endpoints = endpointManager.all().map {
                 EndpointHealth(
                     url = it.url.toString(),
+                    successCount = it.successCount,
                     failureCount = it.failureCount,
+                    consecutiveFailureCount = it.consecutiveFailureCount,
+                    lastSuccessAtMillis = it.lastSuccessAtMillis,
+                    lastFailureAtMillis = it.lastFailureAtMillis,
+                    unavailableUntilMillis = it.unavailableUntilMillis,
+                    healthScore = it.healthScore(nowMillis),
+                    isAvailable = it.isAvailableAt(nowMillis),
                     lastFailureMessage = it.lastFailureMessage
                 )
             },

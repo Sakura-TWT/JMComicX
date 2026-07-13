@@ -10,6 +10,13 @@ data class JmxCoreHealth(
 
 data class EndpointHealth(
     val url: String,
+    val successCount: Int,
     val failureCount: Int,
+    val consecutiveFailureCount: Int,
+    val lastSuccessAtMillis: Long?,
+    val lastFailureAtMillis: Long?,
+    val unavailableUntilMillis: Long?,
+    val healthScore: Int,
+    val isAvailable: Boolean,
     val lastFailureMessage: String?
 )
