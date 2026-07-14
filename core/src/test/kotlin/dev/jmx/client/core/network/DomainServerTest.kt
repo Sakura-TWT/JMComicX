@@ -85,7 +85,10 @@ class DomainServerTest {
         assertEquals(1, cookieStore.load("https://old.test/album".toHttpUrl()).size)
         assertEquals(1, cookieStore.load("https://www.a.test/album".toHttpUrl()).size)
         assertEquals(1, cookieStore.load("https://www.b.test/album".toHttpUrl()).size)
-        assertEquals(0, cookieStore.load("https://sub.www.a.test/album".toHttpUrl()).size)
+
+        assertEquals(1, cookieStore.load("https://sub.www.a.test/album".toHttpUrl()).size)
+
+        assertEquals(0, cookieStore.load("https://other.test/album".toHttpUrl()).size)
     }
 
     @Test

@@ -28,4 +28,29 @@ class RetryPolicyTest {
         assertFalse(decision.shouldRetry)
         assertFalse(decision.shouldFailover)
     }
+
+    @Test
+    fun forbiddenAndRetryableDecodeTriggerFailover() {
+        val policy = DefaultRetryPolicy(maxAttempts = 3)
+
+        val forbidden = policy.decide(
+            JmxError.Http(code = 403, message = "denied", retryable = true),
+            attemptIndex = 0
+        )
+        val nonJson = policy.decide(
+            JmxError.Decode(message = "not json", retryable = true),
+            attemptIndex = 0
+        )
+        val decodeHard = policy.decide(
+            JmxError.Decode(message = "bad padding"),
+            attemptIndex = 0
+        )
+
+        assertTrue(forbidden.shouldRetry)
+        assertTrue(forbidden.shouldFailover)
+        assertTrue(nonJson.shouldRetry)
+        assertTrue(nonJson.shouldFailover)
+        assertFalse(decodeHard.shouldRetry)
+        assertFalse(decodeHard.shouldFailover)
+    }
 }

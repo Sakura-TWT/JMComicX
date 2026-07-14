@@ -100,7 +100,7 @@ class ApiEndpointProber(
     private fun buildRequest(url: HttpUrl, route: ApiRoute, token: String, tokenParam: String): Request {
         val builder = Request.Builder()
             .url(url)
-            .header("Accept-Encoding", "gzip, deflate")
+
             .header("user-agent", JmxProtocolConstants.MobileUserAgent)
             .header("token", token)
             .header("tokenparam", tokenParam)

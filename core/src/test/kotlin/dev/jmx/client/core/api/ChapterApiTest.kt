@@ -1,5 +1,7 @@
 package dev.jmx.client.core.api
 
+import dev.jmx.client.core.crypto.AesEcbPkcs7
+import dev.jmx.client.core.crypto.JmxHash
 import dev.jmx.client.core.network.ApiEndpointManager
 import dev.jmx.client.core.network.DefaultRetryPolicy
 import dev.jmx.client.core.network.JmxApiClient
@@ -60,6 +62,36 @@ class ChapterApiTest {
         assertTrue(exchange.bodySample.contains("images"))
     }
 
+    @Test
+    fun detailParsesPhotoAndCachesScrambleId() {
+        val ts = 1700566805L
+        val plain = """
+            {
+              "id":"9001",
+              "name":"ch-1",
+              "series_id":"8001",
+              "sort":2,
+              "scramble_id":220980,
+              "page_arr":["00001.webp","00002.webp"],
+              "data_original_domain":"cdn-msp.jmapiproxy1.cc"
+            }
+        """.trimIndent()
+        server.enqueue(encryptedJson(ts, plain))
+        val api = createApi(ts)
+
+        val result = kotlinx.coroutines.runBlocking { api.detail("JM9001") }
+
+        assertTrue(result is JmxResult.Success)
+        val photo = (result as JmxResult.Success).value
+        assertEquals("9001", photo.id)
+        assertEquals("8001", photo.albumId)
+        assertEquals(2, photo.pageArr.size)
+        assertEquals(220980, photo.scrambleId)
+        assertEquals(220980, api.cachedScrambleId("9001", "8001"))
+        val recorded = server.takeRequest()
+        assertEquals("/chapter?id=9001", recorded.path)
+    }
+
     private fun createApi(ts: Long): ChapterApi {
         val tokenProvider = ApiTokenProvider(
             clock = object : ApiClock {
@@ -74,5 +106,15 @@ class ChapterApiTest {
             retryPolicy = DefaultRetryPolicy(maxAttempts = 1)
         )
         return ChapterApi(JmxApiClient(httpClient))
+    }
+
+    private fun encryptedJson(ts: Long, plain: String): MockResponse {
+        val encrypted = AesEcbPkcs7.encryptStringToBase64(
+            plain = plain,
+            key = JmxHash.md5Hex("$ts${JmxProtocolConstants.DataSecret}")
+        )
+        return MockResponse()
+            .setResponseCode(200)
+            .setBody("""{"code":200,"data":"$encrypted"}""")
     }
 }

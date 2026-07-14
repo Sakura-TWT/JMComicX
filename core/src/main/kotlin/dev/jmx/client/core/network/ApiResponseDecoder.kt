@@ -65,10 +65,34 @@ class ApiResponseDecoder(
     }
 
     private fun parseJsonElement(body: String): JmxResult<JsonElement> {
-        return runCatching { JsonParser.parseString(body) }.fold(
+        val normalized = body.trimLeadingNoise()
+        return runCatching { JsonParser.parseString(normalized) }.fold(
             onSuccess = { JmxResult.Success(it) },
-            onFailure = { JmxResult.Failure(JmxError.Schema("JSON 解析失败：${bodySampler.sample(body)}", cause = it)) }
+            onFailure = {
+                JmxResult.Failure(
+                    JmxError.Schema(
+                        "JSON 解析失败：${bodySampler.sample(normalized)}",
+                        cause = it
+                    )
+                )
+            }
         )
+    }
+
+    private fun String.trimLeadingNoise(): String {
+        val start = indexOfFirst { !it.isWhitespace() }
+        if (start < 0) return this
+        val first = this[start]
+        if (first == '{' || first == '[') {
+            return substring(start)
+        }
+        val objectStart = indexOf('{', start)
+        val arrayStart = indexOf('[', start)
+        val candidate = listOfNotNull(
+            objectStart.takeIf { it >= 0 },
+            arrayStart.takeIf { it >= 0 }
+        ).minOrNull()
+        return if (candidate != null) substring(candidate) else this
     }
 
     private fun decodeDataElement(

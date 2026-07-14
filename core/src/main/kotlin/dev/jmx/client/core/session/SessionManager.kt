@@ -19,10 +19,11 @@ class SessionManager(
         }
         val url = apiHost.normalizedBaseUrlOrNull()
             ?: return JmxResult.Failure(JmxError.Domain("API 域名无效", endpoint = apiHost))
+
         val cookie = Cookie.Builder()
             .name("AVS")
             .value(avs)
-            .hostOnlyDomain(url.host)
+            .domain(url.host)
             .path("/")
             .httpOnly()
             .build()
@@ -65,12 +66,47 @@ class SessionManager(
         return JmxResult.Success(cookies)
     }
 
+    fun replicateSessionCookiesToHosts(apiHosts: List<String>): JmxResult<Int> {
+        val source = cookieStore.snapshot()
+        if (source.isEmpty()) return JmxResult.Success(0)
+        var installed = 0
+        for (host in apiHosts.distinct()) {
+            val url = host.normalizedBaseUrlOrNull()
+                ?: return JmxResult.Failure(JmxError.Domain("API 域名无效", endpoint = host))
+            val cloned = source.map { cookie -> cookie.forHost(url.host) }
+            cookieStore.save(url, cloned)
+            installed += cloned.size
+        }
+        return JmxResult.Success(installed)
+    }
+
     fun cookies(): List<Cookie> = cookieStore.snapshot()
+
+    fun hasAvs(): Boolean = currentAvsValue() != null
 
     private fun currentAvsValue(): String? {
         return cookieStore.snapshot()
             .lastOrNull { it.name.equals(AVS_COOKIE_NAME, ignoreCase = true) }
             ?.value
+    }
+
+    private fun Cookie.forHost(host: String): Cookie {
+        val builder = Cookie.Builder()
+            .name(name)
+            .value(value)
+            .path(if (path.isBlank()) "/" else path)
+
+        if (name.equals(AVS_COOKIE_NAME, ignoreCase = true)) {
+            builder.domain(host)
+        } else {
+            builder.hostOnlyDomain(host)
+        }
+        if (httpOnly) builder.httpOnly()
+        if (secure) builder.secure()
+        if (expiresAt < Long.MAX_VALUE / 2) {
+            builder.expiresAt(expiresAt)
+        }
+        return builder.build()
     }
 
     private companion object {

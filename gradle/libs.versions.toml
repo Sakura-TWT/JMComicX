@@ -4,6 +4,7 @@ coroutines = "1.10.2"
 okhttp = "5.3.2"
 gson = "2.13.2"
 junit = "4.13.2"
+webp-imageio = "0.9.0"
 
 [libraries]
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -11,6 +12,7 @@ okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhtt
 mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+webp-imageio = { group = "com.github.usefulness", name = "webp-imageio", version.ref = "webp-imageio" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

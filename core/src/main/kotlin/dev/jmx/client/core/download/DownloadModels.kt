@@ -8,7 +8,9 @@ data class DownloadRequest(
     val headers: Map<String, String> = emptyMap(),
     val acceptedContentTypes: Set<String> = emptySet(),
     val maxBytes: Long? = null,
-    val observer: DownloadObserver = DownloadObserver.None
+    val observer: DownloadObserver = DownloadObserver.None,
+    val rangeStartInclusive: Long? = null,
+    val preferRangeResume: Boolean = false
 )
 
 data class DownloadResult(
@@ -16,7 +18,9 @@ data class DownloadResult(
     val statusCode: Int,
     val contentType: String?,
     val contentLength: Long,
-    val bytesWritten: Long
+    val bytesWritten: Long,
+    val resumedFromOffset: Long = 0L,
+    val usedRange: Boolean = false
 )
 
 data class DownloadBatchItem(

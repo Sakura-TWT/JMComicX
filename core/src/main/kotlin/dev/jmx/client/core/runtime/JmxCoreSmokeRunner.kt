@@ -23,7 +23,8 @@ data class JmxCoreSmokeScenario(
     val imageRowCodec: ImageRowCodec,
     val imageOutputStore: ImageOutputStore,
     val initialize: Boolean = true,
-    val imageHeaders: Map<String, String> = emptyMap(),
+
+    val imageHeaders: Map<String, String>? = null,
     val acceptedImageContentTypes: Set<String> = setOf("image/*"),
     val maxImageBytes: Long? = null
 )

@@ -55,13 +55,23 @@ class InMemoryCookieStore(
 }
 
 class StoreBackedCookieJar(
-    private val store: CookieStore
+    private val store: CookieStore,
+
+    private val alwaysAttachNames: Set<String> = setOf("AVS")
 ) : CookieJar {
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
         store.save(url, cookies)
     }
 
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
-        return store.load(url)
+        val matched = store.load(url)
+        if (alwaysAttachNames.isEmpty()) return matched
+        val present = matched.map { it.name.lowercase() }.toHashSet()
+        val extras = store.snapshot()
+            .filter { cookie ->
+                alwaysAttachNames.any { it.equals(cookie.name, ignoreCase = true) } &&
+                    cookie.name.lowercase() !in present
+            }
+        return if (extras.isEmpty()) matched else matched + extras
     }
 }

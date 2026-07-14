@@ -3,6 +3,7 @@ package dev.jmx.client.core.runtime
 import dev.jmx.client.core.cache.InMemoryKeyValueStore
 import dev.jmx.client.core.crypto.AesEcbPkcs7
 import dev.jmx.client.core.crypto.JmxHash
+import dev.jmx.client.core.download.ImageHttpHeaders
 import dev.jmx.client.core.image.DecodedImageRows
 import dev.jmx.client.core.image.ImagePipeline
 import dev.jmx.client.core.image.ImageRowCodec
@@ -18,10 +19,12 @@ import dev.jmx.client.core.session.InMemoryCookieStore
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import okio.Buffer
 import org.junit.Assert.assertArrayEquals
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -526,11 +529,25 @@ class JmxCoreTest {
         assertEquals("webp", record.key.extension)
         assertEquals("2.5.2", report.health.apiVersion)
         assertEquals(1, report.health.cookieCount)
-        assertEquals("/setting", server.takeRequest().path)
-        assertEquals("username=user&password=pass", server.takeRequest().body.readUtf8())
-        assertEquals("/album?id=321", server.takeRequest().path)
-        assertTrue(server.takeRequest().path!!.startsWith("/chapter_view_template?id=123&"))
-        assertEquals("/media/photos/123/00001.webp", server.takeRequest().path)
+        val requests = drainRecordedRequests(server)
+        assertEquals("/setting", requests[0].path)
+        assertEquals("username=user&password=pass", requests[1].body.readUtf8())
+        assertEquals("/album?id=321", requests[2].path)
+        assertTrue(requests[3].path!!.startsWith("/chapter_view_template?id=123&"))
+        assertEquals("/media/photos/123/00001.webp", requests[4].path)
+
+        val imageRequest = requests[4]
+        assertEquals(ImageHttpHeaders.REQUESTED_WITH, imageRequest.getHeader("X-Requested-With"))
+        assertNotNull(imageRequest.getHeader("Referer"))
+        assertNotNull(imageRequest.getHeader("user-agent"))
+    }
+
+    private fun drainRecordedRequests(server: MockWebServer): List<RecordedRequest> {
+        val requests = mutableListOf<RecordedRequest>()
+        while (server.requestCount > requests.size) {
+            requests += server.takeRequest()
+        }
+        return requests
     }
 
     @Test

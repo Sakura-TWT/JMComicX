@@ -52,12 +52,12 @@ class LibraryApi(
     }
 
     suspend fun categoriesFilter(filter: CategoryFilter): JmxResult<AlbumPage> {
+
         return albumPage(ApiRoute.CategoriesFilter) {
             queryAtLeast("page", filter.page, minimum = 1)
-            query("t", filter.time)
+            query("order", "")
             query("c", filter.category)
-            query("o", filter.order)
-            query("main_tag", filter.mainTag)
+            query("o", filter.mobileOrderParam)
         }
     }
 
@@ -66,11 +66,32 @@ class LibraryApi(
         order: String,
         folderId: Int = 0
     ): JmxResult<AlbumPage> {
-        return albumPage(ApiRoute.Favorite) {
-            queryAtLeast("page", page, minimum = 1)
-            query("o", order)
-            query("folder_id", folderId)
+        return when (val result = favoritePage(page, order, folderId)) {
+            is JmxResult.Success -> JmxResult.Success(result.value.page)
+            is JmxResult.Failure -> result
         }
+    }
+
+    suspend fun favoritePage(
+        page: Int,
+        order: String,
+        folderId: Int = 0
+    ): JmxResult<FavoritePage> {
+        val data = when (
+            val result = apiClient.requestJson(
+                apiRequest(ApiRoute.Favorite) {
+                    queryAtLeast("page", page, minimum = 1)
+                    query("o", order)
+                    query("folder_id", folderId)
+                }
+            )
+        ) {
+            is JmxResult.Success -> result.value
+            is JmxResult.Failure -> return result
+        }
+        val root = data.asObjectOrNull()
+            ?: return JmxResult.Failure(JmxError.Schema("favorite data is not an object"))
+        return JmxResult.Success(root.toFavoritePage())
     }
 
     suspend fun watchList(page: Int): JmxResult<AlbumPage> {

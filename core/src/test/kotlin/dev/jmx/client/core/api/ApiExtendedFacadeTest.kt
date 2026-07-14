@@ -8,6 +8,7 @@ import dev.jmx.client.core.network.JmxApiClient
 import dev.jmx.client.core.network.JmxHttpClient
 import dev.jmx.client.core.protocol.ApiClock
 import dev.jmx.client.core.protocol.ApiTokenProvider
+import dev.jmx.client.core.protocol.JmxMagicConstants
 import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.result.JmxResult
 import okhttp3.mockwebserver.MockResponse
@@ -178,10 +179,9 @@ class ApiExtendedFacadeTest {
             api.categoriesFilter(
                 CategoryFilter(
                     page = 0,
-                    time = "week",
-                    category = "doujin",
-                    order = "mv",
-                    mainTag = 2
+                    time = JmxMagicConstants.TIME_WEEK,
+                    category = JmxMagicConstants.CATEGORY_DOUJIN,
+                    order = JmxMagicConstants.ORDER_BY_VIEW
                 )
             )
         }
@@ -194,7 +194,8 @@ class ApiExtendedFacadeTest {
         assertTrue(filtered is JmxResult.Success)
         assertEquals("category album", (filtered as JmxResult.Success).value.content.single().name)
         assertEquals("/week", server.takeRequest().path)
-        assertEquals("/categories/filter?page=1&t=week&c=doujin&o=mv&main_tag=2", server.takeRequest().path)
+
+        assertEquals("/categories/filter?page=1&order=&c=doujin&o=mv_w", server.takeRequest().path)
     }
 
     private fun createClient(): JmxApiClient {

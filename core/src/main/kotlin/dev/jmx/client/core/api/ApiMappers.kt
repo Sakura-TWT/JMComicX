@@ -46,6 +46,27 @@ internal fun JsonObject.toAlbumPage(): AlbumPage {
     )
 }
 
+internal fun JsonObject.toFavoritePage(): FavoritePage {
+    val albumPage = toAlbumPage()
+    val folders = firstObjectList("folder_list", "folders", "folder")
+        .mapNotNull { it.toFavoriteFolderOrNull() }
+    return FavoritePage(
+        total = albumPage.total,
+        content = albumPage.content,
+        folders = folders,
+        raw = albumPage.raw
+    )
+}
+
+private fun JsonObject.toFavoriteFolderOrNull(): FavoriteFolder? {
+    val id = stringOrNull("FID", "fid", "id", "0") ?: return null
+    return FavoriteFolder(
+        id = id,
+        name = stringOrNull("name", "title", "2"),
+        ownerUserId = stringOrNull("UID", "uid", "user_id", "1")
+    )
+}
+
 internal fun JsonElement.toAlbumPageOrNull(): AlbumPage? {
     return when {
         isJsonObject -> asJsonObject.toAlbumPage()
@@ -183,6 +204,56 @@ private fun JsonObject.toAlbumChapterOrNull(): AlbumChapter? {
         name = stringOrNull("name", "title"),
         sort = stringOrNull("sort")
     )
+}
+
+internal fun JsonObject.toPhotoDetail(): PhotoDetail {
+    val pageArr = pageArrList()
+    val id = stringOrNull("id", "photo_id", "aid", "album_id") ?: ""
+    return PhotoDetail(
+        id = id,
+        name = stringOrNull("name", "title"),
+        seriesId = stringOrNull("series_id", "seriesId", "album_id"),
+        sort = intOrNull("sort"),
+        tags = stringListOrEmpty("tags"),
+        authors = stringListOrEmpty("author", "authors"),
+        scrambleId = intOrNull("scramble_id", "scrambleId"),
+        pageArr = pageArr,
+        imageDomain = stringOrNull(
+            "data_original_domain",
+            "image_domain",
+            "img_domain",
+            "domain"
+        ),
+        imageCount = intOrNull("total_photo", "page_count", "images")
+            ?: pageArr.size.takeIf { it > 0 },
+        raw = toRawMap()
+    )
+}
+
+private fun JsonObject.pageArrList(): List<String> {
+    val direct = get("page_arr") ?: get("images") ?: get("pageArr")
+    when {
+        direct == null -> Unit
+        direct.isJsonArray -> {
+            return direct.asJsonArray.mapNotNull { item ->
+                item.takeIf { it.isJsonPrimitive }?.let { runCatching { it.asString }.getOrNull() }
+            }.filter { it.isNotBlank() }
+        }
+        direct.isJsonPrimitive -> {
+            val text = runCatching { direct.asString }.getOrNull()?.trim().orEmpty()
+            if (text.startsWith("[")) {
+                return runCatching {
+                    com.google.gson.JsonParser.parseString(text).asJsonArray.mapNotNull { item ->
+                        item.takeIf { it.isJsonPrimitive }?.let { runCatching { it.asString }.getOrNull() }
+                    }.filter { it.isNotBlank() }
+                }.getOrDefault(emptyList())
+            }
+            if (text.isNotBlank()) return listOf(text)
+        }
+    }
+    return firstObjectList("content", "list").mapNotNull {
+        it.stringOrNull("name", "filename", "file", "url")
+    }
 }
 
 private fun JsonObject.toWeekTypeOrNull(): WeekType? {

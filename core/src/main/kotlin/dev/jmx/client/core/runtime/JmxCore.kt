@@ -10,7 +10,10 @@ import dev.jmx.client.core.cache.InMemoryKeyValueStore
 import dev.jmx.client.core.cache.KeyValueStore
 import dev.jmx.client.core.cache.ProtocolStateStore
 import dev.jmx.client.core.download.BinaryDownloader
+import dev.jmx.client.core.download.ChapterDownloadTaskManager
+import dev.jmx.client.core.download.ChapterDownloadTaskStore
 import dev.jmx.client.core.download.DownloadBatchRunner
+import dev.jmx.client.core.download.TaskExecutionPolicy
 import dev.jmx.client.core.network.ApiEndpointManager
 import dev.jmx.client.core.network.ApiEndpointProber
 import dev.jmx.client.core.network.ApiEndpointSelection
@@ -38,7 +41,10 @@ data class JmxCoreConfig(
     val apiClock: ApiClock = SystemApiClock,
     val retryPolicy: RetryPolicy = DefaultRetryPolicy(),
     val downloadConcurrency: Int = 4,
-    val domainServerUrls: List<String> = JmxProtocolConstants.DomainServerUrls
+    val domainServerUrls: List<String> = JmxProtocolConstants.DomainServerUrls,
+
+    val chapterDownloadTaskStore: ChapterDownloadTaskStore? = null,
+    val taskExecutionPolicy: TaskExecutionPolicy = TaskExecutionPolicy()
 )
 
 class JmxCore private constructor(
@@ -59,11 +65,26 @@ class JmxCore private constructor(
     val initializer: JmxCoreInitializer,
     val downloader: BinaryDownloader,
     val downloadBatchRunner: DownloadBatchRunner,
-    private val domainServerUrls: List<String>
+    private val domainServerUrls: List<String>,
+    chapterDownloadTaskStore: ChapterDownloadTaskStore? = null,
+    taskExecutionPolicy: TaskExecutionPolicy = TaskExecutionPolicy()
 ) {
     val smokeRunner: JmxCoreSmokeRunner = JmxCoreSmokeRunner(this)
     val probeRunner: JmxCoreProbeRunner = JmxCoreProbeRunner(this)
+    val connectivityRunner: JmxLiveConnectivityRunner = JmxLiveConnectivityRunner(this)
+    val readingRunner: JmxLiveReadingRunner = JmxLiveReadingRunner(this)
+    val loginRunner: JmxLiveLoginRunner = JmxLiveLoginRunner(this)
     val endpointController: JmxEndpointController = JmxEndpointController(this)
+    val chapterDownloadTasks: ChapterDownloadTaskManager = ChapterDownloadTaskManager(
+        templateFetcher = { chapterId, shunt ->
+            chapterApi.template(chapterId = chapterId, shunt = shunt)
+        },
+        downloader = downloader,
+        downloadConcurrency = downloadBatchRunner.maxConcurrency,
+        taskStore = chapterDownloadTaskStore,
+        executionPolicy = taskExecutionPolicy
+    )
+    val diagnosticExporter: JmxDiagnosticExporter = JmxDiagnosticExporter(this)
 
     fun healthSnapshot(): JmxCoreHealth {
         val nowMillis = System.currentTimeMillis()
@@ -122,7 +143,15 @@ class JmxCore private constructor(
             val albumApi = AlbumApi(apiClient)
             val chapterApi = ChapterApi(apiClient)
             val settingApi = SettingApi(apiClient, apiVersionProvider)
-            val userApi = UserApi(apiClient, sessionManager)
+            val userApi = UserApi(
+                apiClient = apiClient,
+                sessionManager = sessionManager,
+                sessionSyncHosts = {
+                    endpointManager.all().map { it.url.toString() }
+                },
+                endpointManager = endpointManager,
+                pinEndpointOnLogin = true
+            )
             val interactionApi = InteractionApi(apiClient)
             val libraryApi = LibraryApi(apiClient)
             val domainRefresher = DomainRefresher(
@@ -154,7 +183,9 @@ class JmxCore private constructor(
                 initializer = JmxCoreInitializer(domainRefresher, settingApi),
                 downloader = downloader,
                 downloadBatchRunner = DownloadBatchRunner(downloader, config.downloadConcurrency),
-                domainServerUrls = config.domainServerUrls
+                domainServerUrls = config.domainServerUrls,
+                chapterDownloadTaskStore = config.chapterDownloadTaskStore,
+                taskExecutionPolicy = config.taskExecutionPolicy
             )
         }
     }

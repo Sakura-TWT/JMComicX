@@ -8,7 +8,8 @@ import dev.jmx.client.core.image.ImageStoreBatchRunner
 import dev.jmx.client.core.result.JmxResult
 
 data class ChapterImageTransferOptions(
-    val headers: Map<String, String> = emptyMap(),
+
+    val headers: Map<String, String>? = null,
     val acceptedContentTypes: Set<String> = setOf("image/*"),
     val maxBytes: Long? = null,
     val observerFactory: (index: Int, url: String) -> DownloadObserver = { _, _ -> DownloadObserver.None }
@@ -35,7 +36,10 @@ class ChapterImageTransferRunner(
     ): ChapterImageTransferReport {
         val restoreResults = restoreBatchRunner.downloadAndRestore(
             template.toImageDownloadRequests(
-                headers = options.headers,
+                headers = options.headers
+                    ?: dev.jmx.client.core.download.ImageHttpHeaders.default(
+                        refererHost = template.imageHost
+                    ),
                 acceptedContentTypes = options.acceptedContentTypes,
                 maxBytes = options.maxBytes,
                 observerFactory = options.observerFactory

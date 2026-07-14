@@ -82,6 +82,36 @@ data class AlbumChapter(
     val sort: String?
 )
 
+data class PhotoDetail(
+    val id: String,
+    val name: String?,
+    val seriesId: String?,
+    val sort: Int?,
+    val tags: List<String>,
+    val authors: List<String>,
+    val scrambleId: Int?,
+    val pageArr: List<String>,
+    val imageDomain: String?,
+    val imageCount: Int?,
+    val raw: Map<String, Any?>
+) {
+    val isSingleAlbum: Boolean = seriesId == null || seriesId == "0" || seriesId == id
+
+    val albumId: String = if (isSingleAlbum) id else (seriesId ?: id)
+
+    fun imageUrls(cacheQuery: String? = null): List<String> {
+        val host = imageDomain ?: return emptyList()
+        return pageArr.map { fileName ->
+            dev.jmx.client.core.image.ImageUrl.ofFileName(
+                imageHost = host,
+                photoId = id,
+                fileName = fileName,
+                cacheQuery = cacheQuery
+            )
+        }
+    }
+}
+
 data class SearchPage(
     val total: Int?,
     val redirectAlbumId: String?,
@@ -93,6 +123,21 @@ data class AlbumPage(
     val content: List<AlbumSummary>,
     val raw: Map<String, Any?>
 )
+
+data class FavoriteFolder(
+    val id: String,
+    val name: String?,
+    val ownerUserId: String? = null
+)
+
+data class FavoritePage(
+    val total: Int?,
+    val content: List<AlbumSummary>,
+    val folders: List<FavoriteFolder>,
+    val raw: Map<String, Any?>
+) {
+    val page: AlbumPage = AlbumPage(total = total, content = content, raw = raw)
+}
 
 data class WeekInfo(
     val categories: List<WeekCategory>,
@@ -115,9 +160,13 @@ data class CategoryFilter(
     val page: Int,
     val time: String,
     val category: String,
-    val order: String = "mr",
+    val order: String = dev.jmx.client.core.protocol.JmxMagicConstants.ORDER_BY_LATEST,
     val mainTag: Int = 0
-)
+) {
+
+    val mobileOrderParam: String =
+        dev.jmx.client.core.protocol.JmxMagicConstants.categoriesFilterOrder(order, time)
+}
 
 data class ActionResult(
     val status: String?,

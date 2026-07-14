@@ -8,11 +8,19 @@ import java.io.ByteArrayOutputStream
 import javax.imageio.ImageIO
 
 class ImageIoRowCodec : ImageRowCodec {
+    init {
+        ensureImageIoPlugins()
+    }
+
     override fun decode(bytes: ByteArray, contentType: String?): JmxResult<DecodedImageRows> {
         return runCatching {
+            ensureImageIoPlugins()
             val image = ImageIO.read(ByteArrayInputStream(bytes))
                 ?: return JmxResult.Failure(
-                    JmxError.Decode("图片解码失败：ImageIO 不支持 ${contentType ?: "unknown"}")
+                    JmxError.Decode(
+                        "图片解码失败：ImageIO 无法读取 ${contentType ?: "unknown"} " +
+                            "(readers=${ImageIO.getReaderFormatNames()?.joinToString().orEmpty()})"
+                    )
                 )
             val width = image.width
             val height = image.height
@@ -42,6 +50,7 @@ class ImageIoRowCodec : ImageRowCodec {
 
     override fun encode(image: DecodedImageRows, sourceContentType: String?): JmxResult<RestoredImageBytes> {
         return runCatching {
+            ensureImageIoPlugins()
             if (image.bytesPerRow != image.width * BYTES_PER_PIXEL) {
                 return JmxResult.Failure(
                     JmxError.Schema(
@@ -50,6 +59,7 @@ class ImageIoRowCodec : ImageRowCodec {
                     )
                 )
             }
+
             val format = outputFormat(sourceContentType)
             val imageType = if (format.supportsAlpha) BufferedImage.TYPE_INT_ARGB else BufferedImage.TYPE_INT_RGB
             val buffered = BufferedImage(image.width, image.height, imageType)
@@ -64,17 +74,20 @@ class ImageIoRowCodec : ImageRowCodec {
                     buffered.setRGB(x, y, (alpha shl 24) or (r shl 16) or (g shl 8) or b)
                 }
             }
-            val output = ByteArrayOutputStream()
-            if (!ImageIO.write(buffered, format.name, output)) {
-                return JmxResult.Failure(
-                    JmxError.Decode("图片编码失败：ImageIO 不支持 ${format.name}")
-                )
+            val candidates = listOf(
+                format.name to format.contentType,
+                "png" to "image/png"
+            ).distinctBy { it.first }
+            for ((name, contentType) in candidates) {
+                val output = ByteArrayOutputStream()
+                if (ImageIO.write(buffered, name, output)) {
+                    return@runCatching JmxResult.Success(
+                        RestoredImageBytes(bytes = output.toByteArray(), contentType = contentType)
+                    )
+                }
             }
-            JmxResult.Success(
-                RestoredImageBytes(
-                    bytes = output.toByteArray(),
-                    contentType = format.contentType
-                )
+            return JmxResult.Failure(
+                JmxError.Decode("图片编码失败：ImageIO 不支持 ${format.name}/png")
             )
         }.getOrElse {
             JmxResult.Failure(JmxError.Decode("图片编码异常", cause = it))
@@ -86,6 +99,8 @@ class ImageIoRowCodec : ImageRowCodec {
             "image/jpeg",
             "image/jpg" -> OutputImageFormat("jpg", "image/jpeg", supportsAlpha = false)
             "image/gif" -> OutputImageFormat("gif", "image/gif", supportsAlpha = false)
+
+            "image/webp" -> OutputImageFormat("png", "image/png", supportsAlpha = true)
             else -> OutputImageFormat("png", "image/png", supportsAlpha = true)
         }
     }
@@ -98,5 +113,19 @@ class ImageIoRowCodec : ImageRowCodec {
 
     private companion object {
         const val BYTES_PER_PIXEL = 4
+
+        @Volatile
+        private var pluginsReady = false
+
+        fun ensureImageIoPlugins() {
+            if (pluginsReady) return
+            synchronized(this) {
+                if (pluginsReady) return
+
+                runCatching { Class.forName("com.luciad.imageio.webp.WebPImageReaderSpi") }
+                ImageIO.scanForPlugins()
+                pluginsReady = true
+            }
+        }
     }
 }

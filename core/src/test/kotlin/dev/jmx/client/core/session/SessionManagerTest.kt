@@ -18,9 +18,24 @@ class SessionManagerTest {
         assertTrue(result is JmxResult.Success)
         assertEquals(1, store.load("https://api.test/album".toHttpUrl()).size)
         assertEquals(0, store.load("https://other.test/album".toHttpUrl()).size)
-        assertEquals(0, store.load("https://sub.api.test/album".toHttpUrl()).size)
+
+        assertEquals(1, store.load("https://sub.api.test/album".toHttpUrl()).size)
         assertEquals("AVS", session.cookies().single().name)
-        assertTrue(session.cookies().single().hostOnly)
+        assertTrue(!session.cookies().single().hostOnly)
+    }
+
+    @Test
+    fun cookieJarAlwaysAttachesAvsEvenWhenHostDiffers() {
+        val store = InMemoryCookieStore()
+        val session = SessionManager(store)
+        session.installAvsCookie("https://login.test", "secret-avs")
+        val jar = StoreBackedCookieJar(store)
+
+        val cookies = jar.loadForRequest("https://other-api.test/favorite".toHttpUrl())
+
+        assertEquals(1, cookies.size)
+        assertEquals("AVS", cookies.single().name)
+        assertEquals("secret-avs", cookies.single().value)
     }
 
     @Test
@@ -119,6 +134,34 @@ class SessionManagerTest {
 
         assertEquals(0, store.load("https://api.test/album".toHttpUrl()).size)
         assertEquals(0, store.snapshot().size)
+    }
+
+    @Test
+    fun replicatesAllSessionCookiesAcrossHosts() {
+        val store = InMemoryCookieStore()
+        val session = SessionManager(store)
+        session.installAvsCookie("https://login.test", "avs-token")
+        val extraUrl = "https://login.test/".toHttpUrl()
+        store.save(
+            extraUrl,
+            listOf(
+                Cookie.Builder()
+                    .name("SESSION")
+                    .value("sess")
+                    .hostOnlyDomain("login.test")
+                    .path("/")
+                    .build()
+            )
+        )
+
+        val result = session.replicateSessionCookiesToHosts(
+            listOf("https://mirror-a.test", "https://mirror-b.test")
+        )
+
+        assertTrue(result is JmxResult.Success)
+        assertEquals("avs-token", store.load("https://mirror-a.test/favorite".toHttpUrl()).single { it.name == "AVS" }.value)
+        assertEquals("sess", store.load("https://mirror-a.test/favorite".toHttpUrl()).single { it.name == "SESSION" }.value)
+        assertEquals("avs-token", store.load("https://mirror-b.test/watch_list".toHttpUrl()).single { it.name == "AVS" }.value)
     }
 
     @Test

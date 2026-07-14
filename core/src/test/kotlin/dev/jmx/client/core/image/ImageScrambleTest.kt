@@ -17,6 +17,22 @@ class ImageScrambleTest {
     }
 
     @Test
+    fun matchesPythonSegmentFormulaAcrossAlgorithmEras() {
+
+        assertEquals(16, ImageScramble.segmentCount(220980, 300000, "00001"))
+        assertEquals(12, ImageScramble.segmentCount(220980, 500000, "00001"))
+        assertEquals(6, ImageScramble.segmentCount(220980, 438516, "00001"))
+        assertEquals(
+            6,
+            ImageScramble.segmentCountByUrl(
+                scrambleId = 220980,
+                albumId = 438516,
+                url = "https://cdn.test/media/photos/438516/00001.webp?v=1"
+            )
+        )
+    }
+
+    @Test
     fun extractsFilenameAndGifIgnoringQuery() {
         val url = "https://img.test/media/photos/123/00001.gif?cache=abc"
 

@@ -2,11 +2,33 @@ package dev.jmx.client.core.chapter
 
 import dev.jmx.client.core.download.DownloadEvent
 import dev.jmx.client.core.download.DownloadObserver
+import dev.jmx.client.core.download.ImageHttpHeaders
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChapterImageRequestsTest {
+    @Test
+    fun defaultHeadersUseMobileImageProfile() {
+        val template = ChapterTemplate(
+            albumId = 300000,
+            scrambleId = 1,
+            speed = "0",
+            imageHost = "https://img.test",
+            chapterId = "123456",
+            cacheSuffix = "?v=1",
+            imageFileNames = listOf("00001.webp")
+        )
+
+        val request = template.toImageDownloadRequests().single()
+        val expected = ImageHttpHeaders.default(refererHost = "https://img.test")
+
+        assertEquals(expected, request.headers)
+        assertTrue(request.headers.containsKey("X-Requested-With"))
+        assertTrue(!request.headers.containsKey("Accept-Encoding"))
+    }
+
     @Test
     fun mapsTemplateImagesToRestoreRequests() {
         val observers = mutableListOf<DownloadObserver>()

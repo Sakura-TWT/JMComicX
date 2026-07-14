@@ -10,11 +10,14 @@ import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.io.ByteArrayOutputStream
+import java.util.zip.GZIPOutputStream
 
 class JmxApiClientTest {
     private lateinit var server: MockWebServer
@@ -58,8 +61,44 @@ class JmxApiClientTest {
         assertEquals("demo", value.asJsonObject["name"].asString)
         val recorded = server.takeRequest()
         assertEquals("/album?id=123", recorded.path)
-        assertEquals("1700566805,2.0.26", recorded.headers["tokenparam"])
+        assertEquals("1700566805,${JmxProtocolConstants.DefaultApiVersion}", recorded.headers["tokenparam"])
         assertEquals(JmxHash.md5Hex("$ts${JmxProtocolConstants.AppTokenSecret}"), recorded.headers["token"])
+
+        val acceptEncoding = recorded.headers["Accept-Encoding"]
+        assertTrue(
+            "OkHttp should own Accept-Encoding for transparent gzip, got=$acceptEncoding",
+            acceptEncoding == null || acceptEncoding.equals("gzip", ignoreCase = true)
+        )
+    }
+
+    @Test
+    fun transparentlyDecodesGzipEncryptedJsonResponses() {
+        val ts = 1700566805L
+        val encrypted = AesEcbPkcs7.encryptStringToBase64(
+            plain = """{"name":"gzip-demo"}""",
+            key = JmxHash.md5Hex("$ts${JmxProtocolConstants.DataSecret}")
+        )
+        val plainBody = """{"code":200,"data":"$encrypted"}"""
+        val gzipBytes = ByteArrayOutputStream().use { baos ->
+            GZIPOutputStream(baos).use { gzip ->
+                gzip.write(plainBody.toByteArray(Charsets.UTF_8))
+            }
+            baos.toByteArray()
+        }
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Encoding", "gzip")
+                .setBody(Buffer().write(gzipBytes))
+        )
+        val client = createClient(ts)
+
+        val result = kotlinx.coroutines.runBlocking {
+            client.requestJson(ApiRequest(route = ApiRoute.Album, query = mapOf("id" to "1")))
+        }
+
+        assertTrue(result is JmxResult.Success)
+        assertEquals("gzip-demo", (result as JmxResult.Success).value.asJsonObject["name"].asString)
     }
 
     @Test

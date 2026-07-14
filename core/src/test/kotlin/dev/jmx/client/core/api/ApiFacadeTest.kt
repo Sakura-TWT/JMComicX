@@ -16,6 +16,7 @@ import dev.jmx.client.core.session.CookieStore
 import dev.jmx.client.core.session.InMemoryCookieStore
 import dev.jmx.client.core.session.SessionManager
 import dev.jmx.client.core.session.StoreBackedCookieJar
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -115,8 +116,96 @@ class ApiFacadeTest {
         val result = kotlinx.coroutines.runBlocking { userApi.login("user", "bad-pass") }
 
         assertTrue(result is JmxResult.Failure)
+
         assertEquals("old-avs", store.load(server.url("/album")).single { it.name == "AVS" }.value)
         assertEquals(1, session.cookies().size)
+    }
+
+    @Test
+    fun userApiSeedsExistingCookiesIntoLoginRequest() {
+        val endpointManager = ApiEndpointManager(listOf(server.url("/").toString()))
+        val store = InMemoryCookieStore()
+        val session = SessionManager(store)
+        val guest = okhttp3.Cookie.Builder()
+            .name("GUEST")
+            .value("seed")
+            .hostOnlyDomain(server.url("/").host)
+            .path("/")
+            .build()
+        store.save(server.url("/"), listOf(guest))
+        server.enqueue(encryptedResponse("""{"s":"avs-new","uid":"1","username":"x"}"""))
+        val userApi = UserApi(
+            createClient(endpointManager = endpointManager, cookieStore = store),
+            session
+        )
+
+        val result = kotlinx.coroutines.runBlocking { userApi.login("user", "pass") }
+
+        assertTrue(result is JmxResult.Success)
+        val recorded = server.takeRequest()
+        val cookieHeader = recorded.getHeader("Cookie").orEmpty()
+        assertTrue("login must carry pre-seeded guest cookie, got=$cookieHeader", cookieHeader.contains("GUEST=seed"))
+    }
+
+    @Test
+    fun userApiSyncsAvsToAdditionalHostsAfterLogin() {
+        val endpointManager = ApiEndpointManager(listOf(server.url("/").toString()))
+        val store = InMemoryCookieStore()
+        val session = SessionManager(store)
+        server.enqueue(encryptedResponse("""{"s":"synced-avs","uid":"9","username":"bob"}"""))
+        val userApi = UserApi(
+            apiClient = createClient(endpointManager = endpointManager, cookieStore = store),
+            sessionManager = session,
+            sessionSyncHosts = { listOf("https://mirror-a.test", "https://mirror-b.test") }
+        )
+
+        val result = kotlinx.coroutines.runBlocking { userApi.login("user", "pass") }
+
+        assertTrue(result is JmxResult.Success)
+        assertEquals("synced-avs", (result as JmxResult.Success).value.avs)
+        assertEquals(
+            "synced-avs",
+            store.load("https://mirror-a.test/album".toHttpUrl()).single().value
+        )
+        assertEquals(
+            "synced-avs",
+            store.load("https://mirror-b.test/album".toHttpUrl()).single().value
+        )
+    }
+
+    @Test
+    fun userApiLogoutClearsSession() {
+        val store = InMemoryCookieStore()
+        val session = SessionManager(store)
+        session.installAvsCookie(server.url("/").toString(), "avs")
+        val userApi = UserApi(createClient(cookieStore = store), session)
+
+        userApi.logout()
+
+        assertEquals(0, session.cookies().size)
+    }
+
+    @Test
+    fun albumApiSearchResolvedExpandsRedirectAid() {
+        server.enqueue(encryptedResponse("""{"search_query":"438516","total":1,"redirect_aid":"438516","content":[]}"""))
+        server.enqueue(
+            encryptedResponse(
+                """{"id":"438516","name":"redirected","author":["x"],"images":6}"""
+            )
+        )
+        val albumApi = AlbumApi(createClient())
+
+        val result = kotlinx.coroutines.runBlocking {
+            albumApi.searchResolved(query = "438516", page = 1)
+        }
+
+        assertTrue(result is JmxResult.Success)
+        val page = (result as JmxResult.Success).value
+        assertEquals("438516", page.redirectAlbumId)
+        assertEquals(1, page.content.size)
+        assertEquals("redirected", page.content.single().name)
+        assertEquals("/search?search_query=438516&page=1&o=mr&main_tag=0&t=a", server.takeRequest().path)
+        assertEquals("/album?id=438516", server.takeRequest().path)
     }
 
     @Test

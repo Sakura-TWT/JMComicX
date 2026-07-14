@@ -3,5 +3,7 @@
 build/
 **/build/
 local.properties
+local-credentials.properties
+**/local-credentials.properties
 docs/
 *.md

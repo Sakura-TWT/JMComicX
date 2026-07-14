@@ -4,6 +4,7 @@ import dev.jmx.client.core.download.ByteSink
 import dev.jmx.client.core.download.DownloadRequest
 import dev.jmx.client.core.download.DownloadResult
 import dev.jmx.client.core.download.Downloader
+import dev.jmx.client.core.download.ImageHttpHeaders
 import dev.jmx.client.core.image.DecodedImageRows
 import dev.jmx.client.core.image.ImageOutputStore
 import dev.jmx.client.core.image.ImageOutputKey
@@ -79,6 +80,55 @@ class ChapterImageTransferRunnerTest {
         assertEquals(1, report.failedCount)
         assertTrue(report.restoreResults[1].result is JmxResult.Failure)
         assertEquals(1, store.records().size)
+    }
+
+    @Test
+    fun nullHeadersApplyMobileImageDefaults() {
+        var captured: Map<String, String>? = null
+        val runner = transferRunner(
+            downloader = FakeDownloader { request, sink ->
+                captured = request.headers
+                sink.write(byteArrayOf(1))
+                JmxResult.Success(successDownload(request.url, 1, "image/gif"))
+            },
+            store = InMemoryImageOutputStore()
+        )
+
+        kotlinx.coroutines.runBlocking {
+            runner.transfer(
+                template = template(listOf("00001.gif")),
+                options = ChapterImageTransferOptions(headers = null)
+            )
+        }
+
+        val headers = requireNotNull(captured)
+        val expected = ImageHttpHeaders.default(refererHost = "https://img.test")
+        assertEquals(expected, headers)
+        assertTrue(headers.containsKey("X-Requested-With"))
+        assertTrue(headers.containsKey("Referer"))
+        assertTrue(!headers.containsKey("Accept-Encoding"))
+    }
+
+    @Test
+    fun emptyHeadersMeanExplicitlyNoHeaders() {
+        var captured: Map<String, String>? = null
+        val runner = transferRunner(
+            downloader = FakeDownloader { request, sink ->
+                captured = request.headers
+                sink.write(byteArrayOf(1))
+                JmxResult.Success(successDownload(request.url, 1, "image/gif"))
+            },
+            store = InMemoryImageOutputStore()
+        )
+
+        kotlinx.coroutines.runBlocking {
+            runner.transfer(
+                template = template(listOf("00001.gif")),
+                options = ChapterImageTransferOptions(headers = emptyMap())
+            )
+        }
+
+        assertEquals(emptyMap<String, String>(), captured)
     }
 
     @Test

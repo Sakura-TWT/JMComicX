@@ -1,10 +1,11 @@
 package dev.jmx.client.core.chapter
 
 import dev.jmx.client.core.download.DownloadObserver
+import dev.jmx.client.core.download.ImageHttpHeaders
 import dev.jmx.client.core.image.ImageDownloadRequest
 
 fun ChapterTemplate.toImageDownloadRequests(
-    headers: Map<String, String> = emptyMap(),
+    headers: Map<String, String> = ImageHttpHeaders.default(refererHost = imageHost),
     acceptedContentTypes: Set<String> = setOf("image/*"),
     maxBytes: Long? = null,
     observerFactory: (index: Int, url: String) -> DownloadObserver = { _, _ -> DownloadObserver.None }

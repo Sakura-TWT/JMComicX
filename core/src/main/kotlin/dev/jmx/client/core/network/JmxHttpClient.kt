@@ -3,6 +3,7 @@ package dev.jmx.client.core.network
 import dev.jmx.client.core.protocol.ApiTokenProvider
 import dev.jmx.client.core.protocol.HttpMethod
 import dev.jmx.client.core.protocol.JmxProtocolConstants
+import dev.jmx.client.core.protocol.JmxServerMessages
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.NetworkExchange
 import dev.jmx.client.core.result.JmxResult
@@ -73,28 +74,40 @@ class JmxHttpClient(
             runCatching {
                 okHttpClient.newCall(request).execute().use { response ->
                     val body = response.body.string()
+                    val contentType = response.body.contentType()?.toString()
+                    val exchange = NetworkExchange(
+                        route = apiRequest.route.path,
+                        requestUrl = response.request.url.toString(),
+                        statusCode = response.code,
+                        contentType = contentType,
+                        tokenTimestampSeconds = token.timestampSeconds,
+                        bodySample = bodySampler.sample(body)
+                    )
                     if (!response.isSuccessful) {
                         return@withContext JmxResult.Failure(
                             JmxError.Http(
                                 code = response.code,
-                                message = "HTTP 请求失败：${response.code}",
-                                exchange = NetworkExchange(
-                                    route = apiRequest.route.path,
-                                    requestUrl = response.request.url.toString(),
-                                    statusCode = response.code,
-                                    contentType = response.body.contentType()?.toString(),
-                                    tokenTimestampSeconds = token.timestampSeconds,
-                                    bodySample = bodySampler.sample(body)
-                                ),
-                                retryable = response.code >= 500 || response.code == 408 || response.code == 429
+                                message = JmxServerMessages.composeHttpFailureMessage(response.code, body),
+                                exchange = exchange,
+                                retryable = response.code >= 500 ||
+                                    response.code == 408 ||
+                                    response.code == 429 ||
+                                    response.code == 403 ||
+                                    response.code == 401
                             )
                         )
+                    }
+                    when (val inspection = ResponseBodyInspector.inspect(apiRequest.route, response.code, body)) {
+                        is JmxResult.Failure -> {
+                            return@withContext JmxResult.Failure(inspection.error.withExchange(exchange))
+                        }
+                        is JmxResult.Success -> Unit
                     }
                     JmxResult.Success(
                         RawNetworkResponse(
                             statusCode = response.code,
                             body = body,
-                            contentType = response.body.contentType()?.toString(),
+                            contentType = contentType,
                             requestUrl = response.request.url.toString(),
                             tokenTimestampSeconds = token.timestampSeconds
                         )
@@ -121,11 +134,15 @@ class JmxHttpClient(
     private fun buildRequest(url: HttpUrl, apiRequest: ApiRequest, token: String, tokenParam: String): Request {
         val builder = Request.Builder()
             .url(url)
-            .header("Accept-Encoding", "gzip, deflate")
+
             .header("user-agent", JmxProtocolConstants.MobileUserAgent)
             .header("token", token)
             .header("tokenparam", tokenParam)
-        apiRequest.headers.forEach { (key, value) -> builder.header(key, value) }
+        apiRequest.headers.forEach { (key, value) ->
+            if (!key.equals("Accept-Encoding", ignoreCase = true)) {
+                builder.header(key, value)
+            }
+        }
         return when (apiRequest.route.method) {
             HttpMethod.Get -> builder.get().build()
             HttpMethod.Post -> {

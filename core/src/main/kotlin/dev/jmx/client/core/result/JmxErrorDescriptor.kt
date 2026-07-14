@@ -123,13 +123,16 @@ fun JmxError.exchangeOrNull(): NetworkExchange? {
 
 private fun httpOperatorHint(code: Int): String {
     return when (code) {
-        401 -> "HTTP authentication failed. The session may be missing or expired."
-        403 -> "HTTP access was denied. Check endpoint health, token generation, and session cookies."
-        404 -> "The requested route was not found on the selected endpoint."
-        408 -> "The endpoint timed out before completing the request."
-        429 -> "The endpoint is rate limiting requests."
-        in 500..599 -> "The selected endpoint returned a server-side failure."
-        else -> "The endpoint returned a non-success HTTP status."
+        401 -> "认证失败，会话可能缺失或过期。"
+        403 -> "访问被拒绝：可能是 IP 地区限制、线路异常、token 或 cookie 问题。"
+        404 -> "所选线路上找不到该路由。"
+        408 -> "线路在完成请求前超时。"
+        429 -> "线路限流，请稍后重试或切换线路。"
+        500 -> "禁漫服务器内部异常（可能过载）。"
+        520 -> "网关未知错误（禁漫服务器内部报错）。"
+        524 -> "源站处理超时。"
+        in 500..599 -> "所选线路返回服务端错误。"
+        else -> "线路返回了非成功 HTTP 状态。"
     }
 }
 
@@ -153,9 +156,10 @@ private fun httpRecoveryActions(code: Int, retryable: Boolean): List<JmxRecovery
 
 private fun apiOperatorHint(code: Int): String {
     return when (code) {
-        401, 403 -> "The API envelope rejected the request. Validate login state, token headers, and endpoint."
-        in 500..599 -> "The API envelope reported a server-side failure."
-        else -> "The API envelope returned an application-level error."
+        401, 403 -> "业务层拒绝请求，请检查登录态、token 与线路。"
+        404 -> "资源不存在或已被下架。"
+        in 500..599 -> "业务层报告服务端错误。"
+        else -> "业务层返回了应用级错误。"
     }
 }
 

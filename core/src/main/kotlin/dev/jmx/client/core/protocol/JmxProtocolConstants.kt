@@ -1,7 +1,8 @@
 package dev.jmx.client.core.protocol
 
 object JmxProtocolConstants {
-    const val DefaultApiVersion = "2.0.26"
+
+    const val DefaultApiVersion = "2.0.27"
     const val AppTokenSecret = "185Hcomic3PAPP7R"
     const val ChapterTokenSecret = "18comicAPPContent"
     const val DataSecret = "185Hcomic3PAPP7R"

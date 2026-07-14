@@ -60,6 +60,20 @@ class ApiResponseDecoderTest {
     }
 
     @Test
+    fun encryptedEnvelopeToleratesLeadingNoiseBeforeJson() {
+        val ts = 1700566805L
+        val encrypted = encryptData(ts, """{"name":"noisy"}""")
+        val result = ApiResponseDecoder().decodeEncryptedEnvelope(
+            body = """garbage prefix {"code":200,"data":"$encrypted"}""",
+            tokenTimestampSeconds = ts
+        )
+
+        assertTrue(result is JmxResult.Success)
+        val envelope = (result as JmxResult.Success).value
+        assertEquals("noisy", envelope.data!!.asJsonObject["name"].asString)
+    }
+
+    @Test
     fun encryptedEnvelopeUsesDefaultMessageWhenErrorMessageIsBlank() {
         val result = ApiResponseDecoder().decodeEncryptedEnvelope(
             """{"status":429,"error_msg":"   "}""",
@@ -109,6 +123,21 @@ class ApiResponseDecoderTest {
         assertTrue(error is JmxError.Schema)
         assertTrue(error.message.contains("JSON 解析失败"))
         assertTrue(error.message.contains("not json"))
+    }
+
+    @Test
+    fun encryptedEnvelopeFailsWhenTimestampDoesNotMatchEncryptionKey() {
+        val encryptTs = 1700566805L
+        val decryptTs = 1700566806L
+        val encrypted = encryptData(encryptTs, """{"name":"mismatch"}""")
+
+        val result = ApiResponseDecoder().decodeEncryptedEnvelope(
+            """{"code":200,"data":"$encrypted"}""",
+            tokenTimestampSeconds = decryptTs
+        )
+
+        assertTrue(result is JmxResult.Failure)
+        assertTrue((result as JmxResult.Failure).error is JmxError.Decode)
     }
 
     @Test
