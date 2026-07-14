@@ -13,6 +13,23 @@ data class ApiShunt(
 
 data class LoginSession(
     val avs: String?,
+    val profile: UserProfile?,
+    val raw: Map<String, Any?>
+)
+
+data class UserProfile(
+    val id: Int?,
+    val username: String?,
+    val email: String?,
+    val avatar: String?,
+    val level: Int?,
+    val levelName: String?,
+    val currentLevelExp: Int?,
+    val nextLevelExp: Int?,
+    val expPercent: Double?,
+    val currentFavoriteCount: Int?,
+    val maxFavoriteCount: Int?,
+    val coin: Int?,
     val raw: Map<String, Any?>
 )
 

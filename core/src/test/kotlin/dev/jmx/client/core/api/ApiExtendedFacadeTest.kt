@@ -108,6 +108,44 @@ class ApiExtendedFacadeTest {
     }
 
     @Test
+    fun libraryApiAcceptsArrayPagesForWatchAndWeekFilter() {
+        val api = LibraryApi(createClient())
+        server.enqueue(encryptedResponse("""[{"id":"7","name":"watched","author":"reader"}]"""))
+        server.enqueue(encryptedResponse("""[{"id":"8","name":"weekly","author":"editor"}]"""))
+
+        val watched = kotlinx.coroutines.runBlocking { api.watchList(page = 0) }
+        val weekly = kotlinx.coroutines.runBlocking { api.weekFilter(page = 0, categoryId = "cat", typeId = "type") }
+
+        assertTrue(watched is JmxResult.Success)
+        assertEquals(null, (watched as JmxResult.Success).value.total)
+        assertEquals("watched", watched.value.content.single().name)
+        assertTrue(weekly is JmxResult.Success)
+        assertEquals("weekly", (weekly as JmxResult.Success).value.content.single().name)
+        assertEquals("/watch_list?page=1", server.takeRequest().path)
+        assertEquals("/week/filter?page=1&id=cat&type=type", server.takeRequest().path)
+    }
+
+    @Test
+    fun libraryApiParsesUserComments() {
+        val api = LibraryApi(createClient())
+        server.enqueue(
+            encryptedResponse(
+                """{"total":1,"list":[{"comment_id":"c9","user_id":"42","user_name":"bob","content":"history","likes":5}]}"""
+            )
+        )
+
+        val result = kotlinx.coroutines.runBlocking { api.userComments(page = 0, userId = "42") }
+
+        assertTrue(result is JmxResult.Success)
+        val page = (result as JmxResult.Success).value
+        assertEquals(1, page.total)
+        assertEquals("c9", page.comments.single().id)
+        assertEquals("bob", page.comments.single().username)
+        assertEquals(5, page.comments.single().likes)
+        assertEquals("/forum?page=1&uid=42", server.takeRequest().path)
+    }
+
+    @Test
     fun libraryApiPostsDailyCheckAndParsesAction() {
         val api = LibraryApi(createClient())
         server.enqueue(encryptedResponse("""{"msg":"signed"}"""))

@@ -56,13 +56,24 @@ class ApiFacadeTest {
         val endpointManager = ApiEndpointManager(listOf(server.url("/").toString()))
         val store = InMemoryCookieStore()
         val session = SessionManager(store)
-        server.enqueue(encryptedResponse("""{"s":"avs-value","uid":"1"}"""))
+        server.enqueue(
+            encryptedResponse(
+                """{"s":"avs-value","uid":1,"username":"alice","email":"a@test","photo":"avatar.jpg","level":3,"level_name":"Lv3","exp":20,"nextLevelExp":100,"expPercent":0.2,"album_favorites":4,"album_favorites_max":40,"coin":"9"}"""
+            )
+        )
         val userApi = UserApi(createClient(endpointManager = endpointManager, cookieStore = store), session)
 
         val result = kotlinx.coroutines.runBlocking { userApi.login("user", "pass") }
 
         assertTrue(result is JmxResult.Success)
+        val sessionResult = (result as JmxResult.Success).value
+        val profile = sessionResult.profile!!
         assertEquals("avs-value", session.cookies().single().value)
+        assertEquals(1, profile.id)
+        assertEquals("alice", profile.username)
+        assertEquals("avatar.jpg", profile.avatar)
+        assertEquals(3, profile.level)
+        assertEquals(9, profile.coin)
         val recorded = server.takeRequest()
         assertEquals("username=user&password=pass", recorded.body.readUtf8())
     }
@@ -167,6 +178,23 @@ class ApiFacadeTest {
         assertEquals("solo", summary.author)
         assertEquals(12, summary.imageCount)
         assertEquals("/album?id=321", server.takeRequest().path)
+    }
+
+    @Test
+    fun albumApiSearchAcceptsArrayResponse() {
+        server.enqueue(encryptedResponse("""[{"album_id":"8","title":"array result","authors":"author"}]"""))
+        val albumApi = AlbumApi(createClient())
+
+        val result = kotlinx.coroutines.runBlocking {
+            albumApi.search(query = "demo", page = 0, order = "mr", mainTag = 2, time = "week")
+        }
+
+        assertTrue(result is JmxResult.Success)
+        val page = (result as JmxResult.Success).value
+        assertEquals(null, page.total)
+        assertEquals("8", page.content.single().id)
+        assertEquals("array result", page.content.single().name)
+        assertEquals("/search?search_query=demo&page=1&o=mr&main_tag=2&t=week", server.takeRequest().path)
     }
 
     private fun createClient(

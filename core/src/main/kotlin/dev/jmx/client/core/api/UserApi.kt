@@ -43,6 +43,12 @@ class UserApi(
                 is JmxResult.Failure -> return installed
             }
         }
-        return JmxResult.Success(LoginSession(avs = avs, raw = root.toRawMap()))
+        return JmxResult.Success(
+            LoginSession(
+                avs = avs,
+                profile = root.toUserProfile(),
+                raw = root.toRawMap()
+            )
+        )
     }
 }

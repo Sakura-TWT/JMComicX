@@ -1,6 +1,7 @@
 package dev.jmx.client.core.api
 
 import com.google.gson.JsonObject
+import com.google.gson.JsonElement
 
 internal fun JsonObject.toAlbumSummary(): AlbumSummary {
     return AlbumSummary(
@@ -41,6 +42,58 @@ internal fun JsonObject.toAlbumPage(): AlbumPage {
     return AlbumPage(
         total = intOrNull("total", "count"),
         content = content,
+        raw = toRawMap()
+    )
+}
+
+internal fun JsonElement.toAlbumPageOrNull(): AlbumPage? {
+    return when {
+        isJsonObject -> asJsonObject.toAlbumPage()
+        isJsonArray -> AlbumPage(
+            total = null,
+            content = asObjectListOrEmpty().map { it.toAlbumSummary() },
+            raw = emptyMap()
+        )
+        else -> null
+    }
+}
+
+internal fun JsonObject.toSearchPage(): SearchPage {
+    val content = firstObjectList("content", "list", "data", "albums", "photos")
+        .map { it.toAlbumSummary() }
+    return SearchPage(
+        total = intOrNull("total", "count"),
+        redirectAlbumId = stringOrNull("redirect_aid", "redirectAid", "redirect_album_id"),
+        content = content
+    )
+}
+
+internal fun JsonElement.toSearchPageOrNull(): SearchPage? {
+    return when {
+        isJsonObject -> asJsonObject.toSearchPage()
+        isJsonArray -> SearchPage(
+            total = null,
+            redirectAlbumId = null,
+            content = asObjectListOrEmpty().map { it.toAlbumSummary() }
+        )
+        else -> null
+    }
+}
+
+internal fun JsonObject.toUserProfile(): UserProfile {
+    return UserProfile(
+        id = intOrNull("uid", "id", "user_id"),
+        username = stringOrNull("username", "user_name", "name"),
+        email = stringOrNull("email"),
+        avatar = stringOrNull("photo", "avatar"),
+        level = intOrNull("level"),
+        levelName = stringOrNull("level_name", "levelName"),
+        currentLevelExp = intOrNull("exp", "currentLevelExp", "current_level_exp"),
+        nextLevelExp = intOrNull("nextLevelExp", "next_level_exp"),
+        expPercent = doubleOrNull("expPercent", "exp_percent"),
+        currentFavoriteCount = intOrNull("album_favorites", "favorite_count", "currentFavoriteCount"),
+        maxFavoriteCount = intOrNull("album_favorites_max", "max_favorite_count", "maxFavoriteCount"),
+        coin = intOrNull("coin", "jcoin", "j_coin"),
         raw = toRawMap()
     )
 }

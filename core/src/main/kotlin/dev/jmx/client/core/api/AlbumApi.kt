@@ -18,7 +18,7 @@ class AlbumApi(
 
     suspend fun detailFull(albumId: String): JmxResult<AlbumDetail> {
         if (albumId.isBlank()) {
-            return JmxResult.Failure(JmxError.Schema("albumId 为空", field = "albumId"))
+            return JmxResult.Failure(JmxError.Schema("albumId is blank", field = "albumId"))
         }
         val data = when (
             val result = apiClient.requestJson(
@@ -31,7 +31,7 @@ class AlbumApi(
             is JmxResult.Failure -> return result
         }
         val root = data.asObjectOrNull()
-            ?: return JmxResult.Failure(JmxError.Schema("album data 不是对象"))
+            ?: return JmxResult.Failure(JmxError.Schema("album data is not an object"))
         return JmxResult.Success(root.toAlbumDetail())
     }
 
@@ -56,15 +56,8 @@ class AlbumApi(
             is JmxResult.Success -> result.value
             is JmxResult.Failure -> return result
         }
-        val root = data.asObjectOrNull()
-            ?: return JmxResult.Failure(JmxError.Schema("search data 不是对象"))
-        val content = root["content"].asObjectListOrEmpty().map { it.toAlbumSummary() }
-        return JmxResult.Success(
-            SearchPage(
-                total = root.intOrNull("total"),
-                redirectAlbumId = root.stringOrNull("redirect_aid", "redirectAid"),
-                content = content
-            )
-        )
+        return data.toSearchPageOrNull()
+            ?.let { JmxResult.Success(it) }
+            ?: JmxResult.Failure(JmxError.Schema("search data is not object or array"))
     }
 }

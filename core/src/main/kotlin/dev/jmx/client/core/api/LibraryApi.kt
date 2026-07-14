@@ -1,5 +1,6 @@
 package dev.jmx.client.core.api
 
+import dev.jmx.client.core.network.ApiRequestBuilder
 import dev.jmx.client.core.network.JmxApiClient
 import dev.jmx.client.core.network.apiRequest
 import dev.jmx.client.core.protocol.ApiRoute
@@ -21,7 +22,7 @@ class LibraryApi(
             is JmxResult.Failure -> return result
         }
         val albums = when {
-            data.isJsonArray -> data.asJsonArray.mapNotNull { it.asObjectOrNull()?.toAlbumSummary() }
+            data.isJsonArray -> data.asObjectListOrEmpty().map { it.toAlbumSummary() }
             data.isJsonObject -> data.asJsonObject.firstAlbumList()
             else -> emptyList()
         }
@@ -34,7 +35,7 @@ class LibraryApi(
             is JmxResult.Failure -> return result
         }
         val root = data.asObjectOrNull()
-            ?: return JmxResult.Failure(JmxError.Schema("/week data 不是对象"))
+            ?: return JmxResult.Failure(JmxError.Schema("/week data is not an object"))
         return JmxResult.Success(root.toWeekInfo())
     }
 
@@ -43,41 +44,21 @@ class LibraryApi(
     }
 
     suspend fun weekFilter(page: Int, categoryId: String, typeId: String): JmxResult<AlbumPage> {
-        val data = when (
-            val result = apiClient.requestJson(
-                apiRequest(ApiRoute.WeekFilter) {
-                    queryAtLeast("page", page, minimum = 1)
-                    query("id", categoryId)
-                    query("type", typeId)
-                }
-            )
-        ) {
-            is JmxResult.Success -> result.value
-            is JmxResult.Failure -> return result
+        return albumPage(ApiRoute.WeekFilter) {
+            queryAtLeast("page", page, minimum = 1)
+            query("id", categoryId)
+            query("type", typeId)
         }
-        val root = data.asObjectOrNull()
-            ?: return JmxResult.Failure(JmxError.Schema("week/filter data 不是对象"))
-        return JmxResult.Success(root.toAlbumPage())
     }
 
     suspend fun categoriesFilter(filter: CategoryFilter): JmxResult<AlbumPage> {
-        val data = when (
-            val result = apiClient.requestJson(
-                apiRequest(ApiRoute.CategoriesFilter) {
-                    queryAtLeast("page", filter.page, minimum = 1)
-                    query("t", filter.time)
-                    query("c", filter.category)
-                    query("o", filter.order)
-                    query("main_tag", filter.mainTag)
-                }
-            )
-        ) {
-            is JmxResult.Success -> result.value
-            is JmxResult.Failure -> return result
+        return albumPage(ApiRoute.CategoriesFilter) {
+            queryAtLeast("page", filter.page, minimum = 1)
+            query("t", filter.time)
+            query("c", filter.category)
+            query("o", filter.order)
+            query("main_tag", filter.mainTag)
         }
-        val root = data.asObjectOrNull()
-            ?: return JmxResult.Failure(JmxError.Schema("categories/filter data 不是对象"))
-        return JmxResult.Success(root.toAlbumPage())
     }
 
     suspend fun favoriteAlbums(
@@ -99,7 +80,7 @@ class LibraryApi(
     }
 
     suspend fun userComments(page: Int, userId: String): JmxResult<CommentPage> {
-        if (userId.isBlank()) return JmxResult.Failure(JmxError.Schema("userId 为空", field = "userId"))
+        if (userId.isBlank()) return JmxResult.Failure(JmxError.Schema("userId is blank", field = "userId"))
         val data = when (
             val result = apiClient.requestJson(
                 apiRequest(ApiRoute.Forum) {
@@ -112,12 +93,12 @@ class LibraryApi(
             is JmxResult.Failure -> return result
         }
         val root = data.asObjectOrNull()
-            ?: return JmxResult.Failure(JmxError.Schema("user forum data 不是对象"))
+            ?: return JmxResult.Failure(JmxError.Schema("user forum data is not an object"))
         return JmxResult.Success(root.toCommentPage())
     }
 
     suspend fun dailyInfo(userId: String): JmxResult<DailyCheckInfo> {
-        if (userId.isBlank()) return JmxResult.Failure(JmxError.Schema("userId 为空", field = "userId"))
+        if (userId.isBlank()) return JmxResult.Failure(JmxError.Schema("userId is blank", field = "userId"))
         val data = when (
             val result = apiClient.requestJson(
                 apiRequest(ApiRoute.Daily) {
@@ -129,13 +110,13 @@ class LibraryApi(
             is JmxResult.Failure -> return result
         }
         val root = data.asObjectOrNull()
-            ?: return JmxResult.Failure(JmxError.Schema("daily data 不是对象"))
+            ?: return JmxResult.Failure(JmxError.Schema("daily data is not an object"))
         return JmxResult.Success(root.toDailyCheckInfo())
     }
 
     suspend fun dailyCheck(userId: String, dailyId: String): JmxResult<ActionResult> {
-        if (userId.isBlank()) return JmxResult.Failure(JmxError.Schema("userId 为空", field = "userId"))
-        if (dailyId.isBlank()) return JmxResult.Failure(JmxError.Schema("dailyId 为空", field = "dailyId"))
+        if (userId.isBlank()) return JmxResult.Failure(JmxError.Schema("userId is blank", field = "userId"))
+        if (dailyId.isBlank()) return JmxResult.Failure(JmxError.Schema("dailyId is blank", field = "dailyId"))
         val data = when (
             val result = apiClient.requestJson(
                 apiRequest(ApiRoute.DailyCheck) {
@@ -148,21 +129,21 @@ class LibraryApi(
             is JmxResult.Failure -> return result
         }
         val root = data.asObjectOrNull()
-            ?: return JmxResult.Failure(JmxError.Schema("daily check data 不是对象"))
+            ?: return JmxResult.Failure(JmxError.Schema("daily check data is not an object"))
         return JmxResult.Success(root.toActionResult())
     }
 
     private suspend fun albumPage(
         route: ApiRoute,
-        build: dev.jmx.client.core.network.ApiRequestBuilder.() -> Unit
+        build: ApiRequestBuilder.() -> Unit
     ): JmxResult<AlbumPage> {
         val data = when (val result = apiClient.requestJson(apiRequest(route, build))) {
             is JmxResult.Success -> result.value
             is JmxResult.Failure -> return result
         }
-        val root = data.asObjectOrNull()
-            ?: return JmxResult.Failure(JmxError.Schema("${route.path} data 不是对象"))
-        return JmxResult.Success(root.toAlbumPage())
+        return data.toAlbumPageOrNull()
+            ?.let { JmxResult.Success(it) }
+            ?: JmxResult.Failure(JmxError.Schema("${route.path} data is not object or array"))
     }
 
     private suspend fun rawObject(route: ApiRoute): JmxResult<Map<String, Any?>> {
@@ -171,7 +152,7 @@ class LibraryApi(
             is JmxResult.Failure -> return result
         }
         val root = data.asObjectOrNull()
-            ?: return JmxResult.Failure(JmxError.Schema("${route.path} data 不是对象"))
+            ?: return JmxResult.Failure(JmxError.Schema("${route.path} data is not an object"))
         return JmxResult.Success(root.toRawMap())
     }
 
