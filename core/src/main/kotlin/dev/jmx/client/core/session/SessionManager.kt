@@ -4,6 +4,7 @@ import dev.jmx.client.core.network.normalizedBaseUrlOrNull
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
 import okhttp3.Cookie
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 class SessionManager(
     private val cookieStore: CookieStore
@@ -54,6 +55,14 @@ class SessionManager(
             }
         }
         return JmxResult.Success(installed)
+    }
+
+    fun commitCookies(requestUrl: String, cookies: List<Cookie>): JmxResult<List<Cookie>> {
+        if (cookies.isEmpty()) return JmxResult.Success(emptyList())
+        val url = requestUrl.toHttpUrlOrNull()
+            ?: return JmxResult.Failure(JmxError.Domain("Cookie commit URL is invalid", endpoint = requestUrl))
+        cookieStore.save(url, cookies)
+        return JmxResult.Success(cookies)
     }
 
     fun cookies(): List<Cookie> = cookieStore.snapshot()

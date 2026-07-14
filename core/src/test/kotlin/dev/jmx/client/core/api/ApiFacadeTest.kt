@@ -6,13 +6,16 @@ import dev.jmx.client.core.network.ApiEndpointManager
 import dev.jmx.client.core.network.DefaultRetryPolicy
 import dev.jmx.client.core.network.JmxApiClient
 import dev.jmx.client.core.network.JmxHttpClient
+import dev.jmx.client.core.network.defaultOkHttpClient
 import dev.jmx.client.core.protocol.ApiClock
 import dev.jmx.client.core.protocol.ApiTokenProvider
 import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.protocol.MutableApiVersionProvider
 import dev.jmx.client.core.result.JmxResult
+import dev.jmx.client.core.session.CookieStore
 import dev.jmx.client.core.session.InMemoryCookieStore
 import dev.jmx.client.core.session.SessionManager
+import dev.jmx.client.core.session.StoreBackedCookieJar
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -54,7 +57,7 @@ class ApiFacadeTest {
         val store = InMemoryCookieStore()
         val session = SessionManager(store)
         server.enqueue(encryptedResponse("""{"s":"avs-value","uid":"1"}"""))
-        val userApi = UserApi(createClient(endpointManager = endpointManager), endpointManager, session)
+        val userApi = UserApi(createClient(endpointManager = endpointManager, cookieStore = store), session)
 
         val result = kotlinx.coroutines.runBlocking { userApi.login("user", "pass") }
 
@@ -62,6 +65,47 @@ class ApiFacadeTest {
         assertEquals("avs-value", session.cookies().single().value)
         val recorded = server.takeRequest()
         assertEquals("username=user&password=pass", recorded.body.readUtf8())
+    }
+
+    @Test
+    fun userApiCommitsTemporaryCookiesOnlyAfterSuccessfulLogin() {
+        val endpointManager = ApiEndpointManager(listOf(server.url("/").toString()))
+        val store = InMemoryCookieStore()
+        val session = SessionManager(store)
+        server.enqueue(
+            encryptedResponse("""{"s":"json-avs","uid":"1"}""")
+                .addHeader("Set-Cookie", "OTHER=extra; Path=/; HttpOnly")
+                .addHeader("Set-Cookie", "AVS=set-cookie-avs; Path=/; HttpOnly")
+        )
+        val userApi = UserApi(createClient(endpointManager = endpointManager, cookieStore = store), session)
+
+        val result = kotlinx.coroutines.runBlocking { userApi.login("user", "pass") }
+
+        assertTrue(result is JmxResult.Success)
+        val cookies = store.load(server.url("/album"))
+        assertEquals("json-avs", cookies.single { it.name == "AVS" }.value)
+        assertEquals("extra", cookies.single { it.name == "OTHER" }.value)
+    }
+
+    @Test
+    fun userApiDoesNotPolluteSessionCookiesWhenLoginFails() {
+        val endpointManager = ApiEndpointManager(listOf(server.url("/").toString()))
+        val store = InMemoryCookieStore()
+        val session = SessionManager(store)
+        session.installAvsCookie(server.url("/").toString(), "old-avs")
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .addHeader("Set-Cookie", "AVS=bad-avs; Path=/; HttpOnly")
+                .setBody("""{"code":403,"msg":"denied"}""")
+        )
+        val userApi = UserApi(createClient(endpointManager = endpointManager, cookieStore = store), session)
+
+        val result = kotlinx.coroutines.runBlocking { userApi.login("user", "bad-pass") }
+
+        assertTrue(result is JmxResult.Failure)
+        assertEquals("old-avs", store.load(server.url("/album")).single { it.name == "AVS" }.value)
+        assertEquals(1, session.cookies().size)
     }
 
     @Test
@@ -127,7 +171,8 @@ class ApiFacadeTest {
 
     private fun createClient(
         endpointManager: ApiEndpointManager = ApiEndpointManager(listOf(server.url("/").toString())),
-        versionProvider: MutableApiVersionProvider = MutableApiVersionProvider(JmxProtocolConstants.DefaultApiVersion)
+        versionProvider: MutableApiVersionProvider = MutableApiVersionProvider(JmxProtocolConstants.DefaultApiVersion),
+        cookieStore: CookieStore? = null
     ): JmxApiClient {
         val tokenProvider = ApiTokenProvider(
             clock = object : ApiClock {
@@ -139,6 +184,9 @@ class ApiFacadeTest {
             JmxHttpClient(
                 endpointManager = endpointManager,
                 tokenProvider = tokenProvider,
+                okHttpClient = cookieStore
+                    ?.let { defaultOkHttpClient(StoreBackedCookieJar(it)) }
+                    ?: defaultOkHttpClient(),
                 retryPolicy = DefaultRetryPolicy(maxAttempts = 1)
             )
         )

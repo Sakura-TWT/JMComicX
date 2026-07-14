@@ -4,13 +4,29 @@ import com.google.gson.JsonElement
 import dev.jmx.client.core.result.NetworkExchange
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
+import okhttp3.CookieJar
 
 class JmxApiClient(
     private val httpClient: JmxHttpClient,
     private val responseDecoder: ApiResponseDecoder = ApiResponseDecoder(),
     private val bodySampler: BodySampler = BodySampler()
 ) {
+    fun withCookieJar(cookieJar: CookieJar): JmxApiClient {
+        return JmxApiClient(
+            httpClient = httpClient.withCookieJar(cookieJar),
+            responseDecoder = responseDecoder,
+            bodySampler = bodySampler
+        )
+    }
+
     suspend fun requestJson(request: ApiRequest): JmxResult<JsonElement> {
+        return when (val response = requestJsonResponse(request)) {
+            is JmxResult.Success -> JmxResult.Success(response.value.data)
+            is JmxResult.Failure -> response
+        }
+    }
+
+    suspend fun requestJsonResponse(request: ApiRequest): JmxResult<JsonNetworkResponse> {
         val raw = when (val result = httpClient.execute(request)) {
             is JmxResult.Success -> result.value
             is JmxResult.Failure -> return result
@@ -35,7 +51,7 @@ class JmxApiClient(
                 )
             )
         }
-        return envelope.data?.let { JmxResult.Success(it) }
+        return envelope.data?.let { JmxResult.Success(JsonNetworkResponse(data = it, exchange = exchange)) }
             ?: JmxResult.Failure(JmxError.Schema("API 响应 data 为空", field = "data", exchange = exchange))
     }
 

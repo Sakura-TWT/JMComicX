@@ -25,6 +25,16 @@ class JmxHttpClient(
     private val retryPolicy: RetryPolicy = DefaultRetryPolicy(),
     private val bodySampler: BodySampler = BodySampler()
 ) {
+    fun withCookieJar(cookieJar: CookieJar): JmxHttpClient {
+        return JmxHttpClient(
+            endpointManager = endpointManager,
+            tokenProvider = tokenProvider,
+            okHttpClient = okHttpClient.newBuilder().cookieJar(cookieJar).build(),
+            retryPolicy = retryPolicy,
+            bodySampler = bodySampler
+        )
+    }
+
     suspend fun execute(request: ApiRequest): JmxResult<RawNetworkResponse> {
         var lastError: JmxError? = null
         repeat(retryPolicy.maxAttempts.coerceAtLeast(1)) { attempt ->

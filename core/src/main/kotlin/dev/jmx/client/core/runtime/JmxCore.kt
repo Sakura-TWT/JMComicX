@@ -12,6 +12,7 @@ import dev.jmx.client.core.cache.ProtocolStateStore
 import dev.jmx.client.core.download.BinaryDownloader
 import dev.jmx.client.core.download.DownloadBatchRunner
 import dev.jmx.client.core.network.ApiEndpointManager
+import dev.jmx.client.core.network.ApiEndpointProber
 import dev.jmx.client.core.network.ApiEndpointSelection
 import dev.jmx.client.core.network.DefaultRetryPolicy
 import dev.jmx.client.core.network.DomainRefresher
@@ -54,6 +55,7 @@ class JmxCore private constructor(
     val interactionApi: InteractionApi,
     val libraryApi: LibraryApi,
     val domainRefresher: DomainRefresher,
+    val endpointProber: ApiEndpointProber,
     val initializer: JmxCoreInitializer,
     val downloader: BinaryDownloader,
     val downloadBatchRunner: DownloadBatchRunner,
@@ -120,7 +122,7 @@ class JmxCore private constructor(
             val albumApi = AlbumApi(apiClient)
             val chapterApi = ChapterApi(apiClient)
             val settingApi = SettingApi(apiClient, apiVersionProvider)
-            val userApi = UserApi(apiClient, endpointManager, sessionManager)
+            val userApi = UserApi(apiClient, sessionManager)
             val interactionApi = InteractionApi(apiClient)
             val libraryApi = LibraryApi(apiClient)
             val domainRefresher = DomainRefresher(
@@ -128,6 +130,11 @@ class JmxCore private constructor(
                 okHttpClient = okHttpClient,
                 serverUrls = config.domainServerUrls,
                 sessionManager = sessionManager
+            )
+            val endpointProber = ApiEndpointProber(
+                endpointManager = endpointManager,
+                tokenProvider = tokenProvider,
+                okHttpClient = okHttpClient
             )
             return JmxCore(
                 protocolStateStore = protocolStateStore,
@@ -143,6 +150,7 @@ class JmxCore private constructor(
                 interactionApi = interactionApi,
                 libraryApi = libraryApi,
                 domainRefresher = domainRefresher,
+                endpointProber = endpointProber,
                 initializer = JmxCoreInitializer(domainRefresher, settingApi),
                 downloader = downloader,
                 downloadBatchRunner = DownloadBatchRunner(downloader, config.downloadConcurrency),

@@ -311,7 +311,7 @@ class JmxCoreTest {
         }
 
         assertTrue(report.isSuccessful)
-        assertEquals(emptyList<JmxDiagnosticIssue>(), report.issues)
+        assertEquals(listOf("endpoint_probe"), report.skippedSteps)
         assertTrue(report.domainRefresh.isSuccessful)
         assertEquals("2.6.0", report.setting.valueOrNull()!!.apiVersion)
         assertTrue(report.session.valueOrNull()!!.hasAvs)
@@ -349,8 +349,38 @@ class JmxCoreTest {
         assertTrue(report.chapterTemplate.isSkipped)
         assertTrue(report.session.errorOrNull()!!.message.contains("AVS"))
         assertEquals(listOf("session"), report.failedSteps)
-        assertEquals(listOf("domain_refresh", "setting", "chapter_template"), report.skippedSteps)
+        assertEquals(listOf("domain_refresh", "endpoint_probe", "setting", "chapter_template"), report.skippedSteps)
         assertEquals(JmxDiagnosticSeverity.Error, report.issues.first { it.step == "session" }.severity)
+    }
+
+    @Test
+    fun probeRunnerCanActivelyProbeEndpoints() {
+        val ts = 1700566805L
+        server.enqueue(encryptedResponse(ts, """{"jm3_version":"2.7.0","img_host":"https://img.test","app_shunts":[]}"""))
+        val core = JmxCore.create(
+            JmxCoreConfig(
+                keyValueStore = InMemoryKeyValueStore(mapOf("protocol.api.hosts" to server.url("/").toString())),
+                apiClock = fixedClock(ts),
+                retryPolicy = DefaultRetryPolicy(maxAttempts = 1)
+            )
+        )
+
+        val report = kotlinx.coroutines.runBlocking {
+            core.probeRunner.run(
+                JmxCoreProbeScenario(
+                    refreshDomains = false,
+                    probeEndpoints = true,
+                    fetchSetting = false,
+                    chapterTemplate = null
+                )
+            )
+        }
+
+        assertTrue(report.isSuccessful)
+        assertTrue(report.endpointProbe.isSuccessful)
+        assertTrue(report.endpointProbe.valueOrNull()!!.single().success)
+        assertEquals(1, report.afterHealth.endpoints.single().successCount)
+        assertEquals("/setting", server.takeRequest().path)
     }
 
     @Test

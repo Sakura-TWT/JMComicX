@@ -18,6 +18,11 @@ data class RawNetworkResponse(
     val tokenTimestampSeconds: Long
 )
 
+data class JsonNetworkResponse(
+    val data: JsonElement,
+    val exchange: NetworkExchange
+)
+
 data class TextNetworkResponse(
     val text: String,
     val exchange: NetworkExchange
