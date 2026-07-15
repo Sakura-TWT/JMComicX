@@ -7,17 +7,21 @@ import dev.jmx.client.core.protocol.JmxServerMessages
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.NetworkExchange
 import dev.jmx.client.core.result.JmxResult
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.FormBody
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.CookieJar
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resumeWithException
 
 class JmxHttpClient(
     private val endpointManager: ApiEndpointManager,
@@ -66,57 +70,56 @@ class JmxHttpClient(
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos).coerceAtLeast(0L)
     }
 
-    private suspend fun executeOnce(baseUrl: HttpUrl, apiRequest: ApiRequest): JmxResult<RawNetworkResponse> =
-        withContext(Dispatchers.IO) {
-            val token = tokenProvider.create(apiRequest.route)
-            val url = buildUrl(baseUrl, apiRequest).unwrapOrReturn { return@withContext it }
-            val request = buildRequest(url, apiRequest, token.token, token.tokenParam)
-            runCatching {
-                okHttpClient.newCall(request).execute().use { response ->
-                    val body = response.body.string()
-                    val contentType = response.body.contentType()?.toString()
-                    val exchange = NetworkExchange(
-                        route = apiRequest.route.path,
-                        requestUrl = response.request.url.toString(),
-                        statusCode = response.code,
-                        contentType = contentType,
-                        tokenTimestampSeconds = token.timestampSeconds,
-                        bodySample = bodySampler.sample(body)
-                    )
-                    if (!response.isSuccessful) {
-                        return@withContext JmxResult.Failure(
-                            JmxError.Http(
-                                code = response.code,
-                                message = JmxServerMessages.composeHttpFailureMessage(response.code, body),
-                                exchange = exchange,
-                                retryable = response.code >= 500 ||
-                                    response.code == 408 ||
-                                    response.code == 429 ||
-                                    response.code == 403 ||
-                                    response.code == 401
-                            )
-                        )
-                    }
-                    when (val inspection = ResponseBodyInspector.inspect(apiRequest.route, response.code, body)) {
-                        is JmxResult.Failure -> {
-                            return@withContext JmxResult.Failure(inspection.error.withExchange(exchange))
-                        }
-                        is JmxResult.Success -> Unit
-                    }
-                    JmxResult.Success(
-                        RawNetworkResponse(
-                            statusCode = response.code,
-                            body = body,
-                            contentType = contentType,
-                            requestUrl = response.request.url.toString(),
-                            tokenTimestampSeconds = token.timestampSeconds
+    private suspend fun executeOnce(baseUrl: HttpUrl, apiRequest: ApiRequest): JmxResult<RawNetworkResponse> {
+        val token = tokenProvider.create(apiRequest.route)
+        val url = buildUrl(baseUrl, apiRequest).unwrapOrReturn { return it }
+        val request = buildRequest(url, apiRequest, token.token, token.tokenParam)
+        return try {
+            okHttpClient.newCall(request).awaitResponse().use { response ->
+                val body = response.body.string()
+                val contentType = response.body.contentType()?.toString()
+                val exchange = NetworkExchange(
+                    route = apiRequest.route.path,
+                    requestUrl = response.request.url.toString(),
+                    statusCode = response.code,
+                    contentType = contentType,
+                    tokenTimestampSeconds = token.timestampSeconds,
+                    bodySample = bodySampler.sample(body)
+                )
+                if (!response.isSuccessful) {
+                    return JmxResult.Failure(
+                        JmxError.Http(
+                            code = response.code,
+                            message = JmxServerMessages.composeHttpFailureMessage(response.code, body),
+                            exchange = exchange,
+                            retryable = response.code >= 500 ||
+                                response.code == 408 ||
+                                response.code == 429 ||
+                                response.code == 403 ||
+                                response.code == 401
                         )
                     )
                 }
-            }.getOrElse {
-                JmxResult.Failure(it.toJmxNetworkError())
+                when (val inspection = ResponseBodyInspector.inspect(apiRequest.route, response.code, body)) {
+                    is JmxResult.Failure -> return JmxResult.Failure(inspection.error.withExchange(exchange))
+                    is JmxResult.Success -> Unit
+                }
+                JmxResult.Success(
+                    RawNetworkResponse(
+                        statusCode = response.code,
+                        body = body,
+                        contentType = contentType,
+                        requestUrl = response.request.url.toString(),
+                        tokenTimestampSeconds = token.timestampSeconds
+                    )
+                )
             }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            JmxResult.Failure(error.toJmxNetworkError())
         }
+    }
 
     private fun buildUrl(baseUrl: HttpUrl, apiRequest: ApiRequest): JmxResult<HttpUrl> {
         return runCatching {
@@ -171,6 +174,21 @@ class JmxHttpClient(
             else -> JmxError.Unknown(message ?: "未知网络错误", this)
         }
     }
+}
+
+private suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutine { continuation ->
+    continuation.invokeOnCancellation { cancel() }
+    enqueue(
+        object : Callback {
+            override fun onFailure(call: Call, error: IOException) {
+                if (!continuation.isCancelled) continuation.resumeWithException(error)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                continuation.resume(response) { _, value, _ -> value.close() }
+            }
+        }
+    )
 }
 
 fun defaultOkHttpClient(cookieJar: CookieJar = CookieJar.NO_COOKIES): OkHttpClient {

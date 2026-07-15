@@ -164,8 +164,8 @@ internal fun JsonObject.toCommentPage(): CommentPage {
 
 internal fun JsonObject.toCommentItem(): CommentItem {
     return CommentItem(
-        id = stringOrNull("id", "comment_id"),
-        userId = stringOrNull("uid", "user_id"),
+        id = stringOrNull("id", "comment_id", "CID"),
+        userId = stringOrNull("uid", "user_id", "UID"),
         username = stringOrNull("username", "user_name", "name"),
         content = stringOrNull("content", "comment"),
         createdAt = stringOrNull("addtime", "created_at", "time"),

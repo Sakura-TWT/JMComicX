@@ -610,6 +610,7 @@ internal data class HomeAlbum(
     val name: String,
     val author: String,
     val coverUrl: String,
+    val imageHost: String,
     val coverLoadFailed: Boolean = false,
 )
 
@@ -618,6 +619,7 @@ private fun AlbumSummary.toHomeAlbum(imageHost: String): HomeAlbum {
         id = id,
         name = name?.takeIf { it.isNotBlank() } ?: "未命名漫画",
         author = author?.takeIf { it.isNotBlank() } ?: "未知作者",
+        imageHost = imageHost,
         coverUrl = ImageUrl.resolveAlbumCover(
             imageHost = imageHost,
             albumId = id,

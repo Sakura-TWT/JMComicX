@@ -1,5 +1,6 @@
 package dev.jmx.client.core.network
 
+import kotlinx.coroutines.launch
 import dev.jmx.client.core.crypto.AesEcbPkcs7
 import dev.jmx.client.core.crypto.JmxHash
 import dev.jmx.client.core.protocol.ApiClock
@@ -10,6 +11,7 @@ import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -173,6 +175,29 @@ class JmxApiClientTest {
         assertTrue(result is JmxResult.Success)
         val recorded = server.takeRequest()
         assertEquals(JmxHash.md5Hex("$ts${JmxProtocolConstants.ChapterTokenSecret}"), recorded.headers["token"])
+    }
+
+    @Test
+    fun cancellingCoroutineCancelsInFlightHttpCall() {
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+        val client = createClient(1700566805L)
+
+        kotlinx.coroutines.runBlocking {
+            val requestJob = this.launch {
+                client.requestText(ApiRequest(route = ApiRoute.ChapterViewTemplate))
+            }
+            kotlinx.coroutines.withTimeout(2_000L) {
+                while (server.requestCount == 0) kotlinx.coroutines.delay(10L)
+            }
+            val startedAt = System.nanoTime()
+            requestJob.cancel()
+            requestJob.join()
+            val elapsedMillis = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - startedAt,
+            )
+
+            assertTrue("cancel took ${elapsedMillis}ms", elapsedMillis < 1_000L)
+        }
     }
 
     @Test

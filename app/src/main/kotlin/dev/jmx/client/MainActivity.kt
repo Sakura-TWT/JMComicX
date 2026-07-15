@@ -3,6 +3,7 @@ package dev.jmx.client
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -16,6 +17,19 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
 
 class MainActivity : ComponentActivity() {
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (ReaderVolumeKeyDispatcher.shouldConsume(keyCode)) {
+            if (event.repeatCount == 0) ReaderVolumeKeyDispatcher.dispatch(keyCode)
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (ReaderVolumeKeyDispatcher.shouldConsume(keyCode)) return true
+        return super.onKeyUp(keyCode, event)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 

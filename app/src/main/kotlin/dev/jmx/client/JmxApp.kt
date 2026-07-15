@@ -17,6 +17,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.zIndex
 import top.yukonga.miuix.kmp.basic.NavigationBar
 import top.yukonga.miuix.kmp.basic.NavigationBarItem
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -40,12 +41,16 @@ fun JmxApp() {
     val applicationContext = LocalContext.current.applicationContext
     val homeRepository = remember(applicationContext) { HomeRepository(applicationContext) }
     val detailRepository = remember(homeRepository) { AlbumDetailRepository(homeRepository.core) }
+    val readerRepository = remember(homeRepository, applicationContext) {
+        ComicReaderRepository(applicationContext, homeRepository.core)
+    }
     var homeState by remember { mutableStateOf<HomeUiState>(HomeUiState.Loading) }
     var homeRequestId by rememberSaveable { mutableIntStateOf(0) }
     var isHomeRefreshing by remember { mutableStateOf(false) }
     var selectedHomeCategory by rememberSaveable { mutableIntStateOf(0) }
     var pendingLoadMoreCategoryId by remember { mutableStateOf<String?>(null) }
     var detailRequest by remember { mutableStateOf<AlbumDetailTransitionRequest?>(null) }
+    var readerRequest by remember { mutableStateOf<ReaderLaunchRequest?>(null) }
 
     LaunchedEffect(homeRepository, homeRequestId) {
         val previousState = homeState
@@ -171,8 +176,24 @@ fun JmxApp() {
             AlbumDetailTransitionHost(
                 request = request,
                 repository = detailRepository,
+                readerActive = readerRequest != null,
+                onStartReading = { readerRequest = it },
                 onDismiss = { detailRequest = null },
             )
+        }
+
+        readerRequest?.let { request ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(10f),
+            ) {
+                ComicReaderScreen(
+                    request = request,
+                    repository = readerRepository,
+                    onBack = { readerRequest = null },
+                )
+            }
         }
     }
 }

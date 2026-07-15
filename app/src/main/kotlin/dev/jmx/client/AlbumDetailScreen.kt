@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -34,6 +35,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -55,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import dev.jmx.client.core.api.AlbumDetail
+import dev.jmx.client.core.api.AlbumChapter
 import dev.jmx.client.core.api.CommentItem
 import dev.jmx.client.core.api.CommentPage
 import dev.jmx.client.core.result.JmxResult
@@ -63,8 +66,15 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -99,6 +109,8 @@ internal data class AlbumDetailTransitionRequest(
 internal fun AlbumDetailTransitionHost(
     request: AlbumDetailTransitionRequest,
     repository: AlbumDetailRepository,
+    readerActive: Boolean,
+    onStartReading: (ReaderLaunchRequest) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val transitionProgress = remember(request.album.id) { Animatable(0f) }
@@ -171,6 +183,8 @@ internal fun AlbumDetailTransitionHost(
         AlbumDetailScreen(
             album = request.album,
             repository = repository,
+            readerActive = readerActive,
+            onStartReading = onStartReading,
             showCover = hasEntered && progress >= 0.999f && !isExiting,
             onBack = ::exitDetail,
             onCoverTargetChanged = { bounds -> targetBounds = bounds },
@@ -220,6 +234,8 @@ internal fun AlbumDetailTransitionHost(
 private fun AlbumDetailScreen(
     album: HomeAlbum,
     repository: AlbumDetailRepository,
+    readerActive: Boolean,
+    onStartReading: (ReaderLaunchRequest) -> Unit,
     showCover: Boolean,
     onBack: () -> Unit,
     onCoverTargetChanged: (Rect) -> Unit,
@@ -228,9 +244,35 @@ private fun AlbumDetailScreen(
     var state by remember(album.id) { mutableStateOf<AlbumDetailUiState>(AlbumDetailUiState.Loading) }
     var selectedTab by rememberSaveable(album.id) { mutableIntStateOf(0) }
     var retryKey by remember(album.id) { mutableIntStateOf(0) }
+    var pageSummary by remember(album.id) { mutableStateOf<AlbumPageSummary>(AlbumPageSummary.Loading) }
+    val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(album.id, repository, retryKey) {
         state = repository.load(album.id)
+    }
+
+    val detail = (state as? AlbumDetailUiState.Content)?.detail
+    LaunchedEffect(detail?.id, repository, readerActive) {
+        pageSummary = if (detail == null) {
+            AlbumPageSummary.Loading
+        } else if (readerActive) {
+            pageSummary
+        } else {
+            repository.loadPageSummary(detail) { progress -> pageSummary = progress }
+        }
+    }
+
+    fun loadMoreComments() {
+        val content = state as? AlbumDetailUiState.Content ?: return
+        if (content.comments.isLoading || content.comments.endReached) return
+        state = content.copy(comments = content.comments.copy(isLoading = true, error = null))
+        coroutineScope.launch {
+            val updated = repository.loadMoreComments(album.id, content.comments)
+            val latest = state as? AlbumDetailUiState.Content
+            if (latest?.detail?.id == content.detail.id) {
+                state = latest.copy(comments = updated)
+            }
+        }
     }
 
     Scaffold(
@@ -254,7 +296,21 @@ private fun AlbumDetailScreen(
         },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = {},
+                onClick = {
+                    val content = state as? AlbumDetailUiState.Content
+                    if (selectedTab != DETAIL_COMMENTS_TAB && content != null) {
+                        val firstChapter = content.detail.readingChapters().firstOrNull()
+                        if (firstChapter != null) {
+                            onStartReading(
+                                ReaderLaunchRequest(
+                                    album = album,
+                                    detail = content.detail,
+                                    initialChapterId = firstChapter.id,
+                                ),
+                            )
+                        }
+                    }
+                },
                 minWidth = 132.dp,
                 minHeight = 54.dp,
                 shape = RoundedCornerShape(18.dp),
@@ -265,13 +321,13 @@ private fun AlbumDetailScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
-                        imageVector = if (selectedTab == 0) MiuixIcons.Play else MiuixIcons.Send,
+                        imageVector = if (selectedTab == DETAIL_COMMENTS_TAB) MiuixIcons.Send else MiuixIcons.Play,
                         contentDescription = null,
                         modifier = Modifier.size(20.dp),
                         tint = MiuixTheme.colorScheme.onPrimary,
                     )
                     Text(
-                        text = if (selectedTab == 0) "开始观看" else "发表",
+                        text = if (selectedTab == DETAIL_COMMENTS_TAB) "发表" else "开始观看",
                         style = MiuixTheme.textStyles.button,
                         color = MiuixTheme.colorScheme.onPrimary,
                     )
@@ -285,9 +341,23 @@ private fun AlbumDetailScreen(
             state = state,
             selectedTab = selectedTab,
             onTabSelected = { selectedTab = it },
+            pageSummary = pageSummary,
             showCover = showCover,
             innerPadding = innerPadding,
             onCoverTargetChanged = onCoverTargetChanged,
+            onChapterSelected = { chapter ->
+                val content = state as? AlbumDetailUiState.Content
+                if (content != null) {
+                    onStartReading(
+                        ReaderLaunchRequest(
+                            album = album,
+                            detail = content.detail,
+                            initialChapterId = chapter.id,
+                        ),
+                    )
+                }
+            },
+            onLoadMoreComments = ::loadMoreComments,
             onRetry = {
                 state = AlbumDetailUiState.Loading
                 retryKey++
@@ -302,11 +372,15 @@ private fun DetailBody(
     state: AlbumDetailUiState,
     selectedTab: Int,
     onTabSelected: (Int) -> Unit,
+    pageSummary: AlbumPageSummary,
     showCover: Boolean,
     innerPadding: PaddingValues,
     onCoverTargetChanged: (Rect) -> Unit,
+    onChapterSelected: (AlbumChapter) -> Unit,
+    onLoadMoreComments: () -> Unit,
     onRetry: () -> Unit,
 ) {
+    val listState = rememberLazyListState()
     val density = LocalDensity.current
     val coverTop = innerPadding.calculateTopPadding() + 12.dp
     val targetBounds = with(density) {
@@ -321,9 +395,21 @@ private fun DetailBody(
 
     val detail = (state as? AlbumDetailUiState.Content)?.detail
     val comments = (state as? AlbumDetailUiState.Content)?.comments
-    val commentsError = (state as? AlbumDetailUiState.Content)?.commentsError
+
+    LaunchedEffect(listState, selectedTab, comments?.nextPage, comments?.isLoading, comments?.endReached) {
+        if (selectedTab != DETAIL_COMMENTS_TAB || comments == null || comments.isLoading || comments.endReached) {
+            return@LaunchedEffect
+        }
+        snapshotFlow {
+            val layout = listState.layoutInfo
+            val lastVisible = layout.visibleItemsInfo.lastOrNull()?.index ?: -1
+            layout.totalItemsCount > 0 && lastVisible >= layout.totalItemsCount - 3
+        }.filter { it }.first()
+        onLoadMoreComments()
+    }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier
             .fillMaxSize()
             .background(MiuixTheme.colorScheme.surface),
@@ -339,18 +425,23 @@ private fun DetailBody(
             DetailSummary(
                 album = album,
                 detail = detail,
+                pageSummary = pageSummary,
                 showCover = showCover,
             )
         }
         item(key = "actions") {
             DetailActions(
                 detail = detail,
-                onCommentsSelected = { onTabSelected(1) },
+                onCommentsSelected = { onTabSelected(DETAIL_COMMENTS_TAB) },
             )
         }
         item(key = "tabs") {
             TabRowWithContour(
-                tabs = listOf("介绍", "评论 ${detail?.commentTotal ?: comments?.total ?: 0}"),
+                tabs = listOf(
+                    "介绍",
+                    "目录 ${detail?.readingChapters()?.size ?: 0}",
+                    "评论 ${detail?.commentTotal ?: comments?.total ?: 0}",
+                ),
                 selectedTabIndex = selectedTab,
                 onTabSelected = onTabSelected,
                 modifier = Modifier.fillMaxWidth(),
@@ -364,8 +455,9 @@ private fun DetailBody(
             state is AlbumDetailUiState.Error -> item(key = "error") {
                 DetailError(message = state.message, onRetry = onRetry)
             }
-            selectedTab == 0 && detail != null -> detailInfoItems(detail)
-            selectedTab == 1 -> commentsItems(comments, commentsError, onRetry)
+            selectedTab == DETAIL_INFO_TAB && detail != null -> detailInfoItems(detail, pageSummary)
+            selectedTab == DETAIL_CATALOG_TAB && detail != null -> catalogItems(detail, onChapterSelected)
+            selectedTab == DETAIL_COMMENTS_TAB -> commentsItems(comments, onLoadMoreComments)
         }
     }
 }
@@ -374,6 +466,7 @@ private fun DetailBody(
 private fun DetailSummary(
     album: HomeAlbum,
     detail: AlbumDetail?,
+    pageSummary: AlbumPageSummary,
     showCover: Boolean,
 ) {
     Row(
@@ -408,7 +501,7 @@ private fun DetailSummary(
             )
             DetailMetaLine(
                 label = "页数",
-                value = detail?.imageCount?.let { "$it 页" } ?: "读取中",
+                value = pageSummary.summaryText(detail),
             )
             if (!detail?.series.isNullOrEmpty()) {
                 DetailMetaLine(label = "章节", value = "${detail.series.size} 话")
@@ -525,7 +618,10 @@ private fun DetailAction(
     }
 }
 
-private fun androidx.compose.foundation.lazy.LazyListScope.detailInfoItems(detail: AlbumDetail) {
+private fun androidx.compose.foundation.lazy.LazyListScope.detailInfoItems(
+    detail: AlbumDetail,
+    pageSummary: AlbumPageSummary,
+) {
     item(key = "description") {
         DetailSection(title = "漫画介绍") {
             Text(
@@ -542,10 +638,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.detailInfoItems(detai
     item(key = "pages") {
         DetailSection(title = "章节与页数") {
             Text(
-                text = buildString {
-                    append(detail.imageCount?.let { "全 $it 页" } ?: "页数未知")
-                    if (detail.series.isNotEmpty()) append(" · 共 ${detail.series.size} 话")
-                },
+                text = pageSummary.sectionText(detail),
                 style = MiuixTheme.textStyles.body2,
                 color = MiuixTheme.colorScheme.onSurface,
             )
@@ -568,16 +661,64 @@ private fun androidx.compose.foundation.lazy.LazyListScope.detailInfoItems(detai
     }
 }
 
+private fun androidx.compose.foundation.lazy.LazyListScope.catalogItems(
+    detail: AlbumDetail,
+    onChapterSelected: (AlbumChapter) -> Unit,
+) {
+    val chapters = detail.readingChapters()
+    itemsIndexed(
+        items = chapters,
+        key = { _, chapter -> chapter.id },
+    ) { index, chapter ->
+        Surface(
+            onClick = { onChapterSelected(chapter) },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+            color = MiuixTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Text(
+                        text = chapter.displayName(index),
+                        style = MiuixTheme.textStyles.body2,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MiuixTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = "JM${chapter.id}",
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                }
+                Icon(
+                    imageVector = MiuixIcons.Play,
+                    contentDescription = "观看${chapter.displayName(index)}",
+                    modifier = Modifier.size(20.dp),
+                    tint = MiuixTheme.colorScheme.primary,
+                )
+            }
+        }
+    }
+}
+
 private fun androidx.compose.foundation.lazy.LazyListScope.commentsItems(
-    comments: CommentPage?,
-    commentsError: String?,
+    comments: DetailCommentsState?,
     onRetry: () -> Unit,
 ) {
     when {
-        commentsError != null -> item(key = "comments-error") {
-            DetailError(message = commentsError, onRetry = onRetry)
+        comments?.error != null && comments.items.isEmpty() -> item(key = "comments-error") {
+            DetailError(message = comments.error, onRetry = onRetry)
         }
-        comments == null || comments.comments.isEmpty() -> item(key = "comments-empty") {
+        comments == null || comments.items.isEmpty() -> item(key = "comments-empty") {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -592,10 +733,30 @@ private fun androidx.compose.foundation.lazy.LazyListScope.commentsItems(
             }
         }
         else -> itemsIndexed(
-            items = comments.comments,
+            items = comments.items,
             key = { index, comment -> "${comment.id.orEmpty()}:$index" },
         ) { _, comment ->
             CommentCard(comment = comment)
+        }
+    }
+    if (comments != null && comments.items.isNotEmpty()) {
+        item(key = "comments-footer") {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(72.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                when {
+                    comments.isLoading -> CircularProgressIndicator(size = 24.dp, strokeWidth = 3.dp)
+                    comments.error != null -> TextButton(text = "加载失败，重试", onClick = onRetry)
+                    comments.endReached -> Text(
+                        text = "已显示全部 ${comments.items.size} 条评论",
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                }
+            }
         }
     }
 }
@@ -627,13 +788,14 @@ private fun DetailLabels(title: String, values: List<String>) {
             values.distinct().forEach { value ->
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = MiuixTheme.colorScheme.secondaryContainer,
+                    color = MiuixTheme.colorScheme.primaryContainer,
                 ) {
                     Text(
                         text = value,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                         style = MiuixTheme.textStyles.footnote1,
-                        color = MiuixTheme.colorScheme.onSecondaryContainer,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MiuixTheme.colorScheme.onPrimaryContainer,
                     )
                 }
             }
@@ -720,6 +882,8 @@ private fun DetailError(message: String, onRetry: (() -> Unit)?) {
 internal class AlbumDetailRepository(
     private val core: JmxCore,
 ) {
+    private val chapterPageCounts = ConcurrentHashMap<String, Int>()
+
     suspend fun load(albumId: String): AlbumDetailUiState = coroutineScope {
         try {
             val detailDeferred = async { core.albumApi.detailFull(albumId) }
@@ -729,13 +893,11 @@ internal class AlbumDetailRepository(
                     when (val commentsResult = commentsDeferred.await()) {
                         is JmxResult.Success -> AlbumDetailUiState.Content(
                             detail = detailResult.value,
-                            comments = commentsResult.value,
-                            commentsError = null,
+                            comments = commentsResult.value.toDetailCommentsState(),
                         )
                         is JmxResult.Failure -> AlbumDetailUiState.Content(
                             detail = detailResult.value,
-                            comments = null,
-                            commentsError = commentsResult.error.toUiMessage(),
+                            comments = DetailCommentsState(error = commentsResult.error.toUiMessage()),
                         )
                     }
                 }
@@ -747,16 +909,200 @@ internal class AlbumDetailRepository(
             AlbumDetailUiState.Error(error.message ?: "详情加载出现未知异常。")
         }
     }
+
+    suspend fun loadMoreComments(
+        albumId: String,
+        current: DetailCommentsState,
+    ): DetailCommentsState {
+        if (current.endReached) return current.copy(isLoading = false)
+        return try {
+            when (val result = core.interactionApi.albumComments(albumId, page = current.nextPage)) {
+                is JmxResult.Success -> {
+                    val merged = mergeCommentPages(current.items, result.value.comments)
+                    val total = result.value.total ?: current.total
+                    current.copy(
+                        items = merged,
+                        total = total,
+                        nextPage = current.nextPage + 1,
+                        isLoading = false,
+                        endReached = result.value.comments.isEmpty() ||
+                            (total != null && merged.size >= total),
+                        error = null,
+                    )
+                }
+                is JmxResult.Failure -> current.copy(
+                    isLoading = false,
+                    error = result.error.toUiMessage(),
+                )
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            current.copy(isLoading = false, error = error.message ?: "评论加载出现未知异常。")
+        }
+    }
+
+    suspend fun loadPageSummary(
+        detail: AlbumDetail,
+        onProgress: (AlbumPageSummary.Ready) -> Unit = {},
+    ): AlbumPageSummary = coroutineScope {
+        val chapters = detail.readingChapters()
+        val albumImageCount = detail.imageCount
+        if (chapters.size == 1 && albumImageCount != null && albumImageCount > 0) {
+            chapterPageCounts[chapters.first().id] = albumImageCount
+            return@coroutineScope AlbumPageSummary.Ready(
+                totalPages = albumImageCount,
+                resolvedChapters = 1,
+                totalChapters = 1,
+            )
+        }
+
+        val semaphore = Semaphore(PAGE_COUNT_CONCURRENCY)
+        val progressMutex = Mutex()
+        var resolvedChapters = 0
+        var resolvedPages = 0
+        val counts = chapters.map { chapter ->
+            async {
+                val count = semaphore.withPermit {
+                    chapterPageCounts[chapter.id] ?: loadChapterPageCount(chapter.id)?.also { count ->
+                        chapterPageCounts[chapter.id] = count
+                    }
+                }
+                if (count != null) {
+                    progressMutex.withLock {
+                        resolvedChapters++
+                        resolvedPages += count
+                        onProgress(
+                            AlbumPageSummary.Ready(
+                                totalPages = resolvedPages,
+                                resolvedChapters = resolvedChapters,
+                                totalChapters = chapters.size,
+                            ),
+                        )
+                    }
+                }
+                count
+            }
+        }.map { it.await() }
+        val resolved = counts.filterNotNull()
+        if (resolved.isEmpty()) {
+            AlbumPageSummary.Unavailable(totalChapters = chapters.size)
+        } else {
+            AlbumPageSummary.Ready(
+                totalPages = resolved.sum(),
+                resolvedChapters = resolved.size,
+                totalChapters = chapters.size,
+            )
+        }
+    }
+
+    private suspend fun loadChapterPageCount(chapterId: String): Int? {
+        when (val detailResult = core.chapterApi.detail(chapterId)) {
+            is JmxResult.Success -> {
+                val count = detailResult.value.imageCount ?: detailResult.value.pageArr.size
+                if (count > 0) return count
+            }
+            is JmxResult.Failure -> Unit
+        }
+        return when (val templateResult = core.chapterApi.template(chapterId, shunt = DEFAULT_IMAGE_SHUNT)) {
+            is JmxResult.Success -> templateResult.value.imageFileNames.size.takeIf { it > 0 }
+            is JmxResult.Failure -> null
+        }
+    }
 }
 
 internal sealed interface AlbumDetailUiState {
     data object Loading : AlbumDetailUiState
     data class Content(
         val detail: AlbumDetail,
-        val comments: CommentPage?,
-        val commentsError: String?,
+        val comments: DetailCommentsState,
     ) : AlbumDetailUiState
     data class Error(val message: String) : AlbumDetailUiState
+}
+
+internal data class DetailCommentsState(
+    val items: List<CommentItem> = emptyList(),
+    val total: Int? = null,
+    val nextPage: Int = 1,
+    val isLoading: Boolean = false,
+    val endReached: Boolean = false,
+    val error: String? = null,
+)
+
+internal sealed interface AlbumPageSummary {
+    data object Loading : AlbumPageSummary
+
+    data class Ready(
+        val totalPages: Int,
+        val resolvedChapters: Int,
+        val totalChapters: Int,
+    ) : AlbumPageSummary
+
+    data class Unavailable(val totalChapters: Int) : AlbumPageSummary
+}
+
+internal fun AlbumDetail.readingChapters(): List<AlbumChapter> {
+    return series
+        .filter { it.id.isNotBlank() }
+        .distinctBy { it.id }
+        .ifEmpty {
+            listOf(AlbumChapter(id = id, name = name, sort = null))
+        }
+}
+
+internal fun AlbumChapter.displayName(index: Int): String {
+    return name?.decodeHtml()?.trim()?.takeIf { it.isNotBlank() }
+        ?: sort?.trim()?.takeIf { it.isNotBlank() }?.let { "第 $it 话" }
+        ?: "第 ${index + 1} 话"
+}
+
+private fun CommentPage.toDetailCommentsState(): DetailCommentsState {
+    val commentTotal = total
+    return DetailCommentsState(
+        items = comments,
+        total = commentTotal,
+        nextPage = 2,
+        endReached = comments.isEmpty() || (commentTotal != null && comments.size >= commentTotal),
+    )
+}
+
+private fun mergeCommentPages(
+    existing: List<CommentItem>,
+    incoming: List<CommentItem>,
+): List<CommentItem> {
+    val knownIds = existing.mapNotNullTo(mutableSetOf()) { it.id?.takeIf(String::isNotBlank) }
+    return buildList(existing.size + incoming.size) {
+        addAll(existing)
+        incoming.forEach { comment ->
+            val id = comment.id?.takeIf(String::isNotBlank)
+            if (id == null || knownIds.add(id)) add(comment)
+        }
+    }
+}
+
+private fun AlbumPageSummary.summaryText(detail: AlbumDetail?): String {
+    return when (this) {
+        AlbumPageSummary.Loading -> detail?.readingChapters()?.size?.let { "$it 话 · 正在统计" } ?: "正在统计"
+        is AlbumPageSummary.Ready -> if (resolvedChapters == totalChapters) {
+            "$totalPages 页"
+        } else {
+            "$totalPages+ 页"
+        }
+        is AlbumPageSummary.Unavailable -> "$totalChapters 话"
+    }
+}
+
+private fun AlbumPageSummary.sectionText(detail: AlbumDetail): String {
+    val chapterCount = detail.readingChapters().size
+    return when (this) {
+        AlbumPageSummary.Loading -> "共 $chapterCount 话，正在汇总各话页数"
+        is AlbumPageSummary.Ready -> if (resolvedChapters == totalChapters) {
+            "全 $totalPages 页 · 共 $totalChapters 话"
+        } else {
+            "已读取 $resolvedChapters/$totalChapters 话，共 $totalPages 页"
+        }
+        is AlbumPageSummary.Unavailable -> "共 $totalChapters 话"
+    }
 }
 
 internal fun curvedCoverBounds(
@@ -814,5 +1160,10 @@ private val DetailTransitionEasing = CubicBezierEasing(0.18f, 0.82f, 0.16f, 1f)
 private val DETAIL_HORIZONTAL_PADDING = 16.dp
 private val DETAIL_COVER_WIDTH = 128.dp
 private val DETAIL_COVER_HEIGHT = 170.6667.dp
+private const val DETAIL_INFO_TAB = 0
+private const val DETAIL_CATALOG_TAB = 1
+private const val DETAIL_COMMENTS_TAB = 2
+private const val PAGE_COUNT_CONCURRENCY = 4
+internal const val DEFAULT_IMAGE_SHUNT = "1"
 private const val DETAIL_ENTER_DURATION_MILLIS = 680
 private const val DETAIL_EXIT_DURATION_MILLIS = 560

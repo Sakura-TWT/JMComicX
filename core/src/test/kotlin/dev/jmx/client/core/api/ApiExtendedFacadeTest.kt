@@ -67,7 +67,7 @@ class ApiExtendedFacadeTest {
         val api = InteractionApi(createClient())
         server.enqueue(
             encryptedResponse(
-                """{"total":1,"comments":[{"id":"c1","uid":"u1","username":"alice","comment":"hi","replys":[{"id":"r1","comment":"reply"}]}]}"""
+                """{"total":1,"comments":[{"CID":"c1","UID":"u1","username":"alice","comment":"hi","replys":[{"CID":"r1","comment":"reply"}]}]}"""
             )
         )
 
@@ -76,7 +76,10 @@ class ApiExtendedFacadeTest {
         assertTrue(result is JmxResult.Success)
         val page = (result as JmxResult.Success).value
         assertEquals(1, page.total)
+        assertEquals("c1", page.comments.single().id)
+        assertEquals("u1", page.comments.single().userId)
         assertEquals("alice", page.comments.single().username)
+        assertEquals("r1", page.comments.single().replies.single().id)
         assertEquals("reply", page.comments.single().replies.single().content)
         assertEquals("/forum?page=1&aid=456&mode=manhua", server.takeRequest().path)
     }
