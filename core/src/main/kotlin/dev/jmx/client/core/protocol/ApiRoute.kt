@@ -16,6 +16,7 @@ enum class ApiRoute(
     FavoriteAction("/favorite", method = HttpMethod.Post),
     Like("/like", method = HttpMethod.Post),
     Promote("/promote"),
+    PromoteList("/promote_list"),
     Week("/week"),
     WeekFilter("/week/filter"),
     Forum("/forum"),

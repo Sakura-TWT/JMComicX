@@ -34,4 +34,6 @@ dependencies {
     implementation(libs.miuix.icons.android)
     implementation(libs.miuix.ui.android)
     implementation(libs.okhttp)
+
+    testImplementation(libs.junit)
 }

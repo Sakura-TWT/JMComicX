@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -38,10 +39,13 @@ fun JmxApp() {
 
     val applicationContext = LocalContext.current.applicationContext
     val homeRepository = remember(applicationContext) { HomeRepository(applicationContext) }
+    val detailRepository = remember(homeRepository) { AlbumDetailRepository(homeRepository.core) }
     var homeState by remember { mutableStateOf<HomeUiState>(HomeUiState.Loading) }
     var homeRequestId by rememberSaveable { mutableIntStateOf(0) }
     var isHomeRefreshing by remember { mutableStateOf(false) }
     var selectedHomeCategory by rememberSaveable { mutableIntStateOf(0) }
+    var pendingLoadMoreCategoryId by remember { mutableStateOf<String?>(null) }
+    var detailRequest by remember { mutableStateOf<AlbumDetailTransitionRequest?>(null) }
 
     LaunchedEffect(homeRepository, homeRequestId) {
         val previousState = homeState
@@ -63,53 +67,112 @@ fun JmxApp() {
         isHomeRefreshing = false
     }
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        topBar = {
-            SmallTopAppBar(
-                title = if (selectedTab == 0) "JMComicX" else tabs[selectedTab].label,
+    LaunchedEffect(homeRepository, pendingLoadMoreCategoryId) {
+        val categoryId = pendingLoadMoreCategoryId ?: return@LaunchedEffect
+        val content = homeState as? HomeUiState.Content
+        val category = content?.categories?.firstOrNull { it.id == categoryId }
+        if (category == null) {
+            pendingLoadMoreCategoryId = null
+            return@LaunchedEffect
+        }
+        val updatedCategory = homeRepository.loadMore(category)
+        val latestContent = homeState as? HomeUiState.Content
+        if (latestContent != null) {
+            homeState = latestContent.copy(
+                categories = latestContent.categories.map { current ->
+                    if (current.id == categoryId) updatedCategory else current
+                },
             )
-        },
-        bottomBar = {
-            NavigationBar {
-                tabs.forEachIndexed { index, tab ->
-                    NavigationBarItem(
-                        selected = selectedTab == index,
-                        onClick = { selectedTab = index },
-                        icon = tab.icon,
-                        label = tab.label,
+        }
+        pendingLoadMoreCategoryId = null
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            topBar = {
+                SmallTopAppBar(
+                    title = if (selectedTab == 0) "JMComicX" else tabs[selectedTab].label,
+                )
+            },
+            bottomBar = {
+                NavigationBar {
+                    tabs.forEachIndexed { index, tab ->
+                        NavigationBarItem(
+                            selected = selectedTab == index,
+                            onClick = { selectedTab = index },
+                            icon = tab.icon,
+                            label = tab.label,
+                        )
+                    }
+                }
+            },
+        ) { innerPadding ->
+            AnimatedContent(
+                targetState = selectedTab,
+                transitionSpec = { fadeIn() togetherWith fadeOut() },
+            ) { tab ->
+                when (tab) {
+                    0 -> HomeScreen(
+                        innerPadding = innerPadding,
+                        state = homeState,
+                        isRefreshing = isHomeRefreshing,
+                        selectedCategoryIndex = selectedHomeCategory,
+                        onCategorySelected = { selectedHomeCategory = it },
+                        liftedAlbumId = detailRequest?.album?.id,
+                        onLoadMore = { categoryId ->
+                            val content = homeState as? HomeUiState.Content
+                            val category = content?.categories?.firstOrNull { it.id == categoryId }
+                            if (
+                                category != null &&
+                                !category.isLoadingMore &&
+                                !category.endReached &&
+                                !isHomeRefreshing &&
+                                pendingLoadMoreCategoryId == null
+                            ) {
+                                homeState = content.copy(
+                                    categories = content.categories.map { current ->
+                                        if (current.id == categoryId) {
+                                            current.copy(isLoadingMore = true, loadMoreError = null)
+                                        } else {
+                                            current
+                                        }
+                                    },
+                                )
+                                pendingLoadMoreCategoryId = categoryId
+                            }
+                        },
+                        onAlbumSelected = { album, sourceBounds ->
+                            if (detailRequest == null) {
+                                detailRequest = AlbumDetailTransitionRequest(album, sourceBounds)
+                            }
+                        },
+                        onRefresh = {
+                            if (!isHomeRefreshing && homeState is HomeUiState.Content) {
+                                pendingLoadMoreCategoryId = null
+                                isHomeRefreshing = true
+                                homeRequestId++
+                            }
+                        },
+                        onRetry = {
+                            if (homeState !is HomeUiState.Loading) {
+                                homeState = HomeUiState.Loading
+                                homeRequestId++
+                            }
+                        },
                     )
+                    1 -> ReservedScreen(innerPadding = innerPadding, title = "书架")
+                    else -> ReservedScreen(innerPadding = innerPadding, title = "我的")
                 }
             }
-        },
-    ) { innerPadding ->
-        AnimatedContent(
-            targetState = selectedTab,
-            transitionSpec = { fadeIn() togetherWith fadeOut() },
-        ) { tab ->
-            when (tab) {
-                0 -> HomeScreen(
-                    innerPadding = innerPadding,
-                    state = homeState,
-                    isRefreshing = isHomeRefreshing,
-                    selectedCategoryIndex = selectedHomeCategory,
-                    onCategorySelected = { selectedHomeCategory = it },
-                    onRefresh = {
-                        if (!isHomeRefreshing && homeState is HomeUiState.Content) {
-                            isHomeRefreshing = true
-                            homeRequestId++
-                        }
-                    },
-                    onRetry = {
-                        if (homeState !is HomeUiState.Loading) {
-                            homeState = HomeUiState.Loading
-                            homeRequestId++
-                        }
-                    },
-                )
-                1 -> ReservedScreen(innerPadding = innerPadding, title = "书架")
-                else -> ReservedScreen(innerPadding = innerPadding, title = "我的")
-            }
+        }
+
+        detailRequest?.let { request ->
+            AlbumDetailTransitionHost(
+                request = request,
+                repository = detailRepository,
+                onDismiss = { detailRequest = null },
+            )
         }
     }
 }

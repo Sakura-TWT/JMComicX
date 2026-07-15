@@ -3,10 +3,6 @@ package dev.jmx.client
 import android.content.Context
 import android.os.Build
 import android.text.Html
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,13 +28,20 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
@@ -54,7 +58,6 @@ import dev.jmx.client.core.api.AlbumSummary
 import dev.jmx.client.core.api.HomePromoteSection
 import dev.jmx.client.core.image.ImageUrl
 import dev.jmx.client.core.protocol.JmxProtocolConstants
-import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
 import dev.jmx.client.core.runtime.InitStepResult
 import dev.jmx.client.core.runtime.JmxCore
@@ -62,6 +65,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -69,6 +74,7 @@ import okhttp3.Headers
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.PullToRefresh
+import top.yukonga.miuix.kmp.basic.Surface
 import top.yukonga.miuix.kmp.basic.TabRowWithContour
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
@@ -86,33 +92,37 @@ internal fun HomeScreen(
     isRefreshing: Boolean,
     selectedCategoryIndex: Int,
     onCategorySelected: (Int) -> Unit,
+    liftedAlbumId: String?,
+    onLoadMore: (String) -> Unit,
+    onAlbumSelected: (HomeAlbum, Rect) -> Unit,
     onRefresh: () -> Unit,
     onRetry: () -> Unit,
 ) {
-    AnimatedContent(
-        targetState = state,
-        transitionSpec = { fadeIn() togetherWith fadeOut() },
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .padding(innerPadding),
-    ) { current ->
-        when (current) {
+    ) {
+        when (state) {
             HomeUiState.Loading -> LoadingHome()
             is HomeUiState.Content -> HomeContent(
-                categories = current.categories,
+                categories = state.categories,
                 selectedCategoryIndex = selectedCategoryIndex,
                 onCategorySelected = onCategorySelected,
+                liftedAlbumId = liftedAlbumId,
+                onLoadMore = onLoadMore,
+                onAlbumSelected = onAlbumSelected,
                 isRefreshing = isRefreshing,
                 onRefresh = onRefresh,
             )
             is HomeUiState.Empty -> EmptyState(
                 title = "暂无推荐",
-                message = current.message,
+                message = state.message,
                 onRetry = onRetry,
             )
             is HomeUiState.Error -> EmptyState(
                 title = "首页加载失败",
-                message = current.message,
+                message = state.message,
                 onRetry = onRetry,
             )
         }
@@ -124,6 +134,9 @@ private fun HomeContent(
     categories: List<HomeCategory>,
     selectedCategoryIndex: Int,
     onCategorySelected: (Int) -> Unit,
+    liftedAlbumId: String?,
+    onLoadMore: (String) -> Unit,
+    onAlbumSelected: (HomeAlbum, Rect) -> Unit,
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
 ) {
@@ -164,7 +177,12 @@ private fun HomeContent(
                 refreshTexts = listOf("下拉刷新", "松开刷新", "正在刷新", "刷新完成"),
                 modifier = Modifier.fillMaxSize(),
             ) {
-                HomeAlbumGrid(albums = categories[page].albums)
+                HomeAlbumGrid(
+                    category = categories[page],
+                    onLoadMore = onLoadMore,
+                    onAlbumSelected = onAlbumSelected,
+                    liftedAlbumId = liftedAlbumId,
+                )
             }
         }
     }
@@ -188,50 +206,132 @@ private fun rememberCategoryTabWidth(categories: List<HomeCategory>): Dp {
 }
 
 @Composable
-private fun HomeAlbumGrid(albums: List<HomeAlbum>) {
+private fun HomeAlbumGrid(
+    category: HomeCategory,
+    onLoadMore: (String) -> Unit,
+    onAlbumSelected: (HomeAlbum, Rect) -> Unit,
+    liftedAlbumId: String?,
+) {
+    val gridState = rememberLazyGridState()
+
+    LaunchedEffect(
+        gridState,
+        category.nextPage,
+        category.isLoadingMore,
+        category.endReached,
+    ) {
+        if (category.isLoadingMore || category.endReached) return@LaunchedEffect
+        snapshotFlow {
+            val layoutInfo = gridState.layoutInfo
+            val lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            layoutInfo.totalItemsCount > 0 &&
+                lastVisibleIndex >= layoutInfo.totalItemsCount - LOAD_MORE_PREFETCH_ITEM_COUNT
+        }.filter { it }.first()
+        onLoadMore(category.id)
+    }
+
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
-        modifier = Modifier.fillMaxSize(),
+        state = gridState,
+        modifier = Modifier
+            .fillMaxSize()
+            .semantics {
+                contentDescription = "${category.title}漫画列表，共${category.albums.size}部"
+            },
         contentPadding = PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 28.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         items(
-            items = albums,
+            items = category.albums,
             key = { it.id },
         ) { album ->
-            AlbumItem(album = album)
+            AlbumItem(
+                album = album,
+                coverLifted = album.id == liftedAlbumId,
+                onSelected = onAlbumSelected,
+            )
+        }
+        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+            HomePaginationFooter(category = category, onRetry = { onLoadMore(category.id) })
         }
     }
 }
 
 @Composable
-private fun AlbumItem(album: HomeAlbum) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        AlbumCover(album = album)
-        Spacer(modifier = Modifier.height(9.dp))
-        Text(
-            text = album.name,
-            style = MiuixTheme.textStyles.footnote1,
-            fontWeight = FontWeight.SemiBold,
-            color = MiuixTheme.colorScheme.onSurface,
-            overflow = TextOverflow.Ellipsis,
-            maxLines = 2,
-            minLines = 2,
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = album.author,
-            style = MiuixTheme.textStyles.footnote2,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            overflow = TextOverflow.Ellipsis,
-            maxLines = 1,
-        )
+private fun HomePaginationFooter(
+    category: HomeCategory,
+    onRetry: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(64.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            category.isLoadingMore -> CircularProgressIndicator(size = 24.dp, strokeWidth = 3.dp)
+            category.loadMoreError != null -> TextButton(text = "加载失败，重试", onClick = onRetry)
+            category.endReached -> Text(
+                text = "已经到底了",
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
     }
 }
 
 @Composable
-private fun AlbumCover(album: HomeAlbum) {
+private fun AlbumItem(
+    album: HomeAlbum,
+    coverLifted: Boolean,
+    onSelected: (HomeAlbum, Rect) -> Unit,
+) {
+    var coverBounds by remember(album.id) { mutableStateOf(Rect.Zero) }
+    Surface(
+        onClick = {
+            if (coverBounds.width > 0f && coverBounds.height > 0f) {
+                onSelected(album, coverBounds)
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = Color.Transparent,
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            AlbumCover(
+                album = album,
+                visible = !coverLifted,
+                onBoundsChanged = { coverBounds = it },
+            )
+            Spacer(modifier = Modifier.height(9.dp))
+            Text(
+                text = album.name,
+                style = MiuixTheme.textStyles.footnote1,
+                fontWeight = FontWeight.SemiBold,
+                color = MiuixTheme.colorScheme.onSurface,
+                overflow = TextOverflow.Ellipsis,
+                maxLines = 2,
+                minLines = 2,
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = album.author,
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                overflow = TextOverflow.Ellipsis,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AlbumCover(
+    album: HomeAlbum,
+    visible: Boolean,
+    onBoundsChanged: (Rect) -> Unit,
+) {
     val context = LocalContext.current
     val coverRequest = remember(album.coverUrl) {
         buildCoverRequest(context, album.coverUrl)
@@ -244,11 +344,14 @@ private fun AlbumCover(album: HomeAlbum) {
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(3f / 4f)
+            .onGloballyPositioned { coordinates -> onBoundsChanged(coordinates.boundsInWindow()) }
             .clip(RoundedCornerShape(8.dp))
             .background(MiuixTheme.colorScheme.surfaceContainerHigh),
         contentAlignment = Alignment.Center,
     ) {
-        if (loadFailed) {
+        if (!visible) {
+            Unit
+        } else if (loadFailed) {
             FailedCover()
         } else {
             AsyncImage(
@@ -360,7 +463,7 @@ internal fun ReservedScreen(innerPadding: PaddingValues, title: String) {
 
 internal class HomeRepository(
     context: Context,
-    private val core: JmxCore = JmxCore.create(),
+    internal val core: JmxCore = JmxCore.create(),
 ) {
     private val applicationContext = context.applicationContext
     private val imageLoader: ImageLoader = applicationContext.imageLoader
@@ -383,11 +486,52 @@ internal class HomeRepository(
         }
     }
 
+    suspend fun loadMore(category: HomeCategory): HomeCategory {
+        return try {
+            when (val result = core.libraryApi.promotedSectionPage(category.source, category.nextPage)) {
+                is JmxResult.Success -> {
+                    val receivedAlbums = result.value.content
+                        .filter { it.id.isNotBlank() }
+                        .distinctBy { it.id }
+                        .map { item -> item.toHomeAlbum(category.imageHost) }
+                    val failedCoverIds = preloadCovers(receivedAlbums)
+                    val preparedAlbums = receivedAlbums.map { album ->
+                        album.copy(coverLoadFailed = album.id in failedCoverIds)
+                    }
+                    val mergedAlbums = (category.albums + preparedAlbums).distinctBy { it.id }
+                    val total = result.value.total ?: category.total
+                    category.copy(
+                        albums = mergedAlbums,
+                        total = total,
+                        nextPage = category.nextPage + 1,
+                        isLoadingMore = false,
+                        loadMoreError = null,
+                        endReached = result.value.content.isEmpty() ||
+                            (total != null && mergedAlbums.size >= total),
+                    )
+                }
+                is JmxResult.Failure -> category.copy(
+                    isLoadingMore = false,
+                    loadMoreError = result.error.toUiMessage(),
+                )
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            category.copy(
+                isLoadingMore = false,
+                loadMoreError = error.message ?: "加载更多时出现未知异常。",
+            )
+        }
+    }
+
     private suspend fun List<HomePromoteSection>.toHomeState(
         imageHost: String,
         preloadCategoryId: String?,
     ): HomeUiState {
-        val mappedCategories = mapIndexedNotNull { index, section ->
+        val mappedCategories = filter { section ->
+            section.type in SUPPORTED_HOME_PAGINATION_TYPES
+        }.mapIndexedNotNull { index, section ->
             val albums = section.content
                 .filter { it.id.isNotBlank() }
                 .distinctBy { it.id }
@@ -399,6 +543,8 @@ internal class HomeRepository(
                 id = section.stableCategoryId(index, title),
                 title = title,
                 albums = albums,
+                source = section,
+                imageHost = imageHost,
             )
         }.distinctBy { it.id }
         val (serialCategories, otherCategories) = mappedCategories.partition { it.title.isSerialUpdateTitle() }
@@ -450,6 +596,13 @@ internal data class HomeCategory(
     val id: String,
     val title: String,
     val albums: List<HomeAlbum>,
+    val source: HomePromoteSection,
+    val imageHost: String,
+    val total: Int? = null,
+    val nextPage: Int = 1,
+    val isLoadingMore: Boolean = false,
+    val loadMoreError: String? = null,
+    val endReached: Boolean = false,
 )
 
 internal data class HomeAlbum(
@@ -473,7 +626,7 @@ private fun AlbumSummary.toHomeAlbum(imageHost: String): HomeAlbum {
     )
 }
 
-private fun buildCoverRequest(context: Context, url: String): ImageRequest {
+internal fun buildCoverRequest(context: Context, url: String): ImageRequest {
     return ImageRequest.Builder(context)
         .data(url)
         .headers(albumCoverHeaders)
@@ -496,7 +649,7 @@ private fun String?.cleanHomeSectionTitle(fallback: String): String {
 }
 
 @Suppress("DEPRECATION")
-private fun String.decodeHtml(): String {
+internal fun String.decodeHtml(): String {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
         Html.fromHtml(this, Html.FROM_HTML_MODE_LEGACY).toString()
     } else {
@@ -512,18 +665,6 @@ private fun HomePromoteSection.stableCategoryId(index: Int, resolvedTitle: Strin
         ?: "section:$index:$resolvedTitle"
 }
 
-private fun JmxError.toUiMessage(): String {
-    return when (this) {
-        is JmxError.Network -> "网络请求失败：$message"
-        is JmxError.Http -> "线路返回 HTTP $code：$message"
-        is JmxError.Api -> "接口返回错误 $code：$message"
-        is JmxError.Decode -> "响应解密或解析失败：$message"
-        is JmxError.Schema -> "响应结构暂不匹配：$message"
-        is JmxError.Domain -> "线路或域名不可用：$message"
-        is JmxError.Unknown -> "未知错误：$message"
-    }
-}
-
 private val albumCoverHeaders: Headers = Headers.Builder()
     .add("User-Agent", JmxProtocolConstants.MobileUserAgent)
     .add("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
@@ -533,3 +674,5 @@ private val albumCoverHeaders: Headers = Headers.Builder()
 private const val COVER_PRELOAD_CONCURRENCY = 6
 private const val COVER_PRELOAD_WIDTH_PX = 360
 private const val COVER_PRELOAD_HEIGHT_PX = 480
+private const val LOAD_MORE_PREFETCH_ITEM_COUNT = 6
+private val SUPPORTED_HOME_PAGINATION_TYPES = setOf("promote", "category_id", "not_in_category_id")

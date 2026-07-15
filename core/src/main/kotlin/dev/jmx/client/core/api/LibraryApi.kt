@@ -48,6 +48,60 @@ class LibraryApi(
         return JmxResult.Success(albums)
     }
 
+    suspend fun promotedSectionPage(
+        section: HomePromoteSection,
+        page: Int,
+    ): JmxResult<AlbumPage> {
+        return when (section.type?.trim()?.lowercase()) {
+            "promote" -> {
+                val id = section.id.ifBlank { section.filterValue.orEmpty() }
+                if (id.isBlank()) {
+                    JmxResult.Failure(JmxError.Schema("推荐分组缺少 id", field = "id"))
+                } else {
+                    albumPage(ApiRoute.PromoteList) {
+                        query("id", id)
+                        queryAtLeast("page", page, minimum = 1)
+                    }
+                }
+            }
+            "category_id" -> {
+                val category = section.slug?.trim().orEmpty()
+                if (category.isBlank()) {
+                    JmxResult.Failure(JmxError.Schema("分类分组缺少 slug", field = "slug"))
+                } else {
+                    categoriesFilter(
+                        CategoryFilter(
+                            page = page,
+                            time = dev.jmx.client.core.protocol.JmxMagicConstants.TIME_ALL,
+                            category = category,
+                        )
+                    )
+                }
+            }
+            "not_in_category_id" -> {
+                val queryText = section.slug?.trim().takeUnless { it.isNullOrBlank() }
+                    ?: section.title?.trim().orEmpty()
+                if (queryText.isBlank()) {
+                    JmxResult.Failure(JmxError.Schema("搜索分组缺少标题", field = "title"))
+                } else {
+                    albumPage(ApiRoute.Search) {
+                        query("search_query", queryText)
+                        queryAtLeast("page", page, minimum = 1)
+                        query("o", dev.jmx.client.core.protocol.JmxMagicConstants.ORDER_BY_LATEST)
+                        query("main_tag", 0)
+                        query("t", dev.jmx.client.core.protocol.JmxMagicConstants.TIME_ALL)
+                    }
+                }
+            }
+            else -> JmxResult.Failure(
+                JmxError.Schema(
+                    "推荐分组类型不支持漫画分页：${section.type.orEmpty()}",
+                    field = "type",
+                )
+            )
+        }
+    }
+
     suspend fun week(): JmxResult<WeekInfo> {
         val data = when (val result = apiClient.requestJson(apiRequest(ApiRoute.Week))) {
             is JmxResult.Success -> result.value

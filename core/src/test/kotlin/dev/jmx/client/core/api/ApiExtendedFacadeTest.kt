@@ -149,6 +149,67 @@ class ApiExtendedFacadeTest {
     }
 
     @Test
+    fun libraryApiPagesSupportedPromoteSectionTypes() {
+        val api = LibraryApi(createClient())
+        server.enqueue(encryptedResponse("""{"total":90,"content":[{"id":"29-1","name":"promoted"}]}"""))
+        server.enqueue(encryptedResponse("""{"total":80,"content":[{"id":"han-1","name":"hanman"}]}"""))
+        server.enqueue(encryptedResponse("""{"total":40,"content":[{"id":"group-1","name":"group"}]}"""))
+
+        val promoted = kotlinx.coroutines.runBlocking {
+            api.promotedSectionPage(
+                section = HomePromoteSection(
+                    id = "29",
+                    title = "C107",
+                    slug = "",
+                    type = "promote",
+                    filterValue = "29",
+                    content = emptyList(),
+                    raw = emptyMap(),
+                ),
+                page = 0,
+            )
+        }
+        val category = kotlinx.coroutines.runBlocking {
+            api.promotedSectionPage(
+                section = HomePromoteSection(
+                    id = "999",
+                    title = "韓漫更新",
+                    slug = "hanman",
+                    type = "category_id",
+                    filterValue = "5",
+                    content = emptyList(),
+                    raw = emptyMap(),
+                ),
+                page = 2,
+            )
+        }
+        val searched = kotlinx.coroutines.runBlocking {
+            api.promotedSectionPage(
+                section = HomePromoteSection(
+                    id = "998",
+                    title = "禁漫漢化組",
+                    slug = "禁漫漢化組",
+                    type = "not_in_category_id",
+                    filterValue = "",
+                    content = emptyList(),
+                    raw = emptyMap(),
+                ),
+                page = 3,
+            )
+        }
+
+        assertEquals("promoted", (promoted as JmxResult.Success).value.content.single().name)
+        assertEquals("hanman", (category as JmxResult.Success).value.content.single().name)
+        assertEquals("group", (searched as JmxResult.Success).value.content.single().name)
+        assertEquals("/promote_list?id=29&page=1", server.takeRequest().path)
+        assertEquals("/categories/filter?page=2&order=&c=hanman&o=mr", server.takeRequest().path)
+        assertEquals(
+            "/search?search_query=%E7%A6%81%E6%BC%AB%E6%BC%A2%E5%8C%96%E7%B5%84&page=3&o=mr&main_tag=0&t=a",
+            server.takeRequest().path,
+        )
+    }
+
+    @Test
     fun libraryApiParsesUserComments() {
         val api = LibraryApi(createClient())
         server.enqueue(
