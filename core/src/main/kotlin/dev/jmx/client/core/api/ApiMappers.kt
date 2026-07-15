@@ -7,8 +7,22 @@ internal fun JsonObject.toAlbumSummary(): AlbumSummary {
     return AlbumSummary(
         id = stringOrNull("id", "album_id", "aid", "photo_id") ?: "",
         name = stringOrNull("name", "title"),
-        author = stringOrNull("author", "authors"),
-        imageCount = intOrNull("total_photo", "page_count", "images")
+        author = stringOrNull("author", "authors") ?: stringListOrEmpty("author", "authors").firstOrNull(),
+        imageCount = intOrNull("total_photo", "page_count", "images"),
+        image = stringOrNull("image", "cover", "photo", "thumb", "thumbnail")
+    )
+}
+
+internal fun JsonObject.toHomePromoteSection(): HomePromoteSection {
+    return HomePromoteSection(
+        id = stringOrNull("id") ?: "",
+        title = stringOrNull("title", "name"),
+        slug = stringOrNull("slug"),
+        type = stringOrNull("type"),
+        filterValue = stringOrNull("filter_val", "filterValue", "filter"),
+        content = firstObjectList("content", "list", "albums", "photos")
+            .map { it.toAlbumSummary() },
+        raw = toRawMap()
     )
 }
 

@@ -21,3 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "JMComicX"
 include(":core")
+include(":app")

@@ -10,6 +10,25 @@ import dev.jmx.client.core.result.JmxResult
 class LibraryApi(
     private val apiClient: JmxApiClient
 ) {
+    suspend fun promotedSections(timestampMillis: Long = System.currentTimeMillis()): JmxResult<List<HomePromoteSection>> {
+        val data = when (
+            val result = apiClient.requestJson(
+                apiRequest(ApiRoute.Promote) {
+                    query("_", timestampMillis)
+                }
+            )
+        ) {
+            is JmxResult.Success -> result.value
+            is JmxResult.Failure -> return result
+        }
+        val sections = when {
+            data.isJsonArray -> data.asObjectListOrEmpty().map { it.toHomePromoteSection() }
+            data.isJsonObject -> listOf(data.asJsonObject.toHomePromoteSection())
+            else -> emptyList()
+        }
+        return JmxResult.Success(sections)
+    }
+
     suspend fun promotedAlbums(timestampMillis: Long = System.currentTimeMillis()): JmxResult<List<AlbumSummary>> {
         val data = when (
             val result = apiClient.requestJson(

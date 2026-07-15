@@ -37,7 +37,18 @@ data class AlbumSummary(
     val id: String,
     val name: String?,
     val author: String?,
-    val imageCount: Int?
+    val imageCount: Int?,
+    val image: String? = null
+)
+
+data class HomePromoteSection(
+    val id: String,
+    val title: String?,
+    val slug: String?,
+    val type: String?,
+    val filterValue: String?,
+    val content: List<AlbumSummary>,
+    val raw: Map<String, Any?>
 )
 
 data class AlbumDetail(

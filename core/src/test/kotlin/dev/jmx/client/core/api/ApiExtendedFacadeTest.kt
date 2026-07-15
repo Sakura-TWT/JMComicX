@@ -85,6 +85,20 @@ class ApiExtendedFacadeTest {
     fun libraryApiParsesListsAndDailyData() {
         val api = LibraryApi(createClient())
         server.enqueue(encryptedResponse("""[{"id":"1","name":"promo"}]"""))
+        server.enqueue(
+            encryptedResponse(
+                """
+                [{
+                  "id":"26",
+                  "title":"連載更新→右滑看更多→",
+                  "slug":"series",
+                  "type":"album",
+                  "filter_val":"26",
+                  "content":[{"id":"100","name":"serial album","author":"writer","image":"cover.jpg"}]
+                }]
+                """.trimIndent()
+            )
+        )
         server.enqueue(encryptedResponse("""{"total":2,"content":[{"id":"2","name":"fav"}]}"""))
         server.enqueue(
             encryptedResponse(
@@ -93,17 +107,25 @@ class ApiExtendedFacadeTest {
         )
 
         val promoted = kotlinx.coroutines.runBlocking { api.promotedAlbums(timestampMillis = 10L) }
+        val sections = kotlinx.coroutines.runBlocking { api.promotedSections(timestampMillis = 11L) }
         val favorites = kotlinx.coroutines.runBlocking { api.favoriteAlbums(page = 2, order = "mr", folderId = 3) }
         val daily = kotlinx.coroutines.runBlocking { api.dailyInfo(userId = "42") }
 
         assertTrue(promoted is JmxResult.Success)
         assertEquals("promo", (promoted as JmxResult.Success).value.single().name)
+        assertTrue(sections is JmxResult.Success)
+        val serialSection = (sections as JmxResult.Success).value.single()
+        assertEquals("26", serialSection.id)
+        assertEquals("連載更新→右滑看更多→", serialSection.title)
+        assertEquals("serial album", serialSection.content.single().name)
+        assertEquals("cover.jpg", serialSection.content.single().image)
         assertTrue(favorites is JmxResult.Success)
         assertEquals("fav", (favorites as JmxResult.Success).value.content.single().name)
         assertTrue(daily is JmxResult.Success)
         assertEquals(7, (daily as JmxResult.Success).value.dailyId)
         assertEquals(true, daily.value.records.single().signed)
         assertEquals("/promote?_=10", server.takeRequest().path)
+        assertEquals("/promote?_=11", server.takeRequest().path)
         assertEquals("/favorite?page=2&o=mr&folder_id=3", server.takeRequest().path)
         assertEquals("/daily?user_id=42", server.takeRequest().path)
     }

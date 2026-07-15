@@ -12,6 +12,12 @@ import dev.jmx.client.core.result.JmxResult
 import dev.jmx.client.core.result.describe
 import dev.jmx.client.core.result.exchangeOrNull
 
+object JmxLiveProbeDefaults {
+    const val SAMPLE_ALBUM_ID = "438516"
+    const val SAMPLE_CHAPTER_ID = SAMPLE_ALBUM_ID
+    const val SAMPLE_SEARCH_QUERY = "无修正"
+}
+
 data class JmxLiveConnectivityScenario(
     val refreshDomains: Boolean = true,
     val probeEndpoints: Boolean = true,
@@ -24,9 +30,9 @@ data class JmxLiveConnectivityScenario(
 ) {
     companion object {
 
-        const val DEFAULT_ALBUM_ID = "438516"
-        const val DEFAULT_CHAPTER_ID = "438516"
-        const val DEFAULT_SEARCH_QUERY = "无修正"
+        const val DEFAULT_ALBUM_ID = JmxLiveProbeDefaults.SAMPLE_ALBUM_ID
+        const val DEFAULT_CHAPTER_ID = JmxLiveProbeDefaults.SAMPLE_CHAPTER_ID
+        const val DEFAULT_SEARCH_QUERY = JmxLiveProbeDefaults.SAMPLE_SEARCH_QUERY
     }
 }
 

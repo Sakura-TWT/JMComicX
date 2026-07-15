@@ -75,15 +75,17 @@ class JmxCore private constructor(
     val readingRunner: JmxLiveReadingRunner = JmxLiveReadingRunner(this)
     val loginRunner: JmxLiveLoginRunner = JmxLiveLoginRunner(this)
     val endpointController: JmxEndpointController = JmxEndpointController(this)
-    val chapterDownloadTasks: ChapterDownloadTaskManager = ChapterDownloadTaskManager(
-        templateFetcher = { chapterId, shunt ->
-            chapterApi.template(chapterId = chapterId, shunt = shunt)
-        },
-        downloader = downloader,
-        downloadConcurrency = downloadBatchRunner.maxConcurrency,
-        taskStore = chapterDownloadTaskStore,
-        executionPolicy = taskExecutionPolicy
-    )
+    val chapterDownloadTasks: ChapterDownloadTaskManager by lazy {
+        ChapterDownloadTaskManager(
+            templateFetcher = { chapterId, shunt ->
+                chapterApi.template(chapterId = chapterId, shunt = shunt)
+            },
+            downloader = downloader,
+            downloadConcurrency = downloadBatchRunner.maxConcurrency,
+            taskStore = chapterDownloadTaskStore,
+            executionPolicy = taskExecutionPolicy
+        )
+    }
     val diagnosticExporter: JmxDiagnosticExporter = JmxDiagnosticExporter(this)
 
     fun healthSnapshot(): JmxCoreHealth {

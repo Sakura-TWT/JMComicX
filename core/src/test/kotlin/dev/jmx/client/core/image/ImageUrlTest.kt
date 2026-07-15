@@ -25,4 +25,31 @@ class ImageUrlTest {
             )
         )
     }
+
+    @Test
+    fun buildsAlbumCoverUrls() {
+        assertEquals(
+            "https://cdn.test/media/albums/1452925_3x4.jpg",
+            ImageUrl.albumCover(
+                imageHost = "cdn.test",
+                albumId = "1452925"
+            )
+        )
+        assertEquals(
+            "https://cdn.test/media/albums/1452925_3x4.jpg",
+            ImageUrl.resolveAlbumCover(
+                imageHost = "https://cdn.test/",
+                albumId = "1452925",
+                rawImage = ""
+            )
+        )
+        assertEquals(
+            "https://cdn.test/media/albums/cover.jpg",
+            ImageUrl.resolveAlbumCover(
+                imageHost = "https://cdn.test/",
+                albumId = "1452925",
+                rawImage = "cover.jpg"
+            )
+        )
+    }
 }

@@ -26,8 +26,8 @@ data class JmxLiveReadingScenario(
     val maxImageBytes: Long? = 15L * 1024L * 1024L
 ) {
     companion object {
-        const val DEFAULT_ALBUM_ID = "438516"
-        const val DEFAULT_CHAPTER_ID = "438516"
+        const val DEFAULT_ALBUM_ID = JmxLiveProbeDefaults.SAMPLE_ALBUM_ID
+        const val DEFAULT_CHAPTER_ID = JmxLiveProbeDefaults.SAMPLE_CHAPTER_ID
     }
 }
 

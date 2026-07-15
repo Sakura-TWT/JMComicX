@@ -38,6 +38,37 @@ object ImageUrl {
         }
     }
 
+    fun albumCover(
+        imageHost: String,
+        albumId: String,
+        variant: String = "3x4"
+    ): String {
+        val host = normalizeHost(imageHost)
+        val id = albumId.trim().trimStart('/')
+        require(id.isNotBlank()) { "album id is blank" }
+        val normalizedVariant = variant.trim().trim('_').ifBlank { "3x4" }
+        return "$host/media/albums/${id}_${normalizedVariant}.jpg"
+    }
+
+    fun resolveAlbumCover(
+        imageHost: String,
+        albumId: String,
+        rawImage: String? = null
+    ): String {
+        val host = normalizeHost(imageHost)
+        val raw = rawImage?.trim().orEmpty()
+        if (raw.isBlank()) return albumCover(host, albumId)
+        return when {
+            raw.startsWith("http://", ignoreCase = true) ||
+                raw.startsWith("https://", ignoreCase = true) -> raw
+            raw.startsWith("//") -> "https:$raw"
+            raw.startsWith("/") -> "$host$raw"
+            raw.startsWith("media/", ignoreCase = true) -> "$host/$raw"
+            raw.contains("/") -> "$host/${raw.trimStart('/')}"
+            else -> "$host/media/albums/${raw.toAlbumCoverFileName()}"
+        }
+    }
+
     fun pickDefaultImageHost(index: Int = 0): String {
         val hosts = JmxProtocolConstants.DefaultImageHosts
         if (hosts.isEmpty()) return "https://cdn-msp.jmapiproxy1.cc"
@@ -54,5 +85,11 @@ object ImageUrl {
 
     private fun normalizeSuffix(suffix: String): String {
         return if (suffix.startsWith(".")) suffix else ".$suffix"
+    }
+
+    private fun String.toAlbumCoverFileName(): String {
+        if (contains(".")) return this
+        if (endsWith("_3x4", ignoreCase = true)) return "$this.jpg"
+        return "${this}_3x4.jpg"
     }
 }
