@@ -1,9 +1,24 @@
 package dev.jmx.client
 
+import dev.jmx.client.core.image.ImagePipeline
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ComicReaderLogicTest {
+    @Test
+    fun scaledRestoreSegmentsCoverTargetWithoutSeams() {
+        val moves = ImagePipeline().restoreMoves(imageHeight = 1283, segmentCount = 10)
+        val segments = scaleReaderTargetSegments(moves, sourceHeight = 1283, targetHeight = 1921)
+
+        assertEquals(0, segments.first().top)
+        assertEquals(1921, segments.last().bottom)
+        assertTrue(segments.all { it.bottom > it.top })
+        segments.zipWithNext().forEach { (current, next) ->
+            assertEquals(current.bottom, next.top)
+        }
+    }
+
     @Test
     fun currentPageUsesLargestVisibleArea() {
         val page = selectCurrentReaderPage(

@@ -102,7 +102,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 internal data class AlbumDetailTransitionRequest(
     val album: HomeAlbum,
-    val sourceBounds: Rect,
+    val sourceBounds: Rect?,
 )
 
 @Composable
@@ -185,7 +185,8 @@ internal fun AlbumDetailTransitionHost(
             repository = repository,
             readerActive = readerActive,
             onStartReading = onStartReading,
-            showCover = hasEntered && progress >= 0.999f && !isExiting,
+            showCover = request.sourceBounds == null ||
+                (hasEntered && progress >= 0.999f && !isExiting),
             onBack = ::exitDetail,
             onCoverTargetChanged = { bounds -> targetBounds = bounds },
             modifier = Modifier
@@ -196,13 +197,14 @@ internal fun AlbumDetailTransitionHost(
                 },
         )
 
+        val source = request.sourceBounds
         val destination = targetBounds
-        if (destination == null || !hasEntered || progress < 0.999f || isExiting) {
+        if (source != null && (destination == null || !hasEntered || progress < 0.999f || isExiting)) {
             val animatedBounds = if (destination == null) {
-                request.sourceBounds
+                source
             } else {
                 curvedCoverBounds(
-                    start = request.sourceBounds,
+                    start = source,
                     end = destination,
                     progress = progress,
                     maxBend = pageWidthPx * 0.26f,
@@ -948,12 +950,12 @@ internal class AlbumDetailRepository(
     ): AlbumPageSummary = coroutineScope {
         val chapters = detail.readingChapters()
         val albumImageCount = detail.imageCount
-        if (chapters.size == 1 && albumImageCount != null && albumImageCount > 0) {
-            chapterPageCounts[chapters.first().id] = albumImageCount
+        if (albumImageCount != null && albumImageCount > 0) {
+            if (chapters.size == 1) chapterPageCounts[chapters.first().id] = albumImageCount
             return@coroutineScope AlbumPageSummary.Ready(
                 totalPages = albumImageCount,
-                resolvedChapters = 1,
-                totalChapters = 1,
+                resolvedChapters = chapters.size,
+                totalChapters = chapters.size,
             )
         }
 

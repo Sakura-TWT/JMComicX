@@ -8,6 +8,7 @@ okhttp = "5.3.2"
 gson = "2.13.2"
 junit = "4.13.2"
 miuix = "0.9.3"
+opencc4j = "1.14.0"
 webp-imageio = "0.9.0"
 
 [libraries]
@@ -21,6 +22,7 @@ junit = { group = "junit", name = "junit", version.ref = "junit" }
 miuix-icons-android = { group = "top.yukonga.miuix.kmp", name = "miuix-icons-android", version.ref = "miuix" }
 miuix-ui-android = { group = "top.yukonga.miuix.kmp", name = "miuix-ui-android", version.ref = "miuix" }
 miuix-preference-android = { group = "top.yukonga.miuix.kmp", name = "miuix-preference-android", version.ref = "miuix" }
+opencc4j = { group = "com.github.houbb", name = "opencc4j", version.ref = "opencc4j" }
 webp-imageio = { group = "com.github.usefulness", name = "webp-imageio", version.ref = "webp-imageio" }
 
 [plugins]

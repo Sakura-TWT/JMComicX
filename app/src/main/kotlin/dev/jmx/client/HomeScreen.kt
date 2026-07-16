@@ -24,11 +24,11 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,8 +65,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -213,21 +211,11 @@ private fun HomeAlbumGrid(
     liftedAlbumId: String?,
 ) {
     val gridState = rememberLazyGridState()
-
-    LaunchedEffect(
-        gridState,
-        category.nextPage,
-        category.isLoadingMore,
-        category.endReached,
-    ) {
-        if (category.isLoadingMore || category.endReached) return@LaunchedEffect
-        snapshotFlow {
-            val layoutInfo = gridState.layoutInfo
-            val lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            layoutInfo.totalItemsCount > 0 &&
-                lastVisibleIndex >= layoutInfo.totalItemsCount - LOAD_MORE_PREFETCH_ITEM_COUNT
-        }.filter { it }.first()
-        onLoadMore(category.id)
+    val footerKey = remember(category.id) { "home-footer:${category.id}" }
+    val footerVisible by remember(gridState, footerKey) {
+        derivedStateOf {
+            gridState.layoutInfo.visibleItemsInfo.any { item -> item.key == footerKey }
+        }
     }
 
     LazyVerticalGrid(
@@ -252,8 +240,12 @@ private fun HomeAlbumGrid(
                 onSelected = onAlbumSelected,
             )
         }
-        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
-            HomePaginationFooter(category = category, onRetry = { onLoadMore(category.id) })
+        item(key = footerKey, span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+            HomePaginationFooter(
+                category = category,
+                visible = footerVisible,
+                onLoadMore = { onLoadMore(category.id) },
+            )
         }
     }
 }
@@ -261,8 +253,21 @@ private fun HomeAlbumGrid(
 @Composable
 private fun HomePaginationFooter(
     category: HomeCategory,
-    onRetry: () -> Unit,
+    visible: Boolean,
+    onLoadMore: () -> Unit,
 ) {
+    LaunchedEffect(
+        category.id,
+        category.nextPage,
+        category.isLoadingMore,
+        category.loadMoreError,
+        category.endReached,
+        visible,
+    ) {
+        if (visible && !category.isLoadingMore && category.loadMoreError == null && !category.endReached) {
+            onLoadMore()
+        }
+    }
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -271,7 +276,7 @@ private fun HomePaginationFooter(
     ) {
         when {
             category.isLoadingMore -> CircularProgressIndicator(size = 24.dp, strokeWidth = 3.dp)
-            category.loadMoreError != null -> TextButton(text = "加载失败，重试", onClick = onRetry)
+            category.loadMoreError != null -> TextButton(text = "加载失败，重试", onClick = onLoadMore)
             category.endReached -> Text(
                 text = "已经到底了",
                 style = MiuixTheme.textStyles.footnote1,
@@ -282,7 +287,7 @@ private fun HomePaginationFooter(
 }
 
 @Composable
-private fun AlbumItem(
+internal fun AlbumItem(
     album: HomeAlbum,
     coverLifted: Boolean,
     onSelected: (HomeAlbum, Rect) -> Unit,
@@ -349,11 +354,9 @@ private fun AlbumCover(
             .background(MiuixTheme.colorScheme.surfaceContainerHigh),
         contentAlignment = Alignment.Center,
     ) {
-        if (!visible) {
-            Unit
-        } else if (loadFailed) {
+        if (visible && loadFailed) {
             FailedCover()
-        } else {
+        } else if (visible) {
             AsyncImage(
                 model = coverRequest,
                 contentDescription = album.name,
@@ -467,6 +470,8 @@ internal class HomeRepository(
 ) {
     private val applicationContext = context.applicationContext
     private val imageLoader: ImageLoader = applicationContext.imageLoader
+    internal var currentImageHost: String = ImageUrl.pickDefaultImageHost()
+        private set
 
     suspend fun load(preloadCategoryId: String? = null): HomeUiState {
         return try {
@@ -475,6 +480,7 @@ internal class HomeRepository(
                 ?.value
                 ?.imageHost
                 ?: ImageUrl.pickDefaultImageHost()
+            currentImageHost = imageHost
             when (val result = core.libraryApi.promotedSections()) {
                 is JmxResult.Success -> result.value.toHomeState(imageHost, preloadCategoryId)
                 is JmxResult.Failure -> HomeUiState.Error(result.error.toUiMessage())
@@ -614,7 +620,7 @@ internal data class HomeAlbum(
     val coverLoadFailed: Boolean = false,
 )
 
-private fun AlbumSummary.toHomeAlbum(imageHost: String): HomeAlbum {
+internal fun AlbumSummary.toHomeAlbum(imageHost: String): HomeAlbum {
     return HomeAlbum(
         id = id,
         name = name?.takeIf { it.isNotBlank() } ?: "未命名漫画",
@@ -676,5 +682,4 @@ private val albumCoverHeaders: Headers = Headers.Builder()
 private const val COVER_PRELOAD_CONCURRENCY = 6
 private const val COVER_PRELOAD_WIDTH_PX = 360
 private const val COVER_PRELOAD_HEIGHT_PX = 480
-private const val LOAD_MORE_PREFETCH_ITEM_COUNT = 6
 private val SUPPORTED_HOME_PAGINATION_TYPES = setOf("promote", "category_id", "not_in_category_id")

@@ -8,7 +8,7 @@ internal fun JsonObject.toAlbumSummary(): AlbumSummary {
         id = stringOrNull("id", "album_id", "aid", "photo_id") ?: "",
         name = stringOrNull("name", "title"),
         author = stringOrNull("author", "authors") ?: stringListOrEmpty("author", "authors").firstOrNull(),
-        imageCount = intOrNull("total_photo", "page_count", "images"),
+        imageCount = intOrNull("total_photo", "total_photos", "page_count", "images"),
         image = stringOrNull("image", "cover", "photo", "thumb", "thumbnail")
     )
 }
@@ -32,7 +32,7 @@ internal fun JsonObject.toAlbumDetail(): AlbumDetail {
         name = stringOrNull("name", "title"),
         description = stringOrNull("description", "desc"),
         authors = stringListOrEmpty("author", "authors"),
-        imageCount = intOrNull("total_photo", "page_count", "images"),
+        imageCount = intOrNull("total_photo", "total_photos", "page_count", "images"),
         totalViews = intOrNull("total_views", "views"),
         likes = intOrNull("likes", "like_count"),
         commentTotal = intOrNull("comment_total", "comment_count"),

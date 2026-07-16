@@ -1,9 +1,14 @@
 package dev.jmx.client
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
@@ -15,17 +20,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.zIndex
 import top.yukonga.miuix.kmp.basic.NavigationBar
 import top.yukonga.miuix.kmp.basic.NavigationBarItem
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Album
 import top.yukonga.miuix.kmp.icon.extended.Contacts
 import top.yukonga.miuix.kmp.icon.extended.Home
+import top.yukonga.miuix.kmp.icon.basic.Search
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
 fun JmxApp() {
@@ -51,6 +61,11 @@ fun JmxApp() {
     var pendingLoadMoreCategoryId by remember { mutableStateOf<String?>(null) }
     var detailRequest by remember { mutableStateOf<AlbumDetailTransitionRequest?>(null) }
     var readerRequest by remember { mutableStateOf<ReaderLaunchRequest?>(null) }
+    var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    val searchTransitionProgress by animateFloatAsState(
+        targetValue = if (searchExpanded) 1f else 0f,
+        label = "HomeSearchTopBarProgress",
+    )
 
     LaunchedEffect(homeRepository, homeRequestId) {
         val previousState = homeState
@@ -82,6 +97,7 @@ fun JmxApp() {
         }
         val updatedCategory = homeRepository.loadMore(category)
         val latestContent = homeState as? HomeUiState.Content
+        pendingLoadMoreCategoryId = null
         if (latestContent != null) {
             homeState = latestContent.copy(
                 categories = latestContent.categories.map { current ->
@@ -89,7 +105,6 @@ fun JmxApp() {
                 },
             )
         }
-        pendingLoadMoreCategoryId = null
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -98,6 +113,21 @@ fun JmxApp() {
             topBar = {
                 SmallTopAppBar(
                     title = if (selectedTab == 0) "JMComicX" else tabs[selectedTab].label,
+                    modifier = Modifier.graphicsLayer {
+                        translationY = size.height * searchTransitionProgress * 0.72f
+                        alpha = 1f - searchTransitionProgress
+                    },
+                    actions = {
+                        if (selectedTab == 0) {
+                            IconButton(onClick = { searchExpanded = true }) {
+                                Icon(
+                                    imageVector = MiuixIcons.Basic.Search,
+                                    contentDescription = "搜索",
+                                    tint = MiuixTheme.colorScheme.onBackground,
+                                )
+                            }
+                        }
+                    },
                 )
             },
             bottomBar = {
@@ -105,7 +135,10 @@ fun JmxApp() {
                     tabs.forEachIndexed { index, tab ->
                         NavigationBarItem(
                             selected = selectedTab == index,
-                            onClick = { selectedTab = index },
+                            onClick = {
+                                searchExpanded = false
+                                selectedTab = index
+                            },
                             icon = tab.icon,
                             label = tab.label,
                         )
@@ -124,7 +157,10 @@ fun JmxApp() {
                         isRefreshing = isHomeRefreshing,
                         selectedCategoryIndex = selectedHomeCategory,
                         onCategorySelected = { selectedHomeCategory = it },
-                        liftedAlbumId = detailRequest?.album?.id,
+                        liftedAlbumId = detailRequest
+                            ?.takeIf { it.sourceBounds != null }
+                            ?.album
+                            ?.id,
                         onLoadMore = { categoryId ->
                             val content = homeState as? HomeUiState.Content
                             val category = content?.categories?.firstOrNull { it.id == categoryId }
@@ -169,6 +205,32 @@ fun JmxApp() {
                     1 -> ReservedScreen(innerPadding = innerPadding, title = "书架")
                     else -> ReservedScreen(innerPadding = innerPadding, title = "我的")
                 }
+            }
+        }
+
+        AnimatedVisibility(
+            visible = searchExpanded && selectedTab == 0,
+            enter = fadeIn() + slideInVertically(initialOffsetY = { -it / 5 }),
+            exit = fadeOut() + slideOutVertically(targetOffsetY = { -it / 5 }),
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(5f),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MiuixTheme.colorScheme.surface),
+            ) {
+                ComicSearchScreen(
+                    homeRepository = homeRepository,
+                    onDismiss = { searchExpanded = false },
+                    onAlbumSelected = { album ->
+                        searchExpanded = false
+                        if (detailRequest == null) {
+                            detailRequest = AlbumDetailTransitionRequest(album, sourceBounds = null)
+                        }
+                    },
+                )
             }
         }
 

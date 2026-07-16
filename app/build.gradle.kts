@@ -35,6 +35,7 @@ dependencies {
     implementation(libs.miuix.preference.android)
     implementation(libs.miuix.ui.android)
     implementation(libs.okhttp)
+    implementation(libs.opencc4j)
 
     testImplementation(libs.junit)
 }

@@ -218,6 +218,7 @@ class ApiFacadeTest {
                   "name":"album",
                   "description":"desc",
                   "author":["alice","bob"],
+                  "total_photos":2463,
                   "total_views":99,
                   "likes":10,
                   "comment_total":3,
@@ -244,6 +245,7 @@ class ApiFacadeTest {
         assertEquals("123", detail.id)
         assertEquals("album", detail.name)
         assertEquals(listOf("alice", "bob"), detail.authors)
+        assertEquals(2463, detail.imageCount)
         assertEquals(99, detail.totalViews)
         assertEquals(true, detail.isFavorite)
         assertEquals("related", detail.related.single().name)
