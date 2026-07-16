@@ -152,7 +152,7 @@ class JmxCore private constructor(
                     endpointManager.all().map { it.url.toString() }
                 },
                 endpointManager = endpointManager,
-                pinEndpointOnLogin = true
+                pinEndpointOnLogin = false
             )
             val interactionApi = InteractionApi(apiClient)
             val libraryApi = LibraryApi(apiClient)

@@ -15,7 +15,7 @@ android {
 
     defaultConfig {
         applicationId = "dev.jmx.client"
-        minSdk = 23
+        minSdk = 33
         targetSdk = 37
         versionCode = 13
         versionName = "0.13.0-dev"
@@ -32,6 +32,7 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.coil.compose)
     implementation(libs.gson)
+    implementation(libs.miuix.blur.android)
     implementation(libs.miuix.icons.android)
     implementation(libs.miuix.preference.android)
     implementation(libs.miuix.ui.android)

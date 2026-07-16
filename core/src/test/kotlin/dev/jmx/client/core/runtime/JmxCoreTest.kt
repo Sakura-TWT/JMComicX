@@ -95,6 +95,7 @@ class JmxCoreTest {
 
         assertTrue(result is JmxResult.Success)
         assertEquals("avs-value", core.sessionManager.cookies().single().value)
+        assertTrue(core.endpointManager.selection() is ApiEndpointSelection.Auto)
         assertEquals("username=user&password=pass", server.takeRequest().body.readUtf8())
     }
 

@@ -11,7 +11,6 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
 import android.os.BatteryManager
-import android.os.Build
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -1066,12 +1065,7 @@ private fun rememberBatteryStatus(): ReaderBatteryStatus {
             }
         }
         val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
-        val sticky = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            context.registerReceiver(receiver, filter)
-        }
+        val sticky = context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
         if (sticky != null) status = context.readBatteryStatus(sticky)
         onDispose { runCatching { context.unregisterReceiver(receiver) } }
     }

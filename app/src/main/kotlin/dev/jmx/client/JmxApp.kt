@@ -1,11 +1,17 @@
 package dev.jmx.client
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
@@ -28,6 +34,11 @@ import androidx.compose.ui.zIndex
 import dev.jmx.client.core.result.JmxResult
 import dev.jmx.client.core.result.toUserMessage
 import kotlinx.coroutines.launch
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.exp
+import kotlin.math.sin
+import kotlin.math.sqrt
 import top.yukonga.miuix.kmp.basic.NavigationBar
 import top.yukonga.miuix.kmp.basic.NavigationBarItem
 import top.yukonga.miuix.kmp.basic.Icon
@@ -36,7 +47,9 @@ import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Contacts
+import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.icon.extended.Home
+import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.icon.basic.Search
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -59,11 +72,22 @@ fun JmxApp() {
     val accountRepository = remember(homeRepository, applicationContext) {
         AccountRepository(applicationContext, homeRepository.core)
     }
+    val accountDataRepository = remember(homeRepository) {
+        AccountDataRepository(homeRepository.core, homeRepository)
+    }
+    val settingsRepository = remember(homeRepository, applicationContext) {
+        AppSettingsRepository(applicationContext, homeRepository.core, homeRepository)
+    }
     val coroutineScope = rememberCoroutineScope()
     var accountProfile by remember(accountRepository) { mutableStateOf(accountRepository.restore()) }
     var showLogin by rememberSaveable { mutableStateOf(false) }
     var loginSubmitting by remember { mutableStateOf(false) }
     var loginFailure by remember { mutableStateOf<LoginUiFailure?>(null) }
+    var accountPage by rememberSaveable { mutableStateOf(AccountPage.ROOT) }
+    var accountNavigationForward by remember { mutableStateOf(true) }
+    var selectedLibraryId by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingProtectedPage by remember { mutableStateOf<AccountPage?>(null) }
+    var autoCheckIn by rememberSaveable { mutableStateOf(settingsRepository.autoCheckInEnabled()) }
     var homeState by remember { mutableStateOf<HomeUiState>(HomeUiState.Loading) }
     var homeRequestId by rememberSaveable { mutableIntStateOf(0) }
     var isHomeRefreshing by remember { mutableStateOf(false) }
@@ -83,12 +107,41 @@ fun JmxApp() {
         showLogin = true
     }
 
+    fun navigateAccount(page: AccountPage) {
+        if (page == accountPage) return
+        accountNavigationForward = true
+        accountPage = page
+    }
+
+    fun navigateAccountBack() {
+        if (accountPage == AccountPage.ROOT) {
+            selectedTab = 0
+        } else {
+            accountNavigationForward = false
+            accountPage = accountPage.parent()
+        }
+    }
+
+    fun openProtectedAccountPage(page: AccountPage) {
+        if (accountProfile == null) {
+            pendingProtectedPage = page
+            requestLogin()
+        } else {
+            navigateAccount(page)
+        }
+    }
+
+    BackHandler(enabled = activeTab == ACCOUNT_TAB_INDEX) {
+        navigateAccountBack()
+    }
+
     LaunchedEffect(selectedTab, tabs.size) {
         if (selectedTab !in tabs.indices) selectedTab = 0
     }
 
-    LaunchedEffect(activeTab, accountProfile) {
-        if (activeTab == ACCOUNT_TAB_INDEX && accountProfile == null) requestLogin()
+    LaunchedEffect(accountProfile?.id, autoCheckIn, accountDataRepository) {
+        val profile = accountProfile
+        if (profile != null && autoCheckIn) accountDataRepository.autoCheckIn(profile)
     }
 
     LaunchedEffect(homeRepository, homeRequestId) {
@@ -139,14 +192,14 @@ fun JmxApp() {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             topBar = {
-                SmallTopAppBar(
-                    title = if (activeTab == 0) "JMComicX" else tabs[activeTab].label,
-                    modifier = Modifier.graphicsLayer {
-                        translationY = size.height * searchTransitionProgress * 0.72f
-                        alpha = 1f - searchTransitionProgress
-                    },
-                    actions = {
-                        if (activeTab == 0) {
+                if (activeTab == 0) {
+                    SmallTopAppBar(
+                        title = "JMComicX",
+                        modifier = Modifier.graphicsLayer {
+                            translationY = size.height * searchTransitionProgress * 0.72f
+                            alpha = 1f - searchTransitionProgress
+                        },
+                        actions = {
                             IconButton(onClick = { searchExpanded = true }) {
                                 Icon(
                                     imageVector = MiuixIcons.Basic.Search,
@@ -154,25 +207,64 @@ fun JmxApp() {
                                     tint = MiuixTheme.colorScheme.onBackground,
                                 )
                             }
-                        }
-                    },
-                )
-            },
-            bottomBar = {
-                NavigationBar {
-                    tabs.forEachIndexed { index, tab ->
-                        NavigationBarItem(
-                            selected = activeTab == index,
-                            onClick = {
-                                searchExpanded = false
-                                selectedTab = index
-                                if (index == ACCOUNT_TAB_INDEX && accountProfile == null) {
-                                    requestLogin()
+                        },
+                    )
+                } else if (accountPage != AccountPage.ABOUT) {
+                    AnimatedContent(
+                        targetState = accountPage,
+                        transitionSpec = { accountPageTransition(accountNavigationForward) },
+                        label = "AccountTopBarTransition",
+                    ) { page ->
+                        SmallTopAppBar(
+                            title = page.title,
+                            actions = {
+                                if (page == AccountPage.ROOT) {
+                                    IconButton(onClick = { navigateAccount(AccountPage.SETTINGS) }) {
+                                        Icon(
+                                            imageVector = MiuixIcons.Settings,
+                                            contentDescription = "设置",
+                                            tint = MiuixTheme.colorScheme.onBackground,
+                                        )
+                                    }
                                 }
                             },
-                            icon = tab.icon,
-                            label = tab.label,
+                            navigationIcon = {
+                                if (page != AccountPage.ROOT) {
+                                    IconButton(onClick = ::navigateAccountBack) {
+                                        Icon(
+                                            imageVector = MiuixIcons.Back,
+                                            contentDescription = "返回",
+                                            tint = MiuixTheme.colorScheme.onBackground,
+                                        )
+                                    }
+                                }
+                            },
                         )
+                    }
+                }
+            },
+            bottomBar = {
+                AnimatedVisibility(
+                    visible = activeTab == 0 || accountPage == AccountPage.ROOT,
+                    enter = fadeIn() + slideInVertically(initialOffsetY = { it }),
+                    exit = fadeOut() + slideOutVertically(targetOffsetY = { it }),
+                ) {
+                    NavigationBar {
+                        tabs.forEachIndexed { index, tab ->
+                            NavigationBarItem(
+                                selected = activeTab == index,
+                                onClick = {
+                                    searchExpanded = false
+                                    selectedTab = index
+                                    if (index == ACCOUNT_TAB_INDEX) {
+                                        accountNavigationForward = false
+                                        accountPage = AccountPage.ROOT
+                                    }
+                                },
+                                icon = tab.icon,
+                                label = tab.label,
+                            )
+                        }
                     }
                 }
             },
@@ -239,18 +331,94 @@ fun JmxApp() {
                             }
                         },
                     )
-                    else -> AccountScreen(
-                        innerPadding = innerPadding,
-                        profile = accountProfile,
-                        imageHost = homeRepository.currentImageHost,
-                        onLoginRequested = ::requestLogin,
-                        onLogout = {
-                            accountRepository.logout()
-                            accountProfile = null
-                            loginFailure = null
-                            selectedTab = 0
-                        },
-                    )
+                    else -> AnimatedContent(
+                        targetState = accountPage,
+                        modifier = Modifier.fillMaxSize(),
+                        transitionSpec = { accountPageTransition(accountNavigationForward) },
+                        label = "AccountPageTransition",
+                    ) { page ->
+                        when (page) {
+                            AccountPage.ROOT -> AccountScreen(
+                                innerPadding = innerPadding,
+                                profile = accountProfile,
+                                imageHost = homeRepository.currentImageHost,
+                                onLoginRequested = ::requestLogin,
+                                onLogout = {
+                                    accountRepository.logout()
+                                    accountProfile = null
+                                    loginFailure = null
+                                },
+                                onFavorites = { openProtectedAccountPage(AccountPage.FAVORITES) },
+                                onHistory = { openProtectedAccountPage(AccountPage.HISTORY) },
+                                onDaily = { openProtectedAccountPage(AccountPage.DAILY) },
+                                onAbout = { navigateAccount(AccountPage.ABOUT) },
+                            )
+                            AccountPage.FAVORITES,
+                            AccountPage.HISTORY,
+                            -> AccountCollectionScreen(
+                                innerPadding = innerPadding,
+                                kind = if (page == AccountPage.FAVORITES) {
+                                    AccountCollectionKind.FAVORITES
+                                } else {
+                                    AccountCollectionKind.HISTORY
+                                },
+                                repository = accountDataRepository,
+                                liftedAlbumId = detailRequest
+                                    ?.takeIf {
+                                        it.origin == AlbumDetailOrigin.ACCOUNT && it.sourceBounds != null
+                                    }
+                                    ?.album
+                                    ?.id,
+                                onAlbumSelected = { album, sourceBounds ->
+                                    if (detailRequest == null) {
+                                        detailRequest = AlbumDetailTransitionRequest(
+                                            album = album,
+                                            sourceBounds = sourceBounds,
+                                            origin = AlbumDetailOrigin.ACCOUNT,
+                                        )
+                                    }
+                                },
+                            )
+                            AccountPage.DAILY -> accountProfile?.let {
+                                DailyCheckScreen(innerPadding, it, accountDataRepository)
+                            } ?: AccountScreen(
+                                innerPadding = innerPadding,
+                                profile = null,
+                                imageHost = homeRepository.currentImageHost,
+                                onLoginRequested = ::requestLogin,
+                                onLogout = {},
+                                onFavorites = { openProtectedAccountPage(AccountPage.FAVORITES) },
+                                onHistory = { openProtectedAccountPage(AccountPage.HISTORY) },
+                                onDaily = { openProtectedAccountPage(AccountPage.DAILY) },
+                                onAbout = { navigateAccount(AccountPage.ABOUT) },
+                            )
+                            AccountPage.ABOUT -> AboutScreen(
+                                innerPadding = innerPadding,
+                                onBack = ::navigateAccountBack,
+                                onProjectLicense = { navigateAccount(AccountPage.PROJECT_LICENSE) },
+                                onThirdParty = { navigateAccount(AccountPage.THIRD_PARTY) },
+                            )
+                            AccountPage.PROJECT_LICENSE -> ProjectLicenseScreen(innerPadding)
+                            AccountPage.THIRD_PARTY -> ThirdPartyListScreen(innerPadding) { libraryId ->
+                                selectedLibraryId = libraryId
+                                navigateAccount(AccountPage.THIRD_PARTY_DETAIL)
+                            }
+                            AccountPage.THIRD_PARTY_DETAIL -> ThirdPartyDetailScreen(
+                                innerPadding,
+                                selectedLibraryId,
+                            )
+                            AccountPage.SETTINGS -> SettingsScreen(
+                                innerPadding = innerPadding,
+                                repository = settingsRepository,
+                                autoCheckIn = autoCheckIn,
+                                onAutoCheckInChanged = {
+                                    autoCheckIn = it
+                                    settingsRepository.setAutoCheckInEnabled(it)
+                                },
+                                onImageHostChanged = { homeRequestId++ },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -354,6 +522,8 @@ fun JmxApp() {
                             is JmxResult.Success -> {
                                 accountProfile = result.value
                                 showLogin = false
+                                pendingProtectedPage?.let(::navigateAccount)
+                                pendingProtectedPage = null
                             }
                             is JmxResult.Failure -> {
                                 val userMessage = result.error.toUserMessage()
@@ -377,3 +547,69 @@ private data class JmxTab(
 )
 
 private const val ACCOUNT_TAB_INDEX = 1
+
+internal enum class AccountPage(val title: String) {
+    ROOT("我的"),
+    FAVORITES("漫画收藏"),
+    HISTORY("观看历史"),
+    DAILY("每日签到"),
+    ABOUT("关于"),
+    PROJECT_LICENSE("开源协议"),
+    THIRD_PARTY("第三方开源库"),
+    THIRD_PARTY_DETAIL("开源库详情"),
+    SETTINGS("设置"),
+}
+
+private fun AccountPage.parent(): AccountPage = when (this) {
+    AccountPage.PROJECT_LICENSE,
+    AccountPage.THIRD_PARTY,
+    -> AccountPage.ABOUT
+    AccountPage.THIRD_PARTY_DETAIL -> AccountPage.THIRD_PARTY
+    else -> AccountPage.ROOT
+}
+
+private class MiuixNavEasing(response: Float, damping: Float) : Easing {
+    private val decayRate: Float
+    private val angularFrequency: Float
+    private val phaseCoefficient: Float
+
+    init {
+        val omega = 2.0 * PI / response
+        val stiffness = omega * omega
+        val dampingCoefficient = damping * 4.0 * PI / response
+        angularFrequency = (sqrt(4.0 * stiffness - dampingCoefficient * dampingCoefficient) / 2.0).toFloat()
+        decayRate = (-dampingCoefficient / 2.0).toFloat()
+        phaseCoefficient = decayRate / angularFrequency
+    }
+
+    override fun transform(fraction: Float): Float {
+        val time = fraction.toDouble()
+        val decay = exp(decayRate * time)
+        return (
+            decay * (
+                -cos(angularFrequency * time) +
+                    phaseCoefficient * sin(angularFrequency * time)
+                ) + 1.0
+            ).toFloat()
+    }
+}
+
+private val MiuixNavigationEasing = MiuixNavEasing(response = 0.8f, damping = 0.95f)
+
+private fun accountPageTransition(forward: Boolean): ContentTransform = if (forward) {
+    slideInHorizontally(
+        initialOffsetX = { it },
+        animationSpec = tween(500, easing = MiuixNavigationEasing),
+    ) togetherWith slideOutHorizontally(
+        targetOffsetX = { -it / 4 },
+        animationSpec = tween(500, easing = MiuixNavigationEasing),
+    )
+} else {
+    slideInHorizontally(
+        initialOffsetX = { -it / 4 },
+        animationSpec = tween(500, easing = MiuixNavigationEasing),
+    ) togetherWith slideOutHorizontally(
+        targetOffsetX = { it },
+        animationSpec = tween(500, easing = MiuixNavigationEasing),
+    )
+}

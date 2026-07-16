@@ -3,7 +3,10 @@
 
     <application
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@drawable/jmx_logo"
         android:label="@string/app_name"
+        android:roundIcon="@drawable/jmx_logo"
         android:usesCleartextTraffic="true"
         android:supportsRtl="true"
         android:theme="@style/JmxTheme">

@@ -111,7 +111,7 @@ internal data class AlbumDetailTransitionRequest(
     val origin: AlbumDetailOrigin,
 )
 
-internal enum class AlbumDetailOrigin { HOME, SEARCH }
+internal enum class AlbumDetailOrigin { HOME, SEARCH, ACCOUNT }
 
 @Composable
 internal fun AlbumDetailTransitionHost(

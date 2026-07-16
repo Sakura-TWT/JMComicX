@@ -3,8 +3,32 @@ package dev.jmx.client
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import dev.jmx.client.core.api.DailyCheckInfo
+import dev.jmx.client.core.api.DailyRecord
+import java.util.Calendar
 
 class AccountLogicTest {
+    @Test
+    fun dailyCalendarUsesMondayFirstAndCleansEventPrefix() {
+        val now = Calendar.getInstance().apply { set(2026, Calendar.JULY, 16) }
+        val month = currentMonthCalendar(
+            DailyCheckInfo(
+                dailyId = 70,
+                eventName = "7月-同人祭",
+                currentProgress = "3",
+                records = listOf(DailyRecord("2026-07-16", signed = true, bonus = false)),
+                raw = emptyMap(),
+            ),
+            now,
+        )
+
+        assertEquals(42, month.cells.size)
+        assertEquals(2, month.cells.indexOfFirst { it.day == 1 })
+        assertEquals(true, month.cells.first { it.day == 16 }.today)
+        assertEquals(true, month.cells.first { it.day == 16 }.signed)
+        assertEquals("同人祭", cleanDailyEventName("7月-同人祭", 7))
+    }
+
     @Test
     fun avatarUrlSupportsRelativeAndAbsoluteSources() {
         assertEquals(
@@ -23,5 +47,13 @@ class AccountLogicTest {
         assertEquals(0.7595f, accountProgress(3190, 4200, 75.95), 0.0001f)
         assertEquals(0.008f, accountProgress(8, 1000), 0.0001f)
         assertEquals(1f, accountProgress(10, 5), 0f)
+    }
+
+    @Test
+    fun cacheSizeUsesReadableBinaryUnits() {
+        assertEquals("0 B", formatByteCount(0))
+        assertEquals("1 KB", formatByteCount(1_024))
+        assertEquals("1.5 MB", formatByteCount(1_572_864))
+        assertEquals("2 GB", formatByteCount(2_147_483_648))
     }
 }

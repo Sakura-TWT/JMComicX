@@ -1,7 +1,6 @@
 package dev.jmx.client
 
 import android.graphics.Color
-import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
@@ -37,16 +36,15 @@ class MainActivity : ComponentActivity() {
         setContent {
             val darkMode = isSystemInDarkTheme()
             DisposableEffect(darkMode) {
-                window.setBackgroundDrawable(
-                    (if (darkMode) Color.BLACK else LIGHT_WINDOW_BACKGROUND).toDrawable(),
-                )
+                val systemBarColor = if (darkMode) Color.BLACK else LIGHT_WINDOW_BACKGROUND
+                window.setBackgroundDrawable(systemBarColor.toDrawable())
+                @Suppress("DEPRECATION")
+                window.statusBarColor = systemBarColor
                 enableEdgeToEdge(
-                    statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { darkMode },
+                    statusBarStyle = SystemBarStyle.auto(systemBarColor, systemBarColor) { darkMode },
                     navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { darkMode },
                 )
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    window.isNavigationBarContrastEnforced = false
-                }
+                window.isNavigationBarContrastEnforced = false
                 onDispose {}
             }
 

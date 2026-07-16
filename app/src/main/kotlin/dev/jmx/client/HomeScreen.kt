@@ -1,7 +1,6 @@
 package dev.jmx.client
 
 import android.content.Context
-import android.os.Build
 import android.text.Html
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -50,6 +49,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.core.content.edit
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.imageLoader
@@ -480,15 +480,39 @@ internal class HomeRepository(
 ) {
     private val applicationContext = context.applicationContext
     private val imageLoader: ImageLoader = applicationContext.imageLoader
+    private val preferences = applicationContext.getSharedPreferences(
+        HOME_PREFERENCES,
+        Context.MODE_PRIVATE,
+    )
+    private var remoteImageHost: String? = null
     internal var currentImageHost: String = ImageUrl.pickDefaultImageHost()
         private set
+
+    internal fun availableImageHosts(): List<String> = buildList {
+        remoteImageHost?.let(::add)
+        addAll(JmxProtocolConstants.DefaultImageHosts)
+    }.map { it.trimEnd('/') }.distinct()
+
+    internal fun preferredImageHost(): String? =
+        preferences.getString(PREFERRED_IMAGE_HOST_KEY, null)?.trimEnd('/')
+
+    internal fun useImageHost(host: String?) {
+        preferences.edit {
+            if (host.isNullOrBlank()) remove(PREFERRED_IMAGE_HOST_KEY)
+            else putString(PREFERRED_IMAGE_HOST_KEY, host.trimEnd('/'))
+        }
+        currentImageHost = host?.trimEnd('/') ?: remoteImageHost ?: ImageUrl.pickDefaultImageHost()
+    }
 
     suspend fun load(preloadCategoryId: String? = null): HomeUiState {
         return try {
             val init = core.initializer.initialize()
-            val imageHost = (init.settingFetch as? InitStepResult.Success)
+            remoteImageHost = (init.settingFetch as? InitStepResult.Success)
                 ?.value
                 ?.imageHost
+                ?.trimEnd('/')
+            val imageHost = preferredImageHost()
+                ?: remoteImageHost
                 ?: ImageUrl.pickDefaultImageHost()
             currentImageHost = imageHost
             when (val result = core.libraryApi.promotedSections()) {
@@ -655,13 +679,8 @@ private fun String?.cleanHomeSectionTitle(fallback: String): String {
         .ifBlank { fallback }
 }
 
-@Suppress("DEPRECATION")
 internal fun String.decodeHtml(): String {
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-        Html.fromHtml(this, Html.FROM_HTML_MODE_LEGACY).toString()
-    } else {
-        Html.fromHtml(this).toString()
-    }
+    return Html.fromHtml(this, Html.FROM_HTML_MODE_LEGACY).toString()
 }
 
 private fun HomePromoteSection.stableCategoryId(index: Int, resolvedTitle: String): String {
@@ -684,3 +703,5 @@ private const val COVER_PRELOAD_HEIGHT_PX = 480
 private const val COVER_UI_RETRY_COUNT = 3
 private const val COVER_UI_RETRY_BASE_DELAY_MILLIS = 450L
 private val SUPPORTED_HOME_PAGINATION_TYPES = setOf("promote", "category_id", "not_in_category_id")
+private const val HOME_PREFERENCES = "jmx_home"
+private const val PREFERRED_IMAGE_HOST_KEY = "preferred_image_host"

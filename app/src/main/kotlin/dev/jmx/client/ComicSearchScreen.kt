@@ -104,10 +104,15 @@ internal fun ComicSearchScreen(
     val coroutineScope = rememberCoroutineScope()
 
     DisposableEffect(context, darkMode, imeVisible) {
-        (context.findActivity() as? ComponentActivity)?.enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { darkMode },
-            navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { darkMode },
-        )
+        val systemBarColor = if (darkMode) Color.BLACK else Color.rgb(250, 250, 250)
+        (context.findActivity() as? ComponentActivity)?.let { activity ->
+            @Suppress("DEPRECATION")
+            activity.window.statusBarColor = systemBarColor
+            activity.enableEdgeToEdge(
+                statusBarStyle = SystemBarStyle.auto(systemBarColor, systemBarColor) { darkMode },
+                navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { darkMode },
+            )
+        }
         onDispose {}
     }
 
