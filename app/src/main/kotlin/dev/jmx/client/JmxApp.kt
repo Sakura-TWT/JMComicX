@@ -107,7 +107,11 @@ fun JmxApp() {
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MiuixTheme.colorScheme.surface),
+    ) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             topBar = {
@@ -158,7 +162,9 @@ fun JmxApp() {
                         selectedCategoryIndex = selectedHomeCategory,
                         onCategorySelected = { selectedHomeCategory = it },
                         liftedAlbumId = detailRequest
-                            ?.takeIf { it.sourceBounds != null }
+                            ?.takeIf {
+                                it.origin == AlbumDetailOrigin.HOME && it.sourceBounds != null
+                            }
                             ?.album
                             ?.id,
                         onLoadMore = { categoryId ->
@@ -185,7 +191,11 @@ fun JmxApp() {
                         },
                         onAlbumSelected = { album, sourceBounds ->
                             if (detailRequest == null) {
-                                detailRequest = AlbumDetailTransitionRequest(album, sourceBounds)
+                                detailRequest = AlbumDetailTransitionRequest(
+                                    album = album,
+                                    sourceBounds = sourceBounds,
+                                    origin = AlbumDetailOrigin.HOME,
+                                )
                             }
                         },
                         onRefresh = {
@@ -223,11 +233,20 @@ fun JmxApp() {
             ) {
                 ComicSearchScreen(
                     homeRepository = homeRepository,
+                    liftedAlbumId = detailRequest
+                        ?.takeIf {
+                            it.origin == AlbumDetailOrigin.SEARCH && it.sourceBounds != null
+                        }
+                        ?.album
+                        ?.id,
                     onDismiss = { searchExpanded = false },
-                    onAlbumSelected = { album ->
-                        searchExpanded = false
+                    onAlbumSelected = { album, sourceBounds ->
                         if (detailRequest == null) {
-                            detailRequest = AlbumDetailTransitionRequest(album, sourceBounds = null)
+                            detailRequest = AlbumDetailTransitionRequest(
+                                album = album,
+                                sourceBounds = sourceBounds,
+                                origin = AlbumDetailOrigin.SEARCH,
+                            )
                         }
                     },
                 )
@@ -235,13 +254,19 @@ fun JmxApp() {
         }
 
         detailRequest?.let { request ->
-            AlbumDetailTransitionHost(
-                request = request,
-                repository = detailRepository,
-                readerActive = readerRequest != null,
-                onStartReading = { readerRequest = it },
-                onDismiss = { detailRequest = null },
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(6f),
+            ) {
+                AlbumDetailTransitionHost(
+                    request = request,
+                    repository = detailRepository,
+                    readerActive = readerRequest != null,
+                    onStartReading = { readerRequest = it },
+                    onDismiss = { detailRequest = null },
+                )
+            }
         }
 
         readerRequest?.let { request ->

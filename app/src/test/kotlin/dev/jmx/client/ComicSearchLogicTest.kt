@@ -6,6 +6,22 @@ import org.junit.Test
 
 class ComicSearchLogicTest {
     @Test
+    fun historyKeepsNewestUniqueQueriesWithinLimit() {
+        assertEquals(
+            listOf("女性向", "連載中", "JM123"),
+            searchHistoryWith(
+                current = listOf("連載中", "女性向", "JM123", "其他"),
+                query = " 女性向 ",
+                limit = 3,
+            ),
+        )
+        assertEquals(
+            listOf("jm123", "女性向"),
+            searchHistoryWith(listOf("JM123", "女性向"), "jm123"),
+        )
+    }
+
+    @Test
     fun openCcConvertsSimplifiedQueryToTraditional() {
         assertEquals("連載中與女性向", toTraditionalChinese("连载中与女性向"))
     }

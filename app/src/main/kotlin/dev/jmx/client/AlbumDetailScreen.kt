@@ -103,7 +103,10 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 internal data class AlbumDetailTransitionRequest(
     val album: HomeAlbum,
     val sourceBounds: Rect?,
+    val origin: AlbumDetailOrigin,
 )
+
+internal enum class AlbumDetailOrigin { HOME, SEARCH }
 
 @Composable
 internal fun AlbumDetailTransitionHost(

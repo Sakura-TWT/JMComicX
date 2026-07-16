@@ -6,7 +6,10 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.IntentFilter
-import android.graphics.drawable.BitmapDrawable
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
 import android.os.BatteryManager
 import android.os.Build
 import android.view.KeyEvent
@@ -53,40 +56,32 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.FilterQuality
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.clipRect
-import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.content.edit
+import androidx.core.graphics.createBitmap
 import coil.ImageLoader
-import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
 import coil.imageLoader
 import coil.request.ImageRequest
+import coil.size.Size
+import coil.transform.Transformation
 import dev.jmx.client.core.api.AlbumChapter
 import dev.jmx.client.core.api.AlbumDetail
 import dev.jmx.client.core.chapter.ChapterTemplate
 import dev.jmx.client.core.download.ImageHttpHeaders
 import dev.jmx.client.core.image.ImagePipeline
 import dev.jmx.client.core.image.ImagePlan
-import dev.jmx.client.core.image.ImageSegmentMove
 import dev.jmx.client.core.image.ImageUrl
 import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.result.JmxResult
@@ -424,14 +419,6 @@ private fun ReaderPageImage(
         contentDescription = "第 ${page.index + 1} 页",
         modifier = Modifier.fillMaxWidth(),
         contentScale = ContentScale.FillWidth,
-        transform = { state ->
-            if (state is AsyncImagePainter.State.Success && page.plan.requiresRestore) {
-                val image = (state.result.drawable as? BitmapDrawable)?.bitmap?.asImageBitmap()
-                state.copy(painter = JmxUnscramblePainter(state.painter, image, page.plan))
-            } else {
-                state
-            }
-        },
         loading = { ReaderPageLoading(page.index + 1) },
         error = { state ->
             LaunchedEffect(state.result.throwable) {
@@ -953,88 +940,53 @@ internal fun buildReaderImageRequest(context: Context, page: ReaderPage, retryKe
     val builder = ImageRequest.Builder(context)
         .data(page.url)
         .headers(page.headers)
-        .allowHardware(true)
+        .allowHardware(!page.plan.requiresRestore)
         .crossfade(false)
-        .memoryCacheKey("${page.plan.cacheKey}:reader:$retryKey")
+        .memoryCacheKey(
+            "${page.plan.cacheKey}:reader:${page.plan.segmentCount}:$READER_RESTORE_VERSION:$retryKey",
+        )
         .diskCacheKey(page.plan.cacheKey)
+    if (page.plan.requiresRestore) {
+        builder
+            .size(Size.ORIGINAL)
+            .transformations(JmxUnscrambleTransformation(page.plan))
+    }
     return builder.build()
 }
 
-private class JmxUnscramblePainter(
-    private val delegate: Painter,
-    private val image: ImageBitmap?,
+private class JmxUnscrambleTransformation(
     private val plan: ImagePlan,
     private val pipeline: ImagePipeline = ImagePipeline(),
-) : Painter() {
-    override val intrinsicSize: androidx.compose.ui.geometry.Size
-        get() = image?.let {
-            androidx.compose.ui.geometry.Size(it.width.toFloat(), it.height.toFloat())
-        } ?: delegate.intrinsicSize
-
-    override fun DrawScope.onDraw() {
-        val sourceHeight = intrinsicSize.height.roundToInt()
-        val moves = pipeline.restoreMoves(sourceHeight, plan.segmentCount)
-        if (moves.isEmpty() || sourceHeight <= 0) {
-            with(delegate) { draw(size = this@onDraw.size) }
-            return
-        }
-        val sourceImage = image
-        if (sourceImage != null) {
-            drawRestoredImage(sourceImage, sourceHeight, moves)
-            return
-        }
-
-        val scaleY = size.height / sourceHeight
-        val drawSize = size
-        moves.forEach { move ->
-            val targetTop = move.targetY * scaleY
-            val targetBottom = (move.targetY + move.height) * scaleY
-            val translationY = (move.targetY - move.sourceY) * scaleY
-            val clipTop = (targetTop - READER_SEGMENT_OVERLAP_PX).coerceAtLeast(0f)
-            val clipBottom = (targetBottom + READER_SEGMENT_OVERLAP_PX).coerceAtMost(size.height)
-            clipRect(top = clipTop, bottom = clipBottom) {
-                translate(top = translationY) {
-                    with(delegate) { draw(size = drawSize) }
-                }
-            }
-        }
+) : Transformation {
+    override val cacheKey: String = "$READER_RESTORE_VERSION:${plan.segmentCount}"
+    private val restorePaint = Paint().apply {
+        isAntiAlias = false
+        isFilterBitmap = false
+        isDither = false
     }
 
-    private fun DrawScope.drawRestoredImage(
-        sourceImage: ImageBitmap,
-        sourceHeight: Int,
-        moves: List<ImageSegmentMove>,
-    ) {
-        val targetWidth = size.width.roundToInt().coerceAtLeast(1)
-        val targetHeight = size.height.roundToInt().coerceAtLeast(1)
-        val targetSegments = scaleReaderTargetSegments(moves, sourceHeight, targetHeight)
-        moves.zip(targetSegments).forEach { (move, target) ->
-            if (target.bottom <= target.top) return@forEach
-            drawImage(
-                image = sourceImage,
-                srcOffset = IntOffset(0, move.sourceY),
-                srcSize = IntSize(sourceImage.width, move.height),
-                dstOffset = IntOffset(0, target.top),
-                dstSize = IntSize(targetWidth, target.bottom - target.top),
-                filterQuality = FilterQuality.Low,
+    override suspend fun transform(input: Bitmap, size: Size): Bitmap {
+        val moves = pipeline.restoreMoves(input.height, plan.segmentCount)
+        if (moves.isEmpty()) return input
+
+        val output = createBitmap(
+            input.width,
+            input.height,
+            input.config ?: Bitmap.Config.ARGB_8888,
+        ).apply {
+            density = input.density
+            setHasAlpha(input.hasAlpha())
+        }
+        val canvas = Canvas(output)
+        moves.forEach { move ->
+            canvas.drawBitmap(
+                input,
+                Rect(0, move.sourceY, input.width, move.sourceY + move.height),
+                Rect(0, move.targetY, input.width, move.targetY + move.height),
+                restorePaint,
             )
         }
-    }
-}
-
-internal data class ReaderTargetSegment(val top: Int, val bottom: Int)
-
-internal fun scaleReaderTargetSegments(
-    moves: List<ImageSegmentMove>,
-    sourceHeight: Int,
-    targetHeight: Int,
-): List<ReaderTargetSegment> {
-    if (sourceHeight <= 0 || targetHeight <= 0) return emptyList()
-    return moves.map { move ->
-        ReaderTargetSegment(
-            top = (move.targetY.toFloat() * targetHeight / sourceHeight).roundToInt(),
-            bottom = ((move.targetY + move.height).toFloat() * targetHeight / sourceHeight).roundToInt(),
-        )
+        return output
     }
 }
 
@@ -1168,7 +1120,7 @@ private fun ReaderSystemBarsEffect(immersive: Boolean) {
     }
 }
 
-private tailrec fun Context.findActivity(): Activity? {
+internal tailrec fun Context.findActivity(): Activity? {
     return when (this) {
         is Activity -> this
         is ContextWrapper -> baseContext.findActivity()
@@ -1195,4 +1147,4 @@ private const val READER_TAP_REGION_TOP_FRACTION = 0.2f
 private const val READER_TAP_REGION_BOTTOM_FRACTION = 0.8f
 private const val READER_TEMPLATE_TIMEOUT_MILLIS = 15_000L
 private val READER_VOLUME_KEY_CODES = setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)
-private const val READER_SEGMENT_OVERLAP_PX = 1.5f
+private const val READER_RESTORE_VERSION = "decoded-v1"
