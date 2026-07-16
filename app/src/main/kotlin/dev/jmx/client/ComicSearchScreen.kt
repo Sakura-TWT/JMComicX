@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -49,6 +50,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -86,6 +88,8 @@ internal fun ComicSearchScreen(
 ) {
     val context = LocalContext.current
     val darkMode = isSystemInDarkTheme()
+    val density = LocalDensity.current
+    val imeVisible = WindowInsets.ime.getBottom(density) > 0
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val repository = remember(homeRepository) { ComicSearchRepository(homeRepository) }
@@ -99,7 +103,7 @@ internal fun ComicSearchScreen(
     var deletingHistory by rememberSaveable { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
-    DisposableEffect(context, darkMode) {
+    DisposableEffect(context, darkMode, imeVisible) {
         (context.findActivity() as? ComponentActivity)?.enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { darkMode },
             navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { darkMode },
@@ -170,13 +174,17 @@ internal fun ComicSearchScreen(
             if (latest?.query != content.query) return@launch
             state = when (result) {
                 is ComicSearchResult.Page -> {
-                    val merged = (latest.albums + result.albums).distinctBy { it.id }
+                    val mergedPage = mergeSearchAlbums(
+                        existing = latest.albums,
+                        incoming = result.albums,
+                        sourceEndReached = result.endReached,
+                    )
                     latest.copy(
-                        albums = merged,
+                        albums = mergedPage.albums,
                         total = result.total ?: latest.total,
                         nextPage = latest.nextPage + 1,
                         isLoadingMore = false,
-                        endReached = result.endReached,
+                        endReached = mergedPage.endReached,
                         loadMoreError = null,
                     )
                 }
@@ -283,6 +291,10 @@ private fun SearchResultGrid(
             gridState.layoutInfo.visibleItemsInfo.any { item -> item.key == footerKey }
         }
     }
+    var loadMoreArmed by remember(content.query) { mutableStateOf(true) }
+    LaunchedEffect(footerVisible) {
+        if (!footerVisible) loadMoreArmed = true
+    }
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
         state = gridState,
@@ -308,10 +320,12 @@ private fun SearchResultGrid(
             ) {
                 if (
                     footerVisible &&
+                    loadMoreArmed &&
                     !content.isLoadingMore &&
                     content.loadMoreError == null &&
                     !content.endReached
                 ) {
+                    loadMoreArmed = false
                     onLoadMore()
                 }
             }
@@ -451,49 +465,49 @@ internal class ComicSearchRepository(
         val directId = normalizedQuery.toJmSearchIdOrNull()
         if (directId != null) return loadDirectAlbum(directId)
 
-        val variants = withContext(Dispatchers.Default) {
-            searchQueryVariants(normalizedQuery, ::toTraditionalChinese)
-        }
-        return try {
-            val requests = variants.flatMap { variant ->
-                SEARCH_MAIN_TAGS.map { mainTag -> variant to mainTag }
-            }
-            val results = coroutineScope {
-                requests.map { (variant, mainTag) ->
-                    async {
-                        homeRepository.core.albumApi.search(
-                            query = variant,
-                            page = page,
-                            mainTag = mainTag,
-                        )
-                    }
-                }.awaitAll()
-            }
-            val successes = results.mapNotNull { (it as? JmxResult.Success)?.value }
-            if (successes.isEmpty()) {
-                val failure = results.firstOrNull() as? JmxResult.Failure
-                ComicSearchResult.Error(failure?.error?.toUiMessage() ?: "搜索请求失败。")
-            } else {
-                val redirects = successes.mapNotNull(SearchPage::redirectAlbumId).distinct()
-                val redirectedAlbums = redirects.mapNotNull { id ->
-                    (homeRepository.core.albumApi.detailFull(id) as? JmxResult.Success)
-                        ?.value
-                        ?.toHomeAlbum(homeRepository.currentImageHost)
+        return withContext(Dispatchers.IO) {
+            val variants = searchQueryVariants(normalizedQuery, ::toTraditionalChinese)
+            try {
+                val requests = variants.flatMap { variant ->
+                    SEARCH_MAIN_TAGS.map { mainTag -> variant to mainTag }
                 }
-                val summaries = successes.flatMap(SearchPage::content)
-                val albums = (redirectedAlbums + summaries.map { summary ->
-                    summary.toHomeAlbum(homeRepository.currentImageHost)
-                }).distinctBy { it.id }
-                ComicSearchResult.Page(
-                    albums = albums,
-                    total = successes.mapNotNull(SearchPage::total).maxOrNull(),
-                    endReached = successes.all { it.content.isEmpty() && it.redirectAlbumId == null },
-                )
+                val results = coroutineScope {
+                    requests.map { (variant, mainTag) ->
+                        async {
+                            homeRepository.core.albumApi.search(
+                                query = variant,
+                                page = page,
+                                mainTag = mainTag,
+                            )
+                        }
+                    }.awaitAll()
+                }
+                val successes = results.mapNotNull { (it as? JmxResult.Success)?.value }
+                if (successes.isEmpty()) {
+                    val failure = results.firstOrNull() as? JmxResult.Failure
+                    ComicSearchResult.Error(failure?.error?.toUiMessage() ?: "搜索请求失败。")
+                } else {
+                    val redirects = successes.mapNotNull(SearchPage::redirectAlbumId).distinct()
+                    val redirectedAlbums = redirects.mapNotNull { id ->
+                        (homeRepository.core.albumApi.detailFull(id) as? JmxResult.Success)
+                            ?.value
+                            ?.toHomeAlbum(homeRepository.currentImageHost)
+                    }
+                    val summaries = successes.flatMap(SearchPage::content)
+                    val albums = (redirectedAlbums + summaries.map { summary ->
+                        summary.toHomeAlbum(homeRepository.currentImageHost)
+                    }).distinctBy { it.id }
+                    ComicSearchResult.Page(
+                        albums = albums,
+                        total = successes.mapNotNull(SearchPage::total).maxOrNull(),
+                        endReached = successes.all { it.content.isEmpty() && it.redirectAlbumId == null },
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                ComicSearchResult.Error(error.message ?: "搜索出现未知异常。")
             }
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Exception) {
-            ComicSearchResult.Error(error.message ?: "搜索出现未知异常。")
         }
     }
 
@@ -515,6 +529,24 @@ internal sealed interface ComicSearchResult {
         val endReached: Boolean,
     ) : ComicSearchResult
     data class Error(val message: String) : ComicSearchResult
+}
+
+internal data class SearchAlbumMerge(
+    val albums: List<HomeAlbum>,
+    val endReached: Boolean,
+)
+
+internal fun mergeSearchAlbums(
+    existing: List<HomeAlbum>,
+    incoming: List<HomeAlbum>,
+    sourceEndReached: Boolean,
+): SearchAlbumMerge {
+    val existingIds = existing.mapTo(hashSetOf()) { it.id }
+    val newAlbums = incoming.filter { it.id !in existingIds }.distinctBy { it.id }
+    return SearchAlbumMerge(
+        albums = existing + newAlbums,
+        endReached = sourceEndReached || newAlbums.isEmpty(),
+    )
 }
 
 private sealed interface ComicSearchUiState {

@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
+import dev.jmx.client.core.api.ActionResult
 import dev.jmx.client.core.api.AlbumDetail
 import dev.jmx.client.core.api.AlbumChapter
 import dev.jmx.client.core.api.CommentItem
@@ -74,11 +75,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.FabPosition
 import top.yukonga.miuix.kmp.basic.FloatingActionButton
@@ -90,6 +93,7 @@ import top.yukonga.miuix.kmp.basic.Surface
 import top.yukonga.miuix.kmp.basic.TabRowWithContour
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.icon.extended.Download
@@ -99,6 +103,7 @@ import top.yukonga.miuix.kmp.icon.extended.FavoritesFill
 import top.yukonga.miuix.kmp.icon.extended.Play
 import top.yukonga.miuix.kmp.icon.extended.Send
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.window.WindowDialog
 
 internal data class AlbumDetailTransitionRequest(
     val album: HomeAlbum,
@@ -113,6 +118,9 @@ internal fun AlbumDetailTransitionHost(
     request: AlbumDetailTransitionRequest,
     repository: AlbumDetailRepository,
     readerActive: Boolean,
+    authenticated: Boolean,
+    onRequireLogin: () -> Unit,
+    onFavoriteChanged: (Boolean) -> Unit,
     onStartReading: (ReaderLaunchRequest) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -187,6 +195,9 @@ internal fun AlbumDetailTransitionHost(
             album = request.album,
             repository = repository,
             readerActive = readerActive,
+            authenticated = authenticated,
+            onRequireLogin = onRequireLogin,
+            onFavoriteChanged = onFavoriteChanged,
             onStartReading = onStartReading,
             showCover = request.sourceBounds == null ||
                 (hasEntered && progress >= 0.999f && !isExiting),
@@ -240,6 +251,9 @@ private fun AlbumDetailScreen(
     album: HomeAlbum,
     repository: AlbumDetailRepository,
     readerActive: Boolean,
+    authenticated: Boolean,
+    onRequireLogin: () -> Unit,
+    onFavoriteChanged: (Boolean) -> Unit,
     onStartReading: (ReaderLaunchRequest) -> Unit,
     showCover: Boolean,
     onBack: () -> Unit,
@@ -250,10 +264,20 @@ private fun AlbumDetailScreen(
     var selectedTab by rememberSaveable(album.id) { mutableIntStateOf(0) }
     var retryKey by remember(album.id) { mutableIntStateOf(0) }
     var pageSummary by remember(album.id) { mutableStateOf<AlbumPageSummary>(AlbumPageSummary.Loading) }
+    var pendingAction by remember(album.id) { mutableStateOf<DetailAccountAction?>(null) }
+    var actionError by remember(album.id) { mutableStateOf<String?>(null) }
+    var showCommentComposer by rememberSaveable(album.id) { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(album.id, repository, retryKey) {
-        state = repository.load(album.id)
+        val loaded = repository.load(album.id)
+        state = loaded
+        val content = loaded as? AlbumDetailUiState.Content ?: return@LaunchedEffect
+        val comments = repository.loadInitialComments(album.id)
+        val latest = state as? AlbumDetailUiState.Content
+        if (latest?.detail?.id == content.detail.id) {
+            state = latest.copy(comments = comments)
+        }
     }
 
     val detail = (state as? AlbumDetailUiState.Content)?.detail
@@ -280,6 +304,112 @@ private fun AlbumDetailScreen(
         }
     }
 
+    fun likeAlbum() {
+        if (!authenticated) {
+            onRequireLogin()
+            return
+        }
+        val content = state as? AlbumDetailUiState.Content ?: return
+        if (pendingAction != null || content.detail.liked == true) return
+        pendingAction = DetailAccountAction.LIKE
+        actionError = null
+        coroutineScope.launch {
+            when (val result = repository.likeAlbum(album.id)) {
+                is JmxResult.Success -> {
+                    val rejection = result.value.rejectionMessageOrNull()
+                    if (rejection != null) {
+                        actionError = rejection
+                    } else {
+                        val latest = state as? AlbumDetailUiState.Content
+                        if (latest != null) {
+                            state = latest.copy(
+                                detail = latest.detail.copy(
+                                    liked = true,
+                                    likes = (latest.detail.likes ?: 0) + 1,
+                                ),
+                            )
+                        }
+                    }
+                }
+                is JmxResult.Failure -> {
+                    if (result.error.requiresLogin()) onRequireLogin()
+                    else actionError = result.error.toUiMessage()
+                }
+            }
+            pendingAction = null
+        }
+    }
+
+    fun favoriteAlbum() {
+        if (!authenticated) {
+            onRequireLogin()
+            return
+        }
+        if (pendingAction != null || state !is AlbumDetailUiState.Content) return
+        pendingAction = DetailAccountAction.FAVORITE
+        actionError = null
+        coroutineScope.launch {
+            when (val result = repository.favoriteAlbum(album.id)) {
+                is JmxResult.Success -> {
+                    val rejection = result.value.rejectionMessageOrNull()
+                    if (rejection != null) {
+                        actionError = rejection
+                    } else {
+                        val latest = state as? AlbumDetailUiState.Content
+                        if (latest != null) {
+                            val wasFavorite = latest.detail.isFavorite == true
+                            val favorite = when (result.value.type?.lowercase()) {
+                                "add" -> true
+                                "remove" -> false
+                                else -> latest.detail.isFavorite != true
+                            }
+                            state = latest.copy(detail = latest.detail.copy(isFavorite = favorite))
+                            if (favorite != wasFavorite) onFavoriteChanged(favorite)
+                        }
+                    }
+                }
+                is JmxResult.Failure -> {
+                    if (result.error.requiresLogin()) onRequireLogin()
+                    else actionError = result.error.toUiMessage()
+                }
+            }
+            pendingAction = null
+        }
+    }
+
+    fun submitComment(comment: String) {
+        if (!authenticated) {
+            showCommentComposer = false
+            onRequireLogin()
+            return
+        }
+        if (comment.isBlank() || pendingAction != null) return
+        pendingAction = DetailAccountAction.COMMENT
+        actionError = null
+        coroutineScope.launch {
+            when (val result = repository.commentAlbum(album.id, comment.trim())) {
+                is JmxResult.Success -> {
+                    val rejection = result.value.rejectionMessageOrNull()
+                    if (rejection != null) {
+                        actionError = rejection
+                    } else {
+                        showCommentComposer = false
+                        state = repository.load(album.id)
+                    }
+                }
+                is JmxResult.Failure -> {
+                    if (result.error.requiresLogin()) {
+                        showCommentComposer = false
+                        onRequireLogin()
+                    } else {
+                        actionError = result.error.toUiMessage()
+                    }
+                }
+            }
+            pendingAction = null
+        }
+    }
+
     Scaffold(
         modifier = modifier,
         topBar = {
@@ -303,7 +433,9 @@ private fun AlbumDetailScreen(
             FloatingActionButton(
                 onClick = {
                     val content = state as? AlbumDetailUiState.Content
-                    if (selectedTab != DETAIL_COMMENTS_TAB && content != null) {
+                    if (selectedTab == DETAIL_COMMENTS_TAB) {
+                        if (authenticated) showCommentComposer = true else onRequireLogin()
+                    } else if (content != null) {
                         val firstChapter = content.detail.readingChapters().firstOrNull()
                         if (firstChapter != null) {
                             onStartReading(
@@ -363,12 +495,26 @@ private fun AlbumDetailScreen(
                 }
             },
             onLoadMoreComments = ::loadMoreComments,
+            onLike = ::likeAlbum,
+            onFavorite = ::favoriteAlbum,
+            pendingAction = pendingAction,
             onRetry = {
                 state = AlbumDetailUiState.Loading
                 retryKey++
             },
         )
     }
+
+    CommentComposerDialog(
+        show = showCommentComposer,
+        submitting = pendingAction == DetailAccountAction.COMMENT,
+        onDismiss = { if (pendingAction == null) showCommentComposer = false },
+        onSubmit = ::submitComment,
+    )
+    DetailActionErrorDialog(
+        message = actionError,
+        onDismiss = { actionError = null },
+    )
 }
 
 @Composable
@@ -383,6 +529,9 @@ private fun DetailBody(
     onCoverTargetChanged: (Rect) -> Unit,
     onChapterSelected: (AlbumChapter) -> Unit,
     onLoadMoreComments: () -> Unit,
+    onLike: () -> Unit,
+    onFavorite: () -> Unit,
+    pendingAction: DetailAccountAction?,
     onRetry: () -> Unit,
 ) {
     val listState = rememberLazyListState()
@@ -438,6 +587,9 @@ private fun DetailBody(
             DetailActions(
                 detail = detail,
                 onCommentsSelected = { onTabSelected(DETAIL_COMMENTS_TAB) },
+                onLike = onLike,
+                onFavorite = onFavorite,
+                pendingAction = pendingAction,
             )
         }
         item(key = "tabs") {
@@ -537,6 +689,9 @@ private fun DetailMetaLine(label: String, value: String) {
 private fun DetailActions(
     detail: AlbumDetail?,
     onCommentsSelected: () -> Unit,
+    onLike: () -> Unit,
+    onFavorite: () -> Unit,
+    pendingAction: DetailAccountAction?,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -546,7 +701,8 @@ private fun DetailActions(
             icon = if (detail?.liked == true) MiuixIcons.FavoritesFill else MiuixIcons.Favorites,
             value = compactCount(detail?.likes),
             label = "喜欢",
-            enabled = false,
+            enabled = detail != null && detail.liked != true && pendingAction == null,
+            onClick = onLike,
         )
         DetailAction(
             icon = MiuixIcons.Edit,
@@ -565,7 +721,8 @@ private fun DetailActions(
             icon = MiuixIcons.Favorites,
             value = if (detail?.isFavorite == true) "已收藏" else "收藏",
             label = "收藏",
-            enabled = false,
+            enabled = detail != null && pendingAction == null,
+            onClick = onFavorite,
         )
         DetailAction(
             icon = MiuixIcons.Download,
@@ -619,6 +776,70 @@ private fun DetailAction(
             text = label,
             style = MiuixTheme.textStyles.footnote2,
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+    }
+}
+
+@Composable
+private fun CommentComposerDialog(
+    show: Boolean,
+    submitting: Boolean,
+    onDismiss: () -> Unit,
+    onSubmit: (String) -> Unit,
+) {
+    var comment by remember(show) { mutableStateOf("") }
+    WindowDialog(
+        show = show,
+        title = "发表评论",
+        onDismissRequest = { if (!submitting) onDismiss() },
+    ) {
+        TextField(
+            value = comment,
+            onValueChange = { comment = it },
+            label = "评论内容",
+            minLines = 3,
+            maxLines = 6,
+            enabled = !submitting,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            TextButton(
+                text = "取消",
+                enabled = !submitting,
+                onClick = onDismiss,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(
+                text = if (submitting) "发表中" else "发表",
+                enabled = comment.isNotBlank() && !submitting,
+                onClick = { onSubmit(comment) },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun DetailActionErrorDialog(
+    message: String?,
+    onDismiss: () -> Unit,
+) {
+    WindowDialog(
+        show = message != null,
+        title = "操作失败",
+        summary = message,
+        onDismissRequest = onDismiss,
+    ) {
+        TextButton(
+            text = "知道了",
+            onClick = onDismiss,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.textButtonColorsPrimary(),
         )
     }
 }
@@ -722,6 +943,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.commentsItems(
     when {
         comments?.error != null && comments.items.isEmpty() -> item(key = "comments-error") {
             DetailError(message = comments.error, onRetry = onRetry)
+        }
+        comments?.isLoading == true && comments.items.isEmpty() -> item(key = "comments-loading") {
+            DetailLoading()
         }
         comments == null || comments.items.isEmpty() -> item(key = "comments-empty") {
             Box(
@@ -889,29 +1113,51 @@ internal class AlbumDetailRepository(
 ) {
     private val chapterPageCounts = ConcurrentHashMap<String, Int>()
 
-    suspend fun load(albumId: String): AlbumDetailUiState = coroutineScope {
+    suspend fun likeAlbum(albumId: String): JmxResult<ActionResult> =
+        core.interactionApi.likeAlbum(albumId)
+
+    suspend fun favoriteAlbum(albumId: String): JmxResult<ActionResult> =
+        core.interactionApi.favoriteAlbum(albumId)
+
+    suspend fun commentAlbum(albumId: String, comment: String): JmxResult<ActionResult> =
+        core.interactionApi.commentAlbum(
+            albumId = albumId,
+            content = comment,
+            status = "1",
+        )
+
+    suspend fun load(albumId: String): AlbumDetailUiState {
         try {
-            val detailDeferred = async { core.albumApi.detailFull(albumId) }
-            val commentsDeferred = async { core.interactionApi.albumComments(albumId, page = 1) }
-            when (val detailResult = detailDeferred.await()) {
-                is JmxResult.Success -> {
-                    when (val commentsResult = commentsDeferred.await()) {
-                        is JmxResult.Success -> AlbumDetailUiState.Content(
-                            detail = detailResult.value,
-                            comments = commentsResult.value.toDetailCommentsState(),
-                        )
-                        is JmxResult.Failure -> AlbumDetailUiState.Content(
-                            detail = detailResult.value,
-                            comments = DetailCommentsState(error = commentsResult.error.toUiMessage()),
-                        )
-                    }
-                }
+            val detailResult = withTimeoutOrNull(DETAIL_REQUEST_TIMEOUT_MILLIS) {
+                core.albumApi.detailFull(albumId)
+            } ?: return AlbumDetailUiState.Error("详情请求超时，请检查网络或切换线路后重试。")
+            return when (detailResult) {
+                is JmxResult.Success -> AlbumDetailUiState.Content(
+                    detail = detailResult.value,
+                    comments = DetailCommentsState(isLoading = true),
+                )
                 is JmxResult.Failure -> AlbumDetailUiState.Error(detailResult.error.toUiMessage())
             }
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
-            AlbumDetailUiState.Error(error.message ?: "详情加载出现未知异常。")
+            return AlbumDetailUiState.Error(error.message ?: "详情加载出现未知异常。")
+        }
+    }
+
+    suspend fun loadInitialComments(albumId: String): DetailCommentsState {
+        return try {
+            val result = withTimeoutOrNull(COMMENT_REQUEST_TIMEOUT_MILLIS) {
+                core.interactionApi.albumComments(albumId, page = 1)
+            } ?: return DetailCommentsState(error = "评论请求超时，可稍后重试。")
+            when (result) {
+                is JmxResult.Success -> result.value.toDetailCommentsState()
+                is JmxResult.Failure -> DetailCommentsState(error = result.error.toUiMessage())
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            DetailCommentsState(error = error.message ?: "评论加载出现未知异常。")
         }
     }
 
@@ -1023,6 +1269,14 @@ internal sealed interface AlbumDetailUiState {
         val comments: DetailCommentsState,
     ) : AlbumDetailUiState
     data class Error(val message: String) : AlbumDetailUiState
+}
+
+private enum class DetailAccountAction { LIKE, FAVORITE, COMMENT }
+
+internal fun ActionResult.rejectionMessageOrNull(): String? {
+    val normalizedStatus = status?.trim()?.lowercase()
+    if (normalizedStatus.isNullOrEmpty() || normalizedStatus in DETAIL_SUCCESS_STATUSES) return null
+    return message?.takeIf { it.isNotBlank() } ?: "服务未接受本次操作（$status）"
 }
 
 internal data class DetailCommentsState(
@@ -1172,3 +1426,6 @@ private const val PAGE_COUNT_CONCURRENCY = 4
 internal const val DEFAULT_IMAGE_SHUNT = "1"
 private const val DETAIL_ENTER_DURATION_MILLIS = 680
 private const val DETAIL_EXIT_DURATION_MILLIS = 560
+private const val DETAIL_REQUEST_TIMEOUT_MILLIS = 20_000L
+private const val COMMENT_REQUEST_TIMEOUT_MILLIS = 10_000L
+private val DETAIL_SUCCESS_STATUSES = setOf("ok", "success", "true", "1")

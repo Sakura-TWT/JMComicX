@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.text.Html
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -52,7 +54,6 @@ import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
-import coil.request.SuccessResult
 import coil.size.Precision
 import dev.jmx.client.core.api.AlbumSummary
 import dev.jmx.client.core.api.HomePromoteSection
@@ -65,6 +66,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -78,8 +80,6 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.rememberPullToRefreshState
 import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Album
-import top.yukonga.miuix.kmp.icon.extended.Contacts
 import top.yukonga.miuix.kmp.icon.extended.Image
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -256,6 +256,10 @@ private fun HomePaginationFooter(
     visible: Boolean,
     onLoadMore: () -> Unit,
 ) {
+    var loadMoreArmed by remember(category.id) { mutableStateOf(true) }
+    LaunchedEffect(visible) {
+        if (!visible) loadMoreArmed = true
+    }
     LaunchedEffect(
         category.id,
         category.nextPage,
@@ -264,7 +268,14 @@ private fun HomePaginationFooter(
         category.endReached,
         visible,
     ) {
-        if (visible && !category.isLoadingMore && category.loadMoreError == null && !category.endReached) {
+        if (
+            visible &&
+            loadMoreArmed &&
+            !category.isLoadingMore &&
+            category.loadMoreError == null &&
+            !category.endReached
+        ) {
+            loadMoreArmed = false
             onLoadMore()
         }
     }
@@ -338,11 +349,12 @@ private fun AlbumCover(
     onBoundsChanged: (Rect) -> Unit,
 ) {
     val context = LocalContext.current
-    val coverRequest = remember(album.coverUrl) {
+    val coroutineScope = rememberCoroutineScope()
+    var retryAttempt by remember(album.id, album.coverUrl) { mutableIntStateOf(0) }
+    var retryScheduled by remember(album.id, album.coverUrl) { mutableStateOf(false) }
+    var loadFailed by remember(album.id, album.coverUrl) { mutableStateOf(false) }
+    val coverRequest = remember(album.coverUrl, retryAttempt) {
         buildCoverRequest(context, album.coverUrl)
-    }
-    var loadFailed by remember(album.id, album.coverUrl) {
-        mutableStateOf(album.coverLoadFailed)
     }
 
     Box(
@@ -355,23 +367,46 @@ private fun AlbumCover(
         contentAlignment = Alignment.Center,
     ) {
         if (visible && loadFailed) {
-            FailedCover()
+            FailedCover(
+                modifier = Modifier.clickable {
+                    loadFailed = false
+                    retryAttempt++
+                },
+            )
         } else if (visible) {
             AsyncImage(
                 model = coverRequest,
                 contentDescription = album.name,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
-                onError = { loadFailed = true },
+                onSuccess = {
+                    retryScheduled = false
+                    loadFailed = false
+                },
+                onError = {
+                    if (retryAttempt < COVER_UI_RETRY_COUNT && !retryScheduled) {
+                        retryScheduled = true
+                        coroutineScope.launch {
+                            delay(COVER_UI_RETRY_BASE_DELAY_MILLIS * (retryAttempt + 1L))
+                            retryAttempt++
+                            retryScheduled = false
+                        }
+                    } else if (!retryScheduled) {
+                        loadFailed = true
+                    }
+                },
             )
+            if (retryScheduled) CircularProgressIndicator(size = 22.dp, strokeWidth = 3.dp)
         }
     }
 }
 
 @Composable
-private fun FailedCover() {
+private fun FailedCover(modifier: Modifier = Modifier) {
     Column(
-        modifier = Modifier.padding(horizontal = 8.dp),
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -439,34 +474,9 @@ private fun EmptyState(
     }
 }
 
-@Composable
-internal fun ReservedScreen(innerPadding: PaddingValues, title: String) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(innerPadding),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                imageVector = if (title == "书架") MiuixIcons.Album else MiuixIcons.Contacts,
-                contentDescription = title,
-                modifier = Modifier.size(34.dp),
-                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(
-                text = "$title 暂未开放",
-                style = MiuixTheme.textStyles.body2,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            )
-        }
-    }
-}
-
 internal class HomeRepository(
     context: Context,
-    internal val core: JmxCore = JmxCore.create(),
+    internal val core: JmxCore = createAppJmxCore(context),
 ) {
     private val applicationContext = context.applicationContext
     private val imageLoader: ImageLoader = applicationContext.imageLoader
@@ -500,11 +510,8 @@ internal class HomeRepository(
                         .filter { it.id.isNotBlank() }
                         .distinctBy { it.id }
                         .map { item -> item.toHomeAlbum(category.imageHost) }
-                    val failedCoverIds = preloadCovers(receivedAlbums)
-                    val preparedAlbums = receivedAlbums.map { album ->
-                        album.copy(coverLoadFailed = album.id in failedCoverIds)
-                    }
-                    val mergedAlbums = (category.albums + preparedAlbums).distinctBy { it.id }
+                    preloadCovers(receivedAlbums)
+                    val mergedAlbums = (category.albums + receivedAlbums).distinctBy { it.id }
                     val total = result.value.total ?: category.total
                     category.copy(
                         albums = mergedAlbums,
@@ -560,20 +567,13 @@ internal class HomeRepository(
         }
 
         val preloadCategory = categories.firstOrNull { it.id == preloadCategoryId } ?: categories.first()
-        val failedCoverIds = preloadCovers(preloadCategory.albums)
+        preloadCovers(preloadCategory.albums)
         return HomeUiState.Content(
-            categories = categories.map { category ->
-                if (category.id != preloadCategory.id) return@map category
-                category.copy(
-                    albums = category.albums.map { album ->
-                        album.copy(coverLoadFailed = album.id in failedCoverIds)
-                    },
-                )
-            },
+            categories = categories,
         )
     }
 
-    private suspend fun preloadCovers(albums: List<HomeAlbum>): Set<String> = coroutineScope {
+    private suspend fun preloadCovers(albums: List<HomeAlbum>) = coroutineScope {
         val semaphore = Semaphore(COVER_PRELOAD_CONCURRENCY)
         albums.map { album ->
             async {
@@ -584,10 +584,10 @@ internal class HomeRepository(
                         .size(COVER_PRELOAD_WIDTH_PX, COVER_PRELOAD_HEIGHT_PX)
                         .precision(Precision.INEXACT)
                         .build()
-                    album.id.takeUnless { imageLoader.execute(request) is SuccessResult }
+                    imageLoader.execute(request)
                 }
             }
-        }.awaitAll().filterNotNull().toSet()
+        }.awaitAll()
     }
 }
 
@@ -617,7 +617,6 @@ internal data class HomeAlbum(
     val author: String,
     val coverUrl: String,
     val imageHost: String,
-    val coverLoadFailed: Boolean = false,
 )
 
 internal fun AlbumSummary.toHomeAlbum(imageHost: String): HomeAlbum {
@@ -638,7 +637,7 @@ internal fun buildCoverRequest(context: Context, url: String): ImageRequest {
     return ImageRequest.Builder(context)
         .data(url)
         .headers(albumCoverHeaders)
-        .crossfade(true)
+        .crossfade(false)
         .build()
 }
 
@@ -682,4 +681,6 @@ private val albumCoverHeaders: Headers = Headers.Builder()
 private const val COVER_PRELOAD_CONCURRENCY = 6
 private const val COVER_PRELOAD_WIDTH_PX = 360
 private const val COVER_PRELOAD_HEIGHT_PX = 480
+private const val COVER_UI_RETRY_COUNT = 3
+private const val COVER_UI_RETRY_BASE_DELAY_MILLIS = 450L
 private val SUPPORTED_HOME_PAGINATION_TYPES = setOf("promote", "category_id", "not_in_category_id")

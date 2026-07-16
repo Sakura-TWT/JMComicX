@@ -6,6 +6,20 @@ import org.junit.Test
 
 class ComicSearchLogicTest {
     @Test
+    fun paginationStopsWhenServerRepeatsTheSameAlbums() {
+        val first = HomeAlbum("1", "A", "作者", "cover-1", "https://img.test")
+        val second = HomeAlbum("2", "B", "作者", "cover-2", "https://img.test")
+
+        val repeated = mergeSearchAlbums(listOf(first), listOf(first), sourceEndReached = false)
+        assertEquals(listOf(first), repeated.albums)
+        assertEquals(true, repeated.endReached)
+
+        val extended = mergeSearchAlbums(listOf(first), listOf(first, second), sourceEndReached = false)
+        assertEquals(listOf(first, second), extended.albums)
+        assertEquals(false, extended.endReached)
+    }
+
+    @Test
     fun historyKeepsNewestUniqueQueriesWithinLimit() {
         assertEquals(
             listOf("女性向", "連載中", "JM123"),

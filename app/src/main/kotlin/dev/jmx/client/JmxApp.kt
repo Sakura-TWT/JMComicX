@@ -17,6 +17,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -24,6 +25,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.zIndex
+import dev.jmx.client.core.result.JmxResult
+import dev.jmx.client.core.result.toUserMessage
+import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.NavigationBar
 import top.yukonga.miuix.kmp.basic.NavigationBarItem
 import top.yukonga.miuix.kmp.basic.Icon
@@ -31,7 +35,6 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Album
 import top.yukonga.miuix.kmp.icon.extended.Contacts
 import top.yukonga.miuix.kmp.icon.extended.Home
 import top.yukonga.miuix.kmp.icon.basic.Search
@@ -43,7 +46,6 @@ fun JmxApp() {
     val tabs = remember {
         listOf(
             JmxTab("首页", MiuixIcons.Home),
-            JmxTab("书架", MiuixIcons.Album),
             JmxTab("我的", MiuixIcons.Contacts),
         )
     }
@@ -54,6 +56,14 @@ fun JmxApp() {
     val readerRepository = remember(homeRepository, applicationContext) {
         ComicReaderRepository(applicationContext, homeRepository.core)
     }
+    val accountRepository = remember(homeRepository, applicationContext) {
+        AccountRepository(applicationContext, homeRepository.core)
+    }
+    val coroutineScope = rememberCoroutineScope()
+    var accountProfile by remember(accountRepository) { mutableStateOf(accountRepository.restore()) }
+    var showLogin by rememberSaveable { mutableStateOf(false) }
+    var loginSubmitting by remember { mutableStateOf(false) }
+    var loginFailure by remember { mutableStateOf<LoginUiFailure?>(null) }
     var homeState by remember { mutableStateOf<HomeUiState>(HomeUiState.Loading) }
     var homeRequestId by rememberSaveable { mutableIntStateOf(0) }
     var isHomeRefreshing by remember { mutableStateOf(false) }
@@ -66,6 +76,20 @@ fun JmxApp() {
         targetValue = if (searchExpanded) 1f else 0f,
         label = "HomeSearchTopBarProgress",
     )
+    val activeTab = selectedTab.coerceIn(0, tabs.lastIndex)
+
+    fun requestLogin() {
+        loginFailure = null
+        showLogin = true
+    }
+
+    LaunchedEffect(selectedTab, tabs.size) {
+        if (selectedTab !in tabs.indices) selectedTab = 0
+    }
+
+    LaunchedEffect(activeTab, accountProfile) {
+        if (activeTab == ACCOUNT_TAB_INDEX && accountProfile == null) requestLogin()
+    }
 
     LaunchedEffect(homeRepository, homeRequestId) {
         val previousState = homeState
@@ -116,13 +140,13 @@ fun JmxApp() {
             modifier = Modifier.fillMaxSize(),
             topBar = {
                 SmallTopAppBar(
-                    title = if (selectedTab == 0) "JMComicX" else tabs[selectedTab].label,
+                    title = if (activeTab == 0) "JMComicX" else tabs[activeTab].label,
                     modifier = Modifier.graphicsLayer {
                         translationY = size.height * searchTransitionProgress * 0.72f
                         alpha = 1f - searchTransitionProgress
                     },
                     actions = {
-                        if (selectedTab == 0) {
+                        if (activeTab == 0) {
                             IconButton(onClick = { searchExpanded = true }) {
                                 Icon(
                                     imageVector = MiuixIcons.Basic.Search,
@@ -138,10 +162,13 @@ fun JmxApp() {
                 NavigationBar {
                     tabs.forEachIndexed { index, tab ->
                         NavigationBarItem(
-                            selected = selectedTab == index,
+                            selected = activeTab == index,
                             onClick = {
                                 searchExpanded = false
                                 selectedTab = index
+                                if (index == ACCOUNT_TAB_INDEX && accountProfile == null) {
+                                    requestLogin()
+                                }
                             },
                             icon = tab.icon,
                             label = tab.label,
@@ -151,7 +178,7 @@ fun JmxApp() {
             },
         ) { innerPadding ->
             AnimatedContent(
-                targetState = selectedTab,
+                targetState = activeTab,
                 transitionSpec = { fadeIn() togetherWith fadeOut() },
             ) { tab ->
                 when (tab) {
@@ -212,14 +239,24 @@ fun JmxApp() {
                             }
                         },
                     )
-                    1 -> ReservedScreen(innerPadding = innerPadding, title = "书架")
-                    else -> ReservedScreen(innerPadding = innerPadding, title = "我的")
+                    else -> AccountScreen(
+                        innerPadding = innerPadding,
+                        profile = accountProfile,
+                        imageHost = homeRepository.currentImageHost,
+                        onLoginRequested = ::requestLogin,
+                        onLogout = {
+                            accountRepository.logout()
+                            accountProfile = null
+                            loginFailure = null
+                            selectedTab = 0
+                        },
+                    )
                 }
             }
         }
 
         AnimatedVisibility(
-            visible = searchExpanded && selectedTab == 0,
+            visible = searchExpanded && activeTab == 0,
             enter = fadeIn() + slideInVertically(initialOffsetY = { -it / 5 }),
             exit = fadeOut() + slideOutVertically(targetOffsetY = { -it / 5 }),
             modifier = Modifier
@@ -263,6 +300,20 @@ fun JmxApp() {
                     request = request,
                     repository = detailRepository,
                     readerActive = readerRequest != null,
+                    authenticated = accountProfile != null,
+                    onRequireLogin = ::requestLogin,
+                    onFavoriteChanged = { added ->
+                        accountProfile?.let { profile ->
+                            val current = profile.currentFavoriteCount ?: 0
+                            val maximum = profile.maxFavoriteCount ?: Int.MAX_VALUE
+                            val updated = profile.copy(
+                                currentFavoriteCount = (current + if (added) 1 else -1)
+                                    .coerceIn(0, maximum),
+                            )
+                            accountProfile = updated
+                            accountRepository.update(updated)
+                        }
+                    },
                     onStartReading = { readerRequest = it },
                     onDismiss = { detailRequest = null },
                 )
@@ -282,6 +333,41 @@ fun JmxApp() {
                 )
             }
         }
+
+        AccountLoginDialog(
+            show = showLogin,
+            initialUsername = accountRepository.lastUsername(),
+            submitting = loginSubmitting,
+            failure = loginFailure,
+            onDismiss = {
+                if (!loginSubmitting) {
+                    showLogin = false
+                    loginFailure = null
+                }
+            },
+            onSubmit = { username, password ->
+                if (!loginSubmitting) {
+                    loginSubmitting = true
+                    loginFailure = null
+                    coroutineScope.launch {
+                        when (val result = accountRepository.login(username, password)) {
+                            is JmxResult.Success -> {
+                                accountProfile = result.value
+                                showLogin = false
+                            }
+                            is JmxResult.Failure -> {
+                                val userMessage = result.error.toUserMessage()
+                                loginFailure = LoginUiFailure(
+                                    title = userMessage.title,
+                                    message = "${userMessage.userMessage}\n详细信息：${result.error.toUiMessage()}",
+                                )
+                            }
+                        }
+                        loginSubmitting = false
+                    }
+                }
+            },
+        )
     }
 }
 
@@ -289,3 +375,5 @@ private data class JmxTab(
     val label: String,
     val icon: ImageVector,
 )
+
+private const val ACCOUNT_TAB_INDEX = 1

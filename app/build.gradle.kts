@@ -31,6 +31,7 @@ dependencies {
     implementation(project(":core"))
     implementation(libs.androidx.activity.compose)
     implementation(libs.coil.compose)
+    implementation(libs.gson)
     implementation(libs.miuix.icons.android)
     implementation(libs.miuix.preference.android)
     implementation(libs.miuix.ui.android)

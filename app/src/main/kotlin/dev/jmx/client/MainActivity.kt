@@ -12,6 +12,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
+import androidx.core.graphics.drawable.toDrawable
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
@@ -36,6 +37,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             val darkMode = isSystemInDarkTheme()
             DisposableEffect(darkMode) {
+                window.setBackgroundDrawable(
+                    (if (darkMode) Color.BLACK else LIGHT_WINDOW_BACKGROUND).toDrawable(),
+                )
                 enableEdgeToEdge(
                     statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { darkMode },
                     navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { darkMode },
@@ -52,6 +56,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+private val LIGHT_WINDOW_BACKGROUND = Color.rgb(250, 250, 250)
 
 @Composable
 private fun JmxAppTheme(content: @Composable () -> Unit) {

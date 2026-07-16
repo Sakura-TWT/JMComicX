@@ -1,12 +1,25 @@
 package dev.jmx.client
 
 import androidx.compose.ui.geometry.Rect
+import dev.jmx.client.core.api.ActionResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.hypot
 
 class AlbumDetailTransitionTest {
+    @Test
+    fun actionResultRejectsNonSuccessStatus() {
+        assertEquals(
+            null,
+            ActionResult("ok", "done", null, emptyMap()).rejectionMessageOrNull(),
+        )
+        assertEquals(
+            "账号权限不足",
+            ActionResult("error", "账号权限不足", null, emptyMap()).rejectionMessageOrNull(),
+        )
+    }
+
     @Test
     fun curvedCoverBoundsKeepsEndpointsAndBendsAwayFromStraightLine() {
         val start = Rect(left = 720f, top = 1500f, right = 1020f, bottom = 1900f)

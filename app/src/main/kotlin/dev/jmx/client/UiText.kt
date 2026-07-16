@@ -13,3 +13,9 @@ internal fun JmxError.toUiMessage(): String {
         is JmxError.Unknown -> "未知错误：$message"
     }
 }
+
+internal fun JmxError.requiresLogin(): Boolean = when (this) {
+    is JmxError.Http -> code == 401 || code == 403
+    is JmxError.Api -> code == 401 || code == 403
+    else -> false
+}
