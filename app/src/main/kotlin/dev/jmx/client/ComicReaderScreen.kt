@@ -22,12 +22,12 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -60,7 +60,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -384,73 +383,12 @@ private fun ReaderPages(
     onRetryPage: (Int) -> Unit,
     onToggleControls: () -> Unit,
 ) {
-    var zoomedPageKey by remember(pages) { mutableStateOf<String?>(null) }
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize(),
-        userScrollEnabled = zoomedPageKey == null,
-    ) {
-        itemsIndexed(
-            items = pages,
-            key = { _, page -> page.plan.cacheKey },
-            contentType = { _, _ -> "reader-page" },
-        ) { index, page ->
-            ReaderPageImage(
-                page = page,
-                retryKey = retryKeys[index] ?: 0,
-                knownError = failedPages[index],
-                onError = { message -> onPageFailed(index, message) },
-                onLoaded = { onPageLoaded(index) },
-                onRetry = { onRetryPage(index) },
-                zoomEnabled = zoomedPageKey == null || zoomedPageKey == page.plan.cacheKey,
-                onZoomedChange = { zoomed ->
-                    if (zoomed) {
-                        zoomedPageKey = page.plan.cacheKey
-                    } else if (zoomedPageKey == page.plan.cacheKey) {
-                        zoomedPageKey = null
-                    }
-                },
-                onToggleControls = onToggleControls,
-            )
-        }
-    }
-}
-
-@Composable
-private fun ReaderPageImage(
-    page: ReaderPage,
-    retryKey: Int,
-    knownError: String?,
-    onError: (String) -> Unit,
-    onLoaded: () -> Unit,
-    onRetry: () -> Unit,
-    zoomEnabled: Boolean,
-    onZoomedChange: (Boolean) -> Unit,
-    onToggleControls: () -> Unit,
-) {
-    val context = LocalContext.current
-    val request = remember(page, retryKey) { buildReaderImageRequest(context, page, retryKey) }
-    if (knownError != null) {
-        ReaderPageError(pageNumber = page.index + 1, message = knownError, onRetry = onRetry)
-        return
-    }
     val coroutineScope = rememberCoroutineScope()
-    var scale by remember(page.plan.cacheKey) { mutableFloatStateOf(READER_MIN_ZOOM) }
-    var offset by remember(page.plan.cacheKey) { mutableStateOf(Offset.Zero) }
-    var viewportSize by remember(page.plan.cacheKey) { mutableStateOf(IntSize.Zero) }
-    var zoomAnimation by remember(page.plan.cacheKey) { mutableStateOf<Job?>(null) }
-    val interactionSource = remember(page.plan.cacheKey) { MutableInteractionSource() }
-    val isZoomed = isReaderZoomed(scale)
-
-    LaunchedEffect(isZoomed) { onZoomedChange(isZoomed) }
-    LaunchedEffect(zoomEnabled) {
-        if (!zoomEnabled) {
-            zoomAnimation?.cancel()
-            scale = READER_MIN_ZOOM
-            offset = Offset.Zero
-        }
-    }
-    DisposableEffect(page.plan.cacheKey) {
+    var scale by remember(pages) { mutableFloatStateOf(READER_MIN_ZOOM) }
+    var offset by remember(pages) { mutableStateOf(Offset.Zero) }
+    var viewportSize by remember(pages) { mutableStateOf(IntSize.Zero) }
+    var zoomAnimation by remember(pages) { mutableStateOf<Job?>(null) }
+    DisposableEffect(pages) {
         onDispose { zoomAnimation?.cancel() }
     }
 
@@ -488,7 +426,7 @@ private fun ReaderPageImage(
 
     Box(
         modifier = Modifier
-            .fillMaxWidth()
+            .fillMaxSize()
             .clipToBounds()
             .onSizeChanged { size ->
                 viewportSize = size
@@ -499,32 +437,29 @@ private fun ReaderPageImage(
                     viewportHeight = size.height.toFloat(),
                 ).toOffset()
             }
-            .combinedClickable(
-                enabled = zoomEnabled,
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onToggleControls,
-                onDoubleClick = {
-                    val target = if (isReaderZoomed(scale)) {
-                        READER_MIN_ZOOM
-                    } else {
-                        READER_DOUBLE_TAP_ZOOM
-                    }
-                    animateZoom(
-                        targetScale = target,
-                        focus = Offset(viewportSize.width / 2f, viewportSize.height / 2f),
-                    )
-                },
-            )
-            .pointerInput(page.plan.cacheKey, zoomEnabled) {
-                if (!zoomEnabled) return@pointerInput
+            .pointerInput(pages) {
+                detectTapGestures(
+                    onTap = { onToggleControls() },
+                    onDoubleTap = { position ->
+                        animateZoom(
+                            targetScale = if (isReaderZoomed(scale)) {
+                                READER_MIN_ZOOM
+                            } else {
+                                READER_DOUBLE_TAP_ZOOM
+                            },
+                            focus = position,
+                        )
+                    },
+                )
+            }
+            .pointerInput(pages) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
                     var transforming = false
                     do {
                         val event = awaitPointerEvent()
                         val pressedPointers = event.changes.count { it.pressed }
-                        if (pressedPointers > 0 && (pressedPointers >= 2 || isReaderZoomed(scale) || transforming)) {
+                        if (pressedPointers > 0 && (pressedPointers >= 2 || transforming)) {
                             transforming = true
                             zoomAnimation?.cancel()
                             val centroid = event.calculateCentroid()
@@ -543,40 +478,87 @@ private fun ReaderPageImage(
                             scale = next.scale
                             offset = next.offset.toOffset()
                             event.changes.forEach { it.consume() }
+                        } else if (pressedPointers == 1 && isReaderZoomed(scale)) {
+                            zoomAnimation?.cancel()
+                            val pan = event.calculatePan()
+                            val nextOffset = constrainReaderZoomOffset(
+                                offset = ReaderZoomOffset(offset.x + pan.x, offset.y),
+                                scale = scale,
+                                viewportWidth = viewportSize.width.toFloat(),
+                                viewportHeight = viewportSize.height.toFloat(),
+                            )
+                            offset = nextOffset.toOffset()
                         }
                     } while (event.changes.any { it.pressed })
                 }
             },
     ) {
-        SubcomposeAsyncImage(
-            model = request,
-            contentDescription = "第 ${page.index + 1} 页",
+        LazyColumn(
+            state = listState,
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxSize()
                 .graphicsLayer {
                     scaleX = scale
                     scaleY = scale
                     translationX = offset.x
                     translationY = offset.y
                 },
-            contentScale = ContentScale.FillWidth,
-            loading = { ReaderPageLoading(page.index + 1) },
-            error = { state ->
-                LaunchedEffect(state.result.throwable) {
-                    onError(state.result.throwable.message ?: "图片请求失败")
-                }
-                ReaderPageError(
-                    pageNumber = page.index + 1,
-                    message = state.result.throwable.message ?: "图片请求失败",
-                    onRetry = onRetry,
+            userScrollEnabled = true,
+        ) {
+            itemsIndexed(
+                items = pages,
+                key = { _, page -> page.plan.cacheKey },
+                contentType = { _, _ -> "reader-page" },
+            ) { index, page ->
+                ReaderPageImage(
+                    page = page,
+                    retryKey = retryKeys[index] ?: 0,
+                    knownError = failedPages[index],
+                    onError = { message -> onPageFailed(index, message) },
+                    onLoaded = { onPageLoaded(index) },
+                    onRetry = { onRetryPage(index) },
                 )
-            },
-            success = {
-                LaunchedEffect(page.plan.cacheKey) { onLoaded() }
-                SubcomposeAsyncImageContent(modifier = Modifier.fillMaxWidth())
-            },
-        )
+            }
+        }
     }
+}
+
+@Composable
+private fun ReaderPageImage(
+    page: ReaderPage,
+    retryKey: Int,
+    knownError: String?,
+    onError: (String) -> Unit,
+    onLoaded: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    val context = LocalContext.current
+    val request = remember(page, retryKey) { buildReaderImageRequest(context, page, retryKey) }
+    if (knownError != null) {
+        ReaderPageError(pageNumber = page.index + 1, message = knownError, onRetry = onRetry)
+        return
+    }
+    SubcomposeAsyncImage(
+        model = request,
+        contentDescription = "第 ${page.index + 1} 页",
+        modifier = Modifier.fillMaxWidth(),
+        contentScale = ContentScale.FillWidth,
+        loading = { ReaderPageLoading(page.index + 1) },
+        error = { state ->
+            LaunchedEffect(state.result.throwable) {
+                onError(state.result.throwable.message ?: "图片请求失败")
+            }
+            ReaderPageError(
+                pageNumber = page.index + 1,
+                message = state.result.throwable.message ?: "图片请求失败",
+                onRetry = onRetry,
+            )
+        },
+        success = {
+            LaunchedEffect(page.plan.cacheKey) { onLoaded() }
+            SubcomposeAsyncImageContent(modifier = Modifier.fillMaxWidth())
+        },
+    )
 }
 
 @Composable

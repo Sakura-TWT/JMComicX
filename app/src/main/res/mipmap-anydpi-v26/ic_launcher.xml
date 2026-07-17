@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
-    tools:ignore="ObsoleteSdkInt">
-    <background android:drawable="@android:color/white" />
-    <foreground android:drawable="@drawable/jmx_launcher_foreground" />
-    <monochrome android:drawable="@drawable/jmx_launcher_foreground" />
-</adaptive-icon>
