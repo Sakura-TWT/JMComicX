@@ -56,6 +56,14 @@ internal class AppSettingsRepository(
         preferences.edit { putBoolean(AUTO_CHECK_IN_KEY, enabled) }
     }
 
+    fun autoCheckInCompletedToday(): Boolean {
+        return preferences.getString(AUTO_CHECK_IN_DATE_KEY, null) == todayDate()
+    }
+
+    fun markAutoCheckInCompleted() {
+        preferences.edit { putString(AUTO_CHECK_IN_DATE_KEY, todayDate()) }
+    }
+
     @OptIn(ExperimentalCoilApi::class)
     suspend fun clearImageCache() = withContext(Dispatchers.IO) {
         applicationContext.imageLoader.memoryCache?.clear()
@@ -64,13 +72,7 @@ internal class AppSettingsRepository(
 
     @OptIn(ExperimentalCoilApi::class)
     suspend fun imageCacheSizeBytes(): Long = withContext(Dispatchers.IO) {
-        applicationContext.imageLoader.diskCache
-            ?.directory
-            ?.toFile()
-            ?.walkTopDown()
-            ?.filter { it.isFile }
-            ?.sumOf { it.length() }
-            ?: 0L
+        applicationContext.imageLoader.diskCache?.size ?: 0L
     }
 
     fun endpointSnapshot(): EndpointSettingsState {
@@ -148,5 +150,6 @@ internal class AppSettingsRepository(
 
 private const val SETTINGS_PREFERENCES = "jmx_settings"
 private const val AUTO_CHECK_IN_KEY = "auto_check_in"
+private const val AUTO_CHECK_IN_DATE_KEY = "auto_check_in_date"
 private const val API_SELECTION_CONFIGURED_KEY = "api_selection_configured"
 private const val IMAGE_PROBE_TIMEOUT_SECONDS = 5L

@@ -55,6 +55,27 @@ class AccountLogicTest {
         assertEquals("1 KB", formatByteCount(1_024))
         assertEquals("1.5 MB", formatByteCount(1_572_864))
         assertEquals("2 GB", formatByteCount(2_147_483_648))
+        assertEquals(96L * 1024L * 1024L, IMAGE_DISK_CACHE_MAX_BYTES)
+    }
+
+    @Test
+    fun signedTodayAcceptsFullDateAndDayOnlyRecords() {
+        val now = Calendar.getInstance().apply { set(2026, Calendar.JULY, 18, 1, 0, 0) }.time
+        val fullDate = DailyCheckInfo(
+            dailyId = 70,
+            eventName = null,
+            currentProgress = null,
+            records = listOf(DailyRecord("2026-07-18", signed = true, bonus = false)),
+            raw = emptyMap(),
+        )
+        val dayOnly = fullDate.copy(records = listOf(DailyRecord("18", signed = true, bonus = false)))
+        val monthAndDay = fullDate.copy(records = listOf(DailyRecord("07-18", signed = true, bonus = false)))
+        val unsigned = fullDate.copy(records = listOf(DailyRecord("18", signed = false, bonus = false)))
+
+        assertEquals(true, fullDate.isSignedToday(now))
+        assertEquals(true, dayOnly.isSignedToday(now))
+        assertEquals(true, monthAndDay.isSignedToday(now))
+        assertEquals(false, unsigned.isSignedToday(now))
     }
 
     @Test

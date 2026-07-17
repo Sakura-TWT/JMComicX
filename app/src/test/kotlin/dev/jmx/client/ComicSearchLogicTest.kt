@@ -62,4 +62,16 @@ class ComicSearchLogicTest {
         assertNull("JM12A".toJmSearchIdOrNull())
         assertNull("作品1232836".toJmSearchIdOrNull())
     }
+
+    @Test
+    fun searchOrdersMatchOfficialApiValues() {
+        assertEquals(
+            listOf("mr", "mv", "mp", "tf"),
+            ComicSearchOrder.entries.map { it.apiValue },
+        )
+        assertEquals(
+            listOf("最新", "最多点击", "最多图片", "最多爱心"),
+            ComicSearchOrder.entries.map { it.label },
+        )
+    }
 }

@@ -1,6 +1,11 @@
 package dev.jmx.client
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.animateColorAsState
@@ -43,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -102,6 +108,7 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.icon.extended.Download
 import top.yukonga.miuix.kmp.icon.extended.Edit
+import top.yukonga.miuix.kmp.icon.extended.ExpandMore
 import top.yukonga.miuix.kmp.icon.extended.Favorites
 import top.yukonga.miuix.kmp.icon.extended.FavoritesFill
 import top.yukonga.miuix.kmp.icon.extended.Play
@@ -952,12 +959,20 @@ private fun androidx.compose.foundation.lazy.LazyListScope.detailInfoItems(
     }
     if (detail.works.isNotEmpty()) {
         item(key = "works") {
-            DetailLabels(title = "作品", values = detail.works)
+            DetailLabels(
+                title = "作品",
+                values = detail.works,
+                onValueClick = onSearchRequested,
+            )
         }
     }
     if (detail.actors.isNotEmpty()) {
         item(key = "actors") {
-            DetailLabels(title = "角色", values = detail.actors)
+            DetailLabels(
+                title = "角色",
+                values = detail.actors,
+                onValueClick = onSearchRequested,
+            )
         }
     }
 }
@@ -1115,6 +1130,11 @@ private fun DetailLabels(
 
 @Composable
 private fun CommentCard(comment: CommentItem) {
+    var repliesExpanded by rememberSaveable(comment.id, comment.replies.size) { mutableStateOf(false) }
+    val replyArrowRotation by animateFloatAsState(
+        targetValue = if (repliesExpanded) 180f else 0f,
+        label = "CommentReplyArrow",
+    )
     Card(
         modifier = Modifier.fillMaxWidth(),
         cornerRadius = 8.dp,
@@ -1147,11 +1167,91 @@ private fun CommentCard(comment: CommentItem) {
         )
         if (comment.replies.isNotEmpty()) {
             Spacer(modifier = Modifier.height(10.dp))
-            Text(
-                text = "${comment.replies.size} 条回复",
-                style = MiuixTheme.textStyles.footnote1,
-                color = MiuixTheme.colorScheme.primary,
-            )
+            Row(
+                modifier = Modifier
+                    .clickable { repliesExpanded = !repliesExpanded }
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "${comment.replies.size} 条回复",
+                    style = MiuixTheme.textStyles.footnote1,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MiuixTheme.colorScheme.primary,
+                )
+                Icon(
+                    imageVector = MiuixIcons.ExpandMore,
+                    contentDescription = if (repliesExpanded) "收起回复" else "展开回复",
+                    modifier = Modifier
+                        .size(18.dp)
+                        .graphicsLayer { rotationZ = replyArrowRotation },
+                    tint = MiuixTheme.colorScheme.primary,
+                )
+            }
+            AnimatedVisibility(
+                visible = repliesExpanded,
+                enter = expandVertically(animationSpec = tween(260)) + fadeIn(tween(180)),
+                exit = shrinkVertically(animationSpec = tween(210)) + fadeOut(tween(120)),
+            ) {
+                CommentReplies(replies = comment.replies)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommentReplies(replies: List<CommentItem>) {
+    val railColor = MiuixTheme.colorScheme.primaryContainer
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, start = 6.dp)
+            .drawBehind {
+                drawLine(
+                    color = railColor,
+                    start = Offset(0f, 0f),
+                    end = Offset(0f, size.height),
+                    strokeWidth = 2.dp.toPx(),
+                )
+            }
+            .padding(start = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        replies.forEach { reply ->
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = reply.username?.takeIf(String::isNotBlank) ?: "匿名用户",
+                        style = MiuixTheme.textStyles.footnote1,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MiuixTheme.colorScheme.primary,
+                    )
+                    if ((reply.likes ?: 0) > 0) {
+                        Text(
+                            text = "${reply.likes} 赞",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                }
+                Text(
+                    text = reply.content?.decodeHtml()?.trim().orEmpty().ifBlank { "回复内容为空" },
+                    style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+                reply.createdAt?.trim()?.takeIf(String::isNotBlank)?.let { createdAt ->
+                    Text(
+                        text = createdAt,
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                }
+            }
         }
     }
 }
