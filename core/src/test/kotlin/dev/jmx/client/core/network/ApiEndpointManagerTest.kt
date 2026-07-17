@@ -114,6 +114,36 @@ class ApiEndpointManagerTest {
     }
 
     @Test
+    fun successfulAutomaticEndpointBecomesColdStartPreferred() {
+        val stateStore = ProtocolStateStore(InMemoryKeyValueStore())
+        stateStore.updateApiHosts(listOf("https://first.test", "https://second.test"))
+        val manager = ApiEndpointManager(
+            initialHosts = listOf("https://first.test", "https://second.test"),
+            protocolStateStore = stateStore,
+        )
+        val second = manager.all()[1].url
+
+        manager.markSuccess(second, latencyMillis = 120)
+
+        val restored = ApiEndpointManager(protocolStateStore = stateStore)
+        assertEquals("https://second.test/", (restored.current() as JmxResult.Success).value.toString())
+    }
+
+    @Test
+    fun remoteRefreshPreservesHealthForUnchangedEndpoints() {
+        val manager = ApiEndpointManager(listOf("https://first.test", "https://second.test"))
+        val second = manager.all()[1].url
+        manager.markSuccess(second, latencyMillis = 140)
+
+        manager.replaceAll(listOf("https://first.test", "https://second.test", "https://third.test"))
+
+        val preserved = manager.all().single { it.url.toString() == "https://second.test/" }
+        assertEquals(1, preserved.successCount)
+        assertEquals(140L, preserved.averageLatencyMillis)
+        assertEquals("https://second.test/", (manager.current() as JmxResult.Success).value.toString())
+    }
+
+    @Test
     fun manualEndpointOverridesAutomaticHealthSelectionAndPersists() {
         val stateStore = ProtocolStateStore(InMemoryKeyValueStore())
         val manager = ApiEndpointManager(

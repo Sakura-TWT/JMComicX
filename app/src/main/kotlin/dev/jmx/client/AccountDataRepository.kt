@@ -20,15 +20,18 @@ internal data class AccountAlbumPage(
 internal class AccountDataRepository(
     private val core: JmxCore,
     private val homeRepository: HomeRepository,
+    private val accountRepository: AccountRepository,
 ) {
     suspend fun loadCollection(kind: AccountCollectionKind, page: Int): JmxResult<AccountAlbumPage> {
-        val result = when (kind) {
-            AccountCollectionKind.FAVORITES -> core.libraryApi.favoriteAlbums(
-                page = page,
-                order = JmxMagicConstants.ORDER_BY_LATEST,
-                folderId = 0,
-            )
-            AccountCollectionKind.HISTORY -> core.libraryApi.watchList(page)
+        val result = accountRepository.withSessionRecovery {
+            when (kind) {
+                AccountCollectionKind.FAVORITES -> core.libraryApi.favoriteAlbums(
+                    page = page,
+                    order = JmxMagicConstants.ORDER_BY_LATEST,
+                    folderId = 0,
+                )
+                AccountCollectionKind.HISTORY -> core.libraryApi.watchList(page)
+            }
         }
         return when (result) {
             is JmxResult.Success -> JmxResult.Success(
@@ -47,7 +50,7 @@ internal class AccountDataRepository(
     suspend fun dailyInfo(profile: AccountProfile): JmxResult<DailyCheckInfo> {
         val id = profile.id?.toString()
             ?: return JmxResult.Failure(JmxError.Schema("用户资料缺少 UID", field = "uid"))
-        return core.libraryApi.dailyInfo(id)
+        return accountRepository.withSessionRecovery { core.libraryApi.dailyInfo(id) }
     }
 
     suspend fun checkIn(profile: AccountProfile, dailyId: Int?): JmxResult<ActionResult> {
@@ -55,15 +58,22 @@ internal class AccountDataRepository(
             ?: return JmxResult.Failure(JmxError.Schema("用户资料缺少 UID", field = "uid"))
         val eventId = dailyId?.toString()
             ?: return JmxResult.Failure(JmxError.Schema("签到活动编号缺失", field = "dailyId"))
-        return core.libraryApi.dailyCheck(id, eventId)
+        return accountRepository.withSessionRecovery { core.libraryApi.dailyCheck(id, eventId) }
     }
 
     suspend fun autoCheckIn(profile: AccountProfile) {
         val info = (dailyInfo(profile) as? JmxResult.Success)?.value ?: return
-        if (info.records.any { it.signed == true && it.date == todayDate() }) return
+        val todayValues = todayDateValues()
+        if (info.records.any { it.signed == true && it.date?.trim() in todayValues }) return
         checkIn(profile, info.dailyId)
     }
 }
 
 internal fun todayDate(now: Date = Date()): String =
     SimpleDateFormat("yyyy-MM-dd", Locale.US).format(now)
+
+internal fun todayDateValues(now: Date = Date()): Set<String> {
+    val fullDate = todayDate(now)
+    val day = SimpleDateFormat("dd", Locale.US).format(now)
+    return setOf(fullDate, day, day.toIntOrNull()?.toString().orEmpty())
+}

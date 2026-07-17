@@ -3,6 +3,8 @@ package dev.jmx.client
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -46,9 +48,11 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -121,6 +125,7 @@ internal fun AlbumDetailTransitionHost(
     authenticated: Boolean,
     onRequireLogin: () -> Unit,
     onFavoriteChanged: (Boolean) -> Unit,
+    onSearchRequested: (String) -> Unit,
     onStartReading: (ReaderLaunchRequest) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -130,6 +135,7 @@ internal fun AlbumDetailTransitionHost(
     var hasEntered by remember(request.album.id) { mutableStateOf(false) }
     var isExiting by remember(request.album.id) { mutableStateOf(false) }
     var hasDismissed by remember(request.album.id) { mutableStateOf(false) }
+    var searchAfterExit by remember(request.album.id) { mutableStateOf<String?>(null) }
 
     fun dismissOnce() {
         if (!hasDismissed) {
@@ -138,7 +144,8 @@ internal fun AlbumDetailTransitionHost(
         }
     }
 
-    fun exitDetail() {
+    fun exitDetail(searchQuery: String? = null) {
+        searchQuery?.trim()?.takeIf(String::isNotEmpty)?.let { searchAfterExit = it }
         if (isExiting) return
         isExiting = true
         coroutineScope.launch {
@@ -154,12 +161,13 @@ internal fun AlbumDetailTransitionHost(
                 withContext(NonCancellable) {
                     transitionProgress.snapTo(0f)
                     dismissOnce()
+                    searchAfterExit?.let(onSearchRequested)
                 }
             }
         }
     }
 
-    BackHandler(onBack = ::exitDetail)
+    BackHandler(onBack = { exitDetail() })
 
     LaunchedEffect(targetBounds) {
         if (targetBounds != null && !hasEntered) {
@@ -198,10 +206,11 @@ internal fun AlbumDetailTransitionHost(
             authenticated = authenticated,
             onRequireLogin = onRequireLogin,
             onFavoriteChanged = onFavoriteChanged,
+            onSearchRequested = { query -> exitDetail(query) },
             onStartReading = onStartReading,
             showCover = request.sourceBounds == null ||
                 (hasEntered && progress >= 0.999f && !isExiting),
-            onBack = ::exitDetail,
+            onBack = { exitDetail() },
             onCoverTargetChanged = { bounds -> targetBounds = bounds },
             modifier = Modifier
                 .fillMaxSize()
@@ -254,6 +263,7 @@ private fun AlbumDetailScreen(
     authenticated: Boolean,
     onRequireLogin: () -> Unit,
     onFavoriteChanged: (Boolean) -> Unit,
+    onSearchRequested: (String) -> Unit,
     onStartReading: (ReaderLaunchRequest) -> Unit,
     showCover: Boolean,
     onBack: () -> Unit,
@@ -268,6 +278,7 @@ private fun AlbumDetailScreen(
     var actionError by remember(album.id) { mutableStateOf<String?>(null) }
     var showCommentComposer by rememberSaveable(album.id) { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
+    val hapticFeedback = LocalHapticFeedback.current
 
     LaunchedEffect(album.id, repository, retryKey) {
         val loaded = repository.load(album.id)
@@ -328,6 +339,7 @@ private fun AlbumDetailScreen(
                                     likes = (latest.detail.likes ?: 0) + 1,
                                 ),
                             )
+                            hapticFeedback.performHapticFeedback(HapticFeedbackType.Confirm)
                         }
                     }
                 }
@@ -365,6 +377,7 @@ private fun AlbumDetailScreen(
                             }
                             state = latest.copy(detail = latest.detail.copy(isFavorite = favorite))
                             if (favorite != wasFavorite) onFavoriteChanged(favorite)
+                            hapticFeedback.performHapticFeedback(HapticFeedbackType.Confirm)
                         }
                     }
                 }
@@ -497,6 +510,7 @@ private fun AlbumDetailScreen(
             onLoadMoreComments = ::loadMoreComments,
             onLike = ::likeAlbum,
             onFavorite = ::favoriteAlbum,
+            onSearchRequested = onSearchRequested,
             pendingAction = pendingAction,
             onRetry = {
                 state = AlbumDetailUiState.Loading
@@ -531,6 +545,7 @@ private fun DetailBody(
     onLoadMoreComments: () -> Unit,
     onLike: () -> Unit,
     onFavorite: () -> Unit,
+    onSearchRequested: (String) -> Unit,
     pendingAction: DetailAccountAction?,
     onRetry: () -> Unit,
 ) {
@@ -581,6 +596,7 @@ private fun DetailBody(
                 detail = detail,
                 pageSummary = pageSummary,
                 showCover = showCover,
+                onAuthorSelected = onSearchRequested,
             )
         }
         item(key = "actions") {
@@ -612,7 +628,11 @@ private fun DetailBody(
             state is AlbumDetailUiState.Error -> item(key = "error") {
                 DetailError(message = state.message, onRetry = onRetry)
             }
-            selectedTab == DETAIL_INFO_TAB && detail != null -> detailInfoItems(detail, pageSummary)
+            selectedTab == DETAIL_INFO_TAB && detail != null -> detailInfoItems(
+                detail = detail,
+                pageSummary = pageSummary,
+                onSearchRequested = onSearchRequested,
+            )
             selectedTab == DETAIL_CATALOG_TAB && detail != null -> catalogItems(detail, onChapterSelected)
             selectedTab == DETAIL_COMMENTS_TAB -> commentsItems(comments, onLoadMoreComments)
         }
@@ -625,6 +645,7 @@ private fun DetailSummary(
     detail: AlbumDetail?,
     pageSummary: AlbumPageSummary,
     showCover: Boolean,
+    onAuthorSelected: (String) -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -652,9 +673,10 @@ private fun DetailSummary(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             DetailMetaLine(label = "JM车号", value = "JM${album.id}")
-            DetailMetaLine(
+            DetailMetaValues(
                 label = "作者",
-                value = detail?.authors?.joinToString(" / ")?.takeIf { it.isNotBlank() } ?: album.author,
+                values = detail?.authors?.takeIf { it.isNotEmpty() } ?: listOf(album.author),
+                onValueClick = onAuthorSelected,
             )
             DetailMetaLine(
                 label = "页数",
@@ -686,6 +708,31 @@ private fun DetailMetaLine(label: String, value: String) {
 }
 
 @Composable
+private fun DetailMetaValues(
+    label: String,
+    values: List<String>,
+    onValueClick: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text(
+            text = label,
+            style = MiuixTheme.textStyles.footnote2,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+        values.distinct().filter(String::isNotBlank).forEach { value ->
+            Text(
+                text = value,
+                modifier = Modifier.clickable { onValueClick(value) },
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
 private fun DetailActions(
     detail: AlbumDetail?,
     onCommentsSelected: () -> Unit,
@@ -702,6 +749,8 @@ private fun DetailActions(
             value = compactCount(detail?.likes),
             label = "喜欢",
             enabled = detail != null && detail.liked != true && pendingAction == null,
+            selected = detail?.liked == true,
+            loading = pendingAction == DetailAccountAction.LIKE,
             onClick = onLike,
         )
         DetailAction(
@@ -718,10 +767,12 @@ private fun DetailActions(
             enabled = false,
         )
         DetailAction(
-            icon = MiuixIcons.Favorites,
+            icon = if (detail?.isFavorite == true) MiuixIcons.FavoritesFill else MiuixIcons.Favorites,
             value = if (detail?.isFavorite == true) "已收藏" else "收藏",
             label = "收藏",
             enabled = detail != null && pendingAction == null,
+            selected = detail?.isFavorite == true,
+            loading = pendingAction == DetailAccountAction.FAVORITE,
             onClick = onFavorite,
         )
         DetailAction(
@@ -739,13 +790,19 @@ private fun DetailAction(
     value: String,
     label: String,
     enabled: Boolean,
+    selected: Boolean = false,
+    loading: Boolean = false,
     onClick: () -> Unit = {},
 ) {
-    val contentColor = if (enabled) {
+    val targetContentColor = if (selected) {
+        MiuixTheme.colorScheme.error
+    } else if (enabled) {
         MiuixTheme.colorScheme.onSurface
     } else {
         MiuixTheme.colorScheme.onSurfaceVariantSummary
     }
+    val contentColor by animateColorAsState(targetContentColor, label = "DetailActionColor")
+    val iconScale by animateFloatAsState(if (selected) 1.12f else 1f, label = "DetailActionScale")
     Column(
         modifier = Modifier.width(62.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -753,16 +810,29 @@ private fun DetailAction(
         IconButton(
             onClick = onClick,
             enabled = enabled,
-            backgroundColor = MiuixTheme.colorScheme.surfaceContainerHigh,
+            backgroundColor = if (selected) {
+                MiuixTheme.colorScheme.errorContainer
+            } else {
+                MiuixTheme.colorScheme.surfaceContainerHigh
+            },
             minWidth = 42.dp,
             minHeight = 42.dp,
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                modifier = Modifier.size(20.dp),
-                tint = contentColor,
-            )
+            if (loading) {
+                CircularProgressIndicator(size = 20.dp, strokeWidth = 3.dp)
+            } else {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = label,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .graphicsLayer {
+                            scaleX = iconScale
+                            scaleY = iconScale
+                        },
+                    tint = contentColor,
+                )
+            }
         }
         Spacer(modifier = Modifier.height(5.dp))
         Text(
@@ -847,6 +917,7 @@ private fun DetailActionErrorDialog(
 private fun androidx.compose.foundation.lazy.LazyListScope.detailInfoItems(
     detail: AlbumDetail,
     pageSummary: AlbumPageSummary,
+    onSearchRequested: (String) -> Unit,
 ) {
     item(key = "description") {
         DetailSection(title = "漫画介绍") {
@@ -872,7 +943,11 @@ private fun androidx.compose.foundation.lazy.LazyListScope.detailInfoItems(
     }
     if (detail.tags.isNotEmpty()) {
         item(key = "tags") {
-            DetailLabels(title = "标签", values = detail.tags)
+            DetailLabels(
+                title = "标签",
+                values = detail.tags,
+                onValueClick = onSearchRequested,
+            )
         }
     }
     if (detail.works.isNotEmpty()) {
@@ -1008,7 +1083,11 @@ private fun DetailSection(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun DetailLabels(title: String, values: List<String>) {
+private fun DetailLabels(
+    title: String,
+    values: List<String>,
+    onValueClick: ((String) -> Unit)? = null,
+) {
     DetailSection(title = title) {
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1016,6 +1095,8 @@ private fun DetailLabels(title: String, values: List<String>) {
         ) {
             values.distinct().forEach { value ->
                 Surface(
+                    onClick = { onValueClick?.invoke(value) },
+                    enabled = onValueClick != null,
                     shape = RoundedCornerShape(8.dp),
                     color = MiuixTheme.colorScheme.primaryContainer,
                 ) {
@@ -1110,21 +1191,24 @@ private fun DetailError(message: String, onRetry: (() -> Unit)?) {
 
 internal class AlbumDetailRepository(
     private val core: JmxCore,
+    private val accountRepository: AccountRepository,
 ) {
     private val chapterPageCounts = ConcurrentHashMap<String, Int>()
 
     suspend fun likeAlbum(albumId: String): JmxResult<ActionResult> =
-        core.interactionApi.likeAlbum(albumId)
+        accountRepository.withSessionRecovery { core.interactionApi.likeAlbum(albumId) }
 
     suspend fun favoriteAlbum(albumId: String): JmxResult<ActionResult> =
-        core.interactionApi.favoriteAlbum(albumId)
+        accountRepository.withSessionRecovery { core.interactionApi.favoriteAlbum(albumId) }
 
     suspend fun commentAlbum(albumId: String, comment: String): JmxResult<ActionResult> =
-        core.interactionApi.commentAlbum(
-            albumId = albumId,
-            content = comment,
-            status = "1",
-        )
+        accountRepository.withSessionRecovery {
+            core.interactionApi.commentAlbum(
+                albumId = albumId,
+                content = comment,
+                status = "1",
+            )
+        }
 
     suspend fun load(albumId: String): AlbumDetailUiState {
         try {

@@ -70,6 +70,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Headers
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.Icon
@@ -534,7 +535,7 @@ internal class HomeRepository(
                         .filter { it.id.isNotBlank() }
                         .distinctBy { it.id }
                         .map { item -> item.toHomeAlbum(category.imageHost) }
-                    preloadCovers(receivedAlbums)
+                    preloadCovers(receivedAlbums.take(LOAD_MORE_COVER_PRELOAD_COUNT))
                     val mergedAlbums = (category.albums + receivedAlbums).distinctBy { it.id }
                     val total = result.value.total ?: category.total
                     category.copy(
@@ -591,27 +592,31 @@ internal class HomeRepository(
         }
 
         val preloadCategory = categories.firstOrNull { it.id == preloadCategoryId } ?: categories.first()
-        preloadCovers(preloadCategory.albums)
+        preloadCovers(preloadCategory.albums.take(INITIAL_COVER_PRELOAD_COUNT))
         return HomeUiState.Content(
             categories = categories,
         )
     }
 
-    private suspend fun preloadCovers(albums: List<HomeAlbum>) = coroutineScope {
-        val semaphore = Semaphore(COVER_PRELOAD_CONCURRENCY)
-        albums.map { album ->
-            async {
-                semaphore.withPermit {
-                    val request = ImageRequest.Builder(applicationContext)
-                        .data(album.coverUrl)
-                        .headers(albumCoverHeaders)
-                        .size(COVER_PRELOAD_WIDTH_PX, COVER_PRELOAD_HEIGHT_PX)
-                        .precision(Precision.INEXACT)
-                        .build()
-                    imageLoader.execute(request)
-                }
+    private suspend fun preloadCovers(albums: List<HomeAlbum>) {
+        withTimeoutOrNull(COVER_PRELOAD_TIMEOUT_MILLIS) {
+            coroutineScope {
+                val semaphore = Semaphore(COVER_PRELOAD_CONCURRENCY)
+                albums.map { album ->
+                    async {
+                        semaphore.withPermit {
+                            val request = ImageRequest.Builder(applicationContext)
+                                .data(album.coverUrl)
+                                .headers(albumCoverHeaders)
+                                .size(COVER_PRELOAD_WIDTH_PX, COVER_PRELOAD_HEIGHT_PX)
+                                .precision(Precision.INEXACT)
+                                .build()
+                            imageLoader.execute(request)
+                        }
+                    }
+                }.awaitAll()
             }
-        }.awaitAll()
+        }
     }
 }
 
@@ -698,6 +703,9 @@ private val albumCoverHeaders: Headers = Headers.Builder()
     .build()
 
 private const val COVER_PRELOAD_CONCURRENCY = 6
+private const val INITIAL_COVER_PRELOAD_COUNT = 12
+private const val LOAD_MORE_COVER_PRELOAD_COUNT = 6
+private const val COVER_PRELOAD_TIMEOUT_MILLIS = 4_500L
 private const val COVER_PRELOAD_WIDTH_PX = 360
 private const val COVER_PRELOAD_HEIGHT_PX = 480
 private const val COVER_UI_RETRY_COUNT = 3

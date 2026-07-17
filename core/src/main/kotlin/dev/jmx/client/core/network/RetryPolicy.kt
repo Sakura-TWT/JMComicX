@@ -32,7 +32,7 @@ class DefaultRetryPolicy(
             is JmxError.Network,
             is JmxError.Domain -> true
 
-            is JmxError.Http -> code >= 500 || code == 408 || code == 429 || code == 403 || code == 401
+            is JmxError.Http -> code >= 500 || code == 408 || code == 429 || code == 403
 
             is JmxError.Decode -> retryable
             is JmxError.Api,

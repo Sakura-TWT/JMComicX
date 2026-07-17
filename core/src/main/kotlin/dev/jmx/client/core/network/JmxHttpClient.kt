@@ -95,8 +95,7 @@ class JmxHttpClient(
                             retryable = response.code >= 500 ||
                                 response.code == 408 ||
                                 response.code == 429 ||
-                                response.code == 403 ||
-                                response.code == 401
+                                response.code == 403
                         )
                     )
                 }

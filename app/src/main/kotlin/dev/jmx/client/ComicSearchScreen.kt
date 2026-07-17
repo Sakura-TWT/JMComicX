@@ -1,10 +1,12 @@
 package dev.jmx.client
 
-import android.graphics.Color
-import androidx.activity.ComponentActivity
-import androidx.activity.SystemBarStyle
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.view.Window
+import android.view.WindowManager
+import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
-import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -13,7 +15,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,6 +38,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -48,6 +50,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -55,6 +59,11 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.github.houbb.opencc4j.util.ZhConverterUtil
+import androidx.core.graphics.drawable.toDrawable
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsAnimationCompat
+import androidx.core.view.WindowInsetsCompat
 import dev.jmx.client.core.api.AlbumDetail
 import dev.jmx.client.core.api.SearchPage
 import dev.jmx.client.core.result.JmxResult
@@ -63,6 +72,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
@@ -82,13 +92,15 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 @Composable
 internal fun ComicSearchScreen(
     homeRepository: HomeRepository,
+    initialQuery: String? = null,
+    manageSystemBar: Boolean = true,
     liftedAlbumId: String?,
     onDismiss: () -> Unit,
     onAlbumSelected: (HomeAlbum, Rect?) -> Unit,
 ) {
     val context = LocalContext.current
-    val darkMode = isSystemInDarkTheme()
     val density = LocalDensity.current
+    @Suppress("UNUSED_VARIABLE")
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -101,19 +113,98 @@ internal fun ComicSearchScreen(
     var state by remember { mutableStateOf<ComicSearchUiState>(ComicSearchUiState.Idle) }
     var history by remember(historyStore) { mutableStateOf(historyStore.load()) }
     var deletingHistory by rememberSaveable { mutableStateOf(false) }
+    var initialQueryConsumed by rememberSaveable(initialQuery) { mutableStateOf(false) }
+    var inputEnabled by rememberSaveable(initialQuery) { mutableStateOf(initialQuery.isNullOrBlank()) }
     val coroutineScope = rememberCoroutineScope()
+    val searchSurfaceColor = MiuixTheme.colorScheme.surface
+    val activity = context.findActivity()
 
-    DisposableEffect(context, darkMode, imeVisible) {
-        val systemBarColor = if (darkMode) Color.BLACK else Color.rgb(250, 250, 250)
-        (context.findActivity() as? ComponentActivity)?.let { activity ->
-            @Suppress("DEPRECATION")
-            activity.window.statusBarColor = systemBarColor
-            activity.enableEdgeToEdge(
-                statusBarStyle = SystemBarStyle.auto(systemBarColor, systemBarColor) { darkMode },
-                navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { darkMode },
-            )
+    SideEffect {
+        val window = activity?.window
+        if (manageSystemBar && window != null) {
+            applySearchSystemBarAppearance(window, searchSurfaceColor.toArgb(), searchSurfaceColor.luminance() > 0.5f)
         }
-        onDispose {}
+    }
+
+    DisposableEffect(context, activity, searchSurfaceColor, manageSystemBar) {
+        val window = activity?.window
+        val decor = window?.decorView as? ViewGroup
+        if (!manageSystemBar || window == null || decor == null) {
+            return@DisposableEffect onDispose {}
+        }
+
+        val color = searchSurfaceColor.toArgb()
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        val previousLightStatusBars = controller.isAppearanceLightStatusBars
+        val previousSoftInputMode = window.attributes.softInputMode
+        @Suppress("DEPRECATION")
+        val previousStatusBarColor = window.statusBarColor
+        val scrim = View(context).apply {
+            setBackgroundColor(color)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        val initialStatusBarHeight = ViewCompat.getRootWindowInsets(decor)
+            ?.getInsets(WindowInsetsCompat.Type.statusBars())
+            ?.top
+            ?: 0
+        decor.addView(
+            scrim,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                initialStatusBarHeight,
+                Gravity.TOP,
+            ),
+        )
+        ViewCompat.setOnApplyWindowInsetsListener(scrim) { view, insets ->
+            val statusBarHeight = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
+            if (view.layoutParams.height != statusBarHeight) {
+                view.layoutParams = view.layoutParams.apply { height = statusBarHeight }
+            }
+            insets
+        }
+        ViewCompat.requestApplyInsets(scrim)
+        window.setBackgroundDrawable(color.toDrawable())
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        val lightStatusBars = searchSurfaceColor.luminance() > 0.5f
+        val insetsAnimationCallback = object : WindowInsetsAnimationCompat.Callback(
+            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE,
+        ) {
+            override fun onPrepare(animation: WindowInsetsAnimationCompat) {
+                applySearchSystemBarAppearance(window, color, lightStatusBars)
+            }
+
+            override fun onStart(
+                animation: WindowInsetsAnimationCompat,
+                bounds: WindowInsetsAnimationCompat.BoundsCompat,
+            ): WindowInsetsAnimationCompat.BoundsCompat {
+                applySearchSystemBarAppearance(window, color, lightStatusBars)
+                return bounds
+            }
+
+            override fun onProgress(
+                insets: WindowInsetsCompat,
+                runningAnimations: List<WindowInsetsAnimationCompat>,
+            ): WindowInsetsCompat {
+                applySearchSystemBarAppearance(window, color, lightStatusBars)
+                return insets
+            }
+
+            override fun onEnd(animation: WindowInsetsAnimationCompat) {
+                applySearchSystemBarAppearance(window, color, lightStatusBars)
+            }
+        }
+        ViewCompat.setWindowInsetsAnimationCallback(window.decorView, insetsAnimationCallback)
+        applySearchSystemBarAppearance(window, color, lightStatusBars)
+
+        onDispose {
+            ViewCompat.setWindowInsetsAnimationCallback(window.decorView, null)
+            ViewCompat.setOnApplyWindowInsetsListener(scrim, null)
+            decor.removeView(scrim)
+            window.setSoftInputMode(previousSoftInputMode)
+            @Suppress("DEPRECATION")
+            window.statusBarColor = previousStatusBarColor
+            controller.isAppearanceLightStatusBars = previousLightStatusBars
+        }
     }
 
     fun dismissSearch() {
@@ -131,11 +222,23 @@ internal fun ComicSearchScreen(
     fun submitSearch(value: String) {
         val normalizedQuery = value.trim()
         if (normalizedQuery.isEmpty()) return
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
         query = normalizedQuery
         history = historyStore.record(history, normalizedQuery)
         deletingHistory = false
         submittedQuery = normalizedQuery
         searchRequestId++
+    }
+
+    LaunchedEffect(initialQuery) {
+        val value = initialQuery?.trim().orEmpty()
+        if (!initialQueryConsumed && value.isNotEmpty()) {
+            initialQueryConsumed = true
+            submitSearch(value)
+            delay(INITIAL_SEARCH_FOCUS_GUARD_MILLIS)
+            inputEnabled = true
+        }
     }
 
     LaunchedEffect(submittedQuery, searchRequestId, repository) {
@@ -215,6 +318,7 @@ internal fun ComicSearchScreen(
                     state = ComicSearchUiState.Idle
                 },
                 onSearch = ::submitSearch,
+                enabled = inputEnabled,
                 leadingIcon = {
                     Icon(
                         imageVector = MiuixIcons.Basic.Search,
@@ -280,6 +384,13 @@ internal fun ComicSearchScreen(
             }
         }
     }
+}
+
+private fun applySearchSystemBarAppearance(window: Window, color: Int, lightStatusBars: Boolean) {
+    window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+    @Suppress("DEPRECATION")
+    window.statusBarColor = color
+    WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = lightStatusBars
 }
 
 @Composable
@@ -600,3 +711,4 @@ internal fun toTraditionalChinese(text: String): String =
 
 private val JM_SEARCH_ID_REGEX = Regex("(?i)^(?:JM)?\\s*(\\d+)$")
 private val SEARCH_MAIN_TAGS = listOf(0, 3)
+private const val INITIAL_SEARCH_FOCUS_GUARD_MILLIS = 180L

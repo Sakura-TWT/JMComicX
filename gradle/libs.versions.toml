@@ -1,6 +1,7 @@
 [versions]
 agp = "9.2.1"
 activity-compose = "1.13.0"
+core-splashscreen = "1.2.0"
 androidx-navigation3 = "1.1.4"
 kotlin = "2.4.0"
 coroutines = "1.10.2"
@@ -14,6 +15,7 @@ webp-imageio = "0.9.0"
 
 [libraries]
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activity-compose" }
+androidx-core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "core-splashscreen" }
 androidx-navigation3-runtime = { group = "androidx.navigation3", name = "navigation3-runtime", version.ref = "androidx-navigation3" }
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil-compose" }

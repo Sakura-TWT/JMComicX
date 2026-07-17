@@ -8,6 +8,9 @@ import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.NetworkExchange
 import dev.jmx.client.core.result.JmxResult
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
 import okhttp3.HttpUrl
@@ -37,7 +40,9 @@ class ApiEndpointProber(
 ) {
     suspend fun probeAll(route: ApiRoute = ApiRoute.Setting): List<ApiEndpointProbeResult> {
         val endpoints = endpointManager.all().map { it.url }
-        return endpoints.map { probe(it, route) }
+        return coroutineScope {
+            endpoints.map { endpoint -> async { probe(endpoint, route) } }.awaitAll()
+        }
     }
 
     suspend fun probe(url: HttpUrl, route: ApiRoute = ApiRoute.Setting): ApiEndpointProbeResult =

@@ -5,15 +5,16 @@ import androidx.core.content.edit
 import org.json.JSONArray
 
 internal class SearchHistoryStore(context: Context) {
+    private val applicationContext = context.applicationContext
     private val preferences = context.applicationContext.getSharedPreferences(
         SEARCH_HISTORY_PREFERENCES,
         Context.MODE_PRIVATE,
     )
 
     fun load(): List<String> {
-        val encoded = preferences.getString(SEARCH_HISTORY_KEY, null) ?: return emptyList()
-        return runCatching {
-            val array = JSONArray(encoded)
+        val encoded = preferences.getString(SEARCH_HISTORY_KEY, null)
+        val current = encoded?.let { value -> runCatching {
+            val array = JSONArray(value)
             buildList {
                 repeat(array.length()) { index ->
                     array.optString(index)
@@ -22,7 +23,19 @@ internal class SearchHistoryStore(context: Context) {
                         ?.let(::add)
                 }
             }.distinctBy { it.lowercase() }.take(SEARCH_HISTORY_LIMIT)
-        }.getOrDefault(emptyList())
+        }.getOrDefault(emptyList()) }.orEmpty()
+        if (current.isNotEmpty() || preferences.getBoolean(LEGACY_HISTORY_MIGRATED_KEY, false)) {
+            return current
+        }
+
+        val migrated = SecureCredentialStore(applicationContext)
+            .readLegacySearchHistory()
+            .take(SEARCH_HISTORY_LIMIT)
+        preferences.edit {
+            putBoolean(LEGACY_HISTORY_MIGRATED_KEY, true)
+            if (migrated.isNotEmpty()) putString(SEARCH_HISTORY_KEY, JSONArray(migrated).toString())
+        }
+        return migrated
     }
 
     fun record(current: List<String>, query: String): List<String> =
@@ -56,4 +69,5 @@ internal fun searchHistoryWith(
 
 private const val SEARCH_HISTORY_PREFERENCES = "jmx_search_history"
 private const val SEARCH_HISTORY_KEY = "queries"
+private const val LEGACY_HISTORY_MIGRATED_KEY = "legacy_history_migrated"
 private const val SEARCH_HISTORY_LIMIT = 20

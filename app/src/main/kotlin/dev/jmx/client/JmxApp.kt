@@ -1,5 +1,6 @@
 package dev.jmx.client
 
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -24,12 +26,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.zIndex
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.ui.NavDisplay
 import androidx.navigation3.ui.NavDisplayTransitionEffects
+import androidx.core.graphics.drawable.toDrawable
+import androidx.core.view.WindowCompat
 import dev.jmx.client.core.result.JmxResult
 import dev.jmx.client.core.result.toUserMessage
 import kotlinx.coroutines.launch
@@ -48,7 +55,7 @@ import top.yukonga.miuix.kmp.icon.basic.Search
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
-fun JmxApp() {
+fun JmxApp(onColdStartReady: () -> Unit = {}) {
     val tabs = remember {
         listOf(
             JmxTab("首页", MiuixIcons.Home),
@@ -58,17 +65,23 @@ fun JmxApp() {
     val mainPagerState = rememberJmxMainPagerState(tabs.size)
     val routeStack = remember { mutableStateListOf(JmxRoute.MAIN) }
 
-    val applicationContext = LocalContext.current.applicationContext
+    val context = LocalContext.current
+    val applicationContext = context.applicationContext
+    val uriHandler = LocalUriHandler.current
     val homeRepository = remember(applicationContext) { HomeRepository(applicationContext) }
-    val detailRepository = remember(homeRepository) { AlbumDetailRepository(homeRepository.core) }
-    val readerRepository = remember(homeRepository, applicationContext) {
-        ComicReaderRepository(applicationContext, homeRepository.core)
-    }
+    val updateManager = remember(applicationContext) { AppUpdateManager(applicationContext) }
+    val updateState by updateManager.state.collectAsState()
     val accountRepository = remember(homeRepository, applicationContext) {
         AccountRepository(applicationContext, homeRepository.core)
     }
-    val accountDataRepository = remember(homeRepository) {
-        AccountDataRepository(homeRepository.core, homeRepository)
+    val detailRepository = remember(homeRepository, accountRepository) {
+        AlbumDetailRepository(homeRepository.core, accountRepository)
+    }
+    val readerRepository = remember(homeRepository, applicationContext) {
+        ComicReaderRepository(applicationContext, homeRepository.core)
+    }
+    val accountDataRepository = remember(homeRepository, accountRepository) {
+        AccountDataRepository(homeRepository.core, homeRepository, accountRepository)
     }
     val settingsRepository = remember(homeRepository, applicationContext) {
         AppSettingsRepository(applicationContext, homeRepository.core, homeRepository)
@@ -88,11 +101,24 @@ fun JmxApp() {
     var detailRequest by remember { mutableStateOf<AlbumDetailTransitionRequest?>(null) }
     var readerRequest by remember { mutableStateOf<ReaderLaunchRequest?>(null) }
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    var pendingSearchQuery by rememberSaveable { mutableStateOf<String?>(null) }
     val searchTransitionProgress by animateFloatAsState(
         targetValue = if (searchExpanded) 1f else 0f,
         label = "HomeSearchTopBarProgress",
     )
     val activeTab = mainPagerState.selectedPage.coerceIn(0, tabs.lastIndex)
+    val searchSurfaceColor = MiuixTheme.colorScheme.surface
+
+    fun prepareSearchSystemBar() {
+        val window = context.findActivity()?.window ?: return
+        val color = searchSurfaceColor.toArgb()
+        window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+        window.setBackgroundDrawable(color.toDrawable())
+        @Suppress("DEPRECATION")
+        window.statusBarColor = color
+        WindowCompat.getInsetsController(window, window.decorView)
+            .isAppearanceLightStatusBars = searchSurfaceColor.luminance() > 0.5f
+    }
 
     fun requestLogin() {
         loginFailure = null
@@ -134,6 +160,14 @@ fun JmxApp() {
         if (profile != null && autoCheckIn) accountDataRepository.autoCheckIn(profile)
     }
 
+    LaunchedEffect(accountRepository) {
+        accountRepository.restoreSession()?.let { accountProfile = it }
+    }
+
+    LaunchedEffect(homeState) {
+        if (homeState !is HomeUiState.Loading) onColdStartReady()
+    }
+
     LaunchedEffect(homeRepository, homeRequestId) {
         val previousState = homeState
         val wasRefreshing = isHomeRefreshing
@@ -152,6 +186,10 @@ fun JmxApp() {
                 ?: 0
         }
         isHomeRefreshing = false
+    }
+
+    LaunchedEffect(updateManager) {
+        updateManager.checkForUpdates(manual = false, fromStartup = true)
     }
 
     LaunchedEffect(homeRepository, pendingLoadMoreCategoryId) {
@@ -221,7 +259,11 @@ fun JmxApp() {
                                                     alpha = 1f - searchTransitionProgress
                                                 },
                                                 actions = {
-                                                    IconButton(onClick = { searchExpanded = true }) {
+                                                    IconButton(onClick = {
+                                                        prepareSearchSystemBar()
+                                                        pendingSearchQuery = null
+                                                        searchExpanded = true
+                                                    }) {
                                                         Icon(
                                                             imageVector = MiuixIcons.Basic.Search,
                                                             contentDescription = "搜索",
@@ -403,6 +445,15 @@ fun JmxApp() {
                                         autoCheckIn = it
                                         settingsRepository.setAutoCheckInEnabled(it)
                                     },
+                                    autoCheckUpdates = updateState.autoCheckEnabled,
+                                    checkingForUpdates = updateState.checking,
+                                    currentVersion = updateManager.localVersionName,
+                                    onAutoCheckUpdatesChanged = updateManager::setAutoCheckEnabled,
+                                    onCheckForUpdates = {
+                                        coroutineScope.launch {
+                                            updateManager.checkForUpdates(manual = true)
+                                        }
+                                    },
                                     onImageHostChanged = { homeRequestId++ },
                                 )
                                 JmxRoute.MAIN,
@@ -430,13 +481,18 @@ fun JmxApp() {
             ) {
                 ComicSearchScreen(
                     homeRepository = homeRepository,
+                    initialQuery = pendingSearchQuery,
+                    manageSystemBar = detailRequest == null && readerRequest == null,
                     liftedAlbumId = detailRequest
                         ?.takeIf {
                             it.origin == AlbumDetailOrigin.SEARCH && it.sourceBounds != null
                         }
                         ?.album
                         ?.id,
-                    onDismiss = { searchExpanded = false },
+                    onDismiss = {
+                        searchExpanded = false
+                        pendingSearchQuery = null
+                    },
                     onAlbumSelected = { album, sourceBounds ->
                         if (detailRequest == null) {
                             detailRequest = AlbumDetailTransitionRequest(
@@ -473,6 +529,13 @@ fun JmxApp() {
                             accountProfile = updated
                             accountRepository.update(updated)
                         }
+                    },
+                    onSearchRequested = { query ->
+                        prepareSearchSystemBar()
+                        pendingSearchQuery = query
+                        while (routeStack.size > 1) routeStack.removeAt(routeStack.lastIndex)
+                        mainPagerState.animateToPage(0)
+                        searchExpanded = true
                     },
                     onStartReading = { readerRequest = it },
                     onDismiss = { detailRequest = null },
@@ -529,6 +592,25 @@ fun JmxApp() {
                     }
                 }
             },
+        )
+
+        AppUpdateDialog(
+            info = updateState.availableUpdate,
+            launchingDownload = updateState.launchingDownload,
+            onLater = updateManager::dismissUpdate,
+            onUpdate = {
+                val info = updateState.availableUpdate ?: return@AppUpdateDialog
+                coroutineScope.launch {
+                    val url = updateManager.resolveDownloadUrl(info)
+                    runCatching { uriHandler.openUri(url) }
+                        .onSuccess { updateManager.dismissUpdate() }
+                        .onFailure { updateManager.reportDownloadLaunchFailure() }
+                }
+            },
+        )
+        UpdateResultDialog(
+            message = updateState.resultMessage,
+            onDismiss = updateManager::dismissResultMessage,
         )
     }
 }

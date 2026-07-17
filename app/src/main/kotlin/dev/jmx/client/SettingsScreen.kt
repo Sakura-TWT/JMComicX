@@ -54,6 +54,11 @@ internal fun SettingsScreen(
     repository: AppSettingsRepository,
     autoCheckIn: Boolean,
     onAutoCheckInChanged: (Boolean) -> Unit,
+    autoCheckUpdates: Boolean,
+    checkingForUpdates: Boolean,
+    currentVersion: String,
+    onAutoCheckUpdatesChanged: (Boolean) -> Unit,
+    onCheckForUpdates: () -> Unit,
     onImageHostChanged: () -> Unit,
 ) {
     var showClearConfirmation by remember { mutableStateOf(false) }
@@ -111,6 +116,33 @@ internal fun SettingsScreen(
                             )
                         },
                         onClick = { showClearConfirmation = true },
+                    )
+                }
+            }
+        }
+        item(key = "settings-update") {
+            Column {
+                SmallTitle(text = "更新")
+                Card(modifier = Modifier.padding(horizontal = 12.dp)) {
+                    SwitchPreference(
+                        title = "检测更新",
+                        summary = "启动应用后自动检查是否有新版本",
+                        checked = autoCheckUpdates,
+                        onCheckedChange = onAutoCheckUpdatesChanged,
+                    )
+                    ArrowPreference(
+                        title = "获取更新",
+                        summary = "当前版本 v$currentVersion",
+                        endActions = {
+                            if (checkingForUpdates) {
+                                CircularProgressIndicator(
+                                    size = 20.dp,
+                                    strokeWidth = 3.dp,
+                                    modifier = Modifier.padding(horizontal = 12.dp),
+                                )
+                            }
+                        },
+                        onClick = { if (!checkingForUpdates) onCheckForUpdates() },
                     )
                 }
             }

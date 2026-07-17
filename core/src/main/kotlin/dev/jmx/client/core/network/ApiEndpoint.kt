@@ -51,6 +51,12 @@ class ApiEndpointManager(
     private var endpoints: List<ApiEndpoint> = (protocolStateStore?.apiHosts() ?: initialHosts)
         .mapNotNull { it.normalizedBaseUrlOrNull() }
         .distinctBy { it.endpointKey() }
+        .let { urls ->
+            val preferredKey = protocolStateStore?.preferredAutoApiHost()
+                ?.normalizedBaseUrlOrNull()
+                ?.endpointKey()
+            urls.sortedBy { if (it.endpointKey() == preferredKey) 0 else 1 }
+        }
         .map { ApiEndpoint(it) }
     private var autoEndpointKeys: Set<String> = endpoints.map { it.url.endpointKey() }.toSet()
     private var manualEndpoint: HttpUrl? = protocolStateStore?.manualApiHost()?.normalizedBaseUrlOrNull()
@@ -89,6 +95,7 @@ class ApiEndpointManager(
             }
         }
         protocolStateStore?.updateManualApiHost(null)
+        persistPreferredAutoEndpoint()
     }
 
     fun useManualEndpoint(host: String): JmxResult<HttpUrl> {
@@ -110,11 +117,13 @@ class ApiEndpointManager(
             return JmxResult.Failure(JmxError.Domain("远程 API 域名列表为空"))
         }
         synchronized(lock) {
+            val existing = endpoints.associateBy { it.url.endpointKey() }
             autoEndpointKeys = parsed.map { it.endpointKey() }.toSet()
-            endpoints = parsed.map { ApiEndpoint(it) }
+            endpoints = parsed.map { url -> existing[url.endpointKey()]?.copy(url = url) ?: ApiEndpoint(url) }
                 .let { refreshed -> manualEndpoint?.let { refreshed.ensureEndpoint(it) } ?: refreshed }
         }
         protocolStateStore?.updateApiHosts(parsed.map { it.toString() })
+        persistPreferredAutoEndpoint()
         return JmxResult.Success(all())
     }
 
@@ -139,6 +148,7 @@ class ApiEndpointManager(
                 }
             }
         }
+        persistPreferredAutoEndpoint()
     }
 
     private fun ApiEndpoint.nextAverageLatency(latencyMillis: Long?): Long? {
@@ -165,6 +175,18 @@ class ApiEndpointManager(
                 }
             }
         }
+        persistPreferredAutoEndpoint()
+    }
+
+    private fun persistPreferredAutoEndpoint() {
+        val preferred = synchronized(lock) {
+            if (manualEndpoint != null) return@synchronized null
+            val now = nowMillis()
+            val automatic = endpoints.filter { it.url.endpointKey() in autoEndpointKeys }
+            val available = automatic.filter { it.isAvailableAt(now) }
+            (available.ifEmpty { automatic }).maxByOrNull { it.healthScore(now) }?.url?.toString()
+        }
+        if (preferred != null) protocolStateStore?.updatePreferredAutoApiHost(preferred)
     }
 
     private fun List<ApiEndpoint>.ensureEndpoint(url: HttpUrl): List<ApiEndpoint> {

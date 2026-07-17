@@ -21,6 +21,21 @@ android {
         versionName = "0.13.0-dev"
     }
 
+    signingConfigs {
+        create("jmxRelease") {
+            storeFile = file("signing/jmx-release.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            signingConfig = signingConfigs.getByName("jmxRelease")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
@@ -30,6 +45,7 @@ android {
 dependencies {
     implementation(project(":core"))
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.core.splashscreen)
     implementation(libs.androidx.navigation3.runtime)
     implementation(libs.coil.compose)
     implementation(libs.gson)

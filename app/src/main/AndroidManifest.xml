@@ -9,7 +9,7 @@
         android:roundIcon="@drawable/jmx_logo"
         android:usesCleartextTraffic="true"
         android:supportsRtl="true"
-        android:theme="@style/JmxTheme">
+        android:theme="@style/JmxTheme.Starting">
         <activity
             android:name=".MainActivity"
             android:exported="true">

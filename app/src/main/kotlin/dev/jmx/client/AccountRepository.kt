@@ -9,6 +9,8 @@ import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
 import dev.jmx.client.core.runtime.JmxCore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 internal data class AccountProfile(
@@ -35,12 +37,17 @@ internal class AccountRepository(
         ACCOUNT_PREFERENCES,
         Context.MODE_PRIVATE,
     )
+    private val credentialStore = SecureCredentialStore(context, gson)
+    private val authenticationMutex = Mutex()
+    @Volatile
+    private var authenticationGeneration = 0L
 
     fun restore(): AccountProfile? {
-        if (!core.sessionManager.hasAvs()) {
-            preferences.edit { remove(ACCOUNT_PROFILE_KEY) }
-            return null
-        }
+        if (!core.sessionManager.hasAvs()) return null
+        return cachedProfile()
+    }
+
+    private fun cachedProfile(): AccountProfile? {
         val encoded = preferences.getString(ACCOUNT_PROFILE_KEY, null) ?: return null
         return runCatching { gson.fromJson(encoded, AccountProfile::class.java) }
             .getOrNull()
@@ -54,9 +61,43 @@ internal class AccountRepository(
     }
 
     suspend fun login(username: String, password: String): JmxResult<AccountProfile> =
-        withContext(Dispatchers.IO) {
+        authenticationMutex.withLock {
+            loginLocked(AccountCredentials(username.trim(), password), persistCredentials = true)
+        }
+
+    suspend fun restoreSession(): AccountProfile? = withContext(Dispatchers.IO) {
+        restore()?.let { return@withContext it }
+        val credentials = credentialStore.load() ?: return@withContext null
+        authenticationMutex.withLock {
+            restore() ?: (loginLocked(credentials, persistCredentials = true) as? JmxResult.Success)?.value
+        }
+    }
+
+    suspend fun <T> withSessionRecovery(block: suspend () -> JmxResult<T>): JmxResult<T> {
+        val generation = authenticationGeneration
+        val first = block()
+        if (first !is JmxResult.Failure || !first.error.requiresSessionRecovery()) return first
+        val credentials = credentialStore.load() ?: return first
+
+        return authenticationMutex.withLock {
+            if (generation == authenticationGeneration) {
+                when (val login = loginLocked(credentials, persistCredentials = true)) {
+                    is JmxResult.Success -> Unit
+                    is JmxResult.Failure -> return@withLock login
+                }
+            }
+            block()
+        }
+    }
+
+    private suspend fun loginLocked(
+        credentials: AccountCredentials,
+        persistCredentials: Boolean,
+    ): JmxResult<AccountProfile> = withContext(Dispatchers.IO) {
+            val username = credentials.username.trim()
+            val password = credentials.password
             core.initializer.initialize()
-            when (val result = core.userApi.login(username.trim(), password)) {
+            when (val result = core.userApi.login(username, password)) {
                 is JmxResult.Success -> {
                     val profile = result.value.profile?.toAccountProfile()
                     if (profile == null) {
@@ -65,8 +106,10 @@ internal class AccountRepository(
                     } else {
                         update(profile)
                         preferences.edit {
-                            putString(ACCOUNT_LAST_USERNAME_KEY, profile.username)
+                            putString(ACCOUNT_LAST_USERNAME_KEY, username)
                         }
+                        if (persistCredentials) credentialStore.save(AccountCredentials(username, password))
+                        authenticationGeneration++
                         JmxResult.Success(profile)
                     }
                 }
@@ -76,8 +119,16 @@ internal class AccountRepository(
 
     fun logout() {
         core.userApi.logout()
+        credentialStore.clear()
+        authenticationGeneration++
         preferences.edit { remove(ACCOUNT_PROFILE_KEY) }
     }
+}
+
+private fun JmxError.requiresSessionRecovery(): Boolean = when (this) {
+    is JmxError.Http -> code == 401
+    is JmxError.Api -> code == 401
+    else -> false
 }
 
 internal fun resolveUserAvatarUrl(imageHost: String, avatar: String?): String? {
