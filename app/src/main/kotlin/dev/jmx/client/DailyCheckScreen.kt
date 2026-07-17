@@ -32,6 +32,7 @@ import dev.jmx.client.core.api.DailyCheckInfo
 import dev.jmx.client.core.result.JmxResult
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
@@ -41,6 +42,7 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.Check
 import top.yukonga.miuix.kmp.icon.extended.FavoritesFill
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import java.time.LocalDate
 import java.util.Calendar
 
 internal data class DailyCalendarCell(
@@ -84,9 +86,8 @@ internal fun DailyCheckScreen(
             )
             is DailyUiState.Content -> {
                 val month = remember(current.info) { currentMonthCalendar(current.info) }
-                val streak = current.info.currentProgress
-                    ?.let { Regex("\\d+").find(it)?.value?.toIntOrNull() }
-                    ?: 0
+                val streak = remember(current.info) { currentDailyStreak(current.info) }
+                val cycleProgress = dailyRewardCycleProgress(streak)
                 val todaySigned = month.cells.any { it.today && it.signed }
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
@@ -123,23 +124,48 @@ internal fun DailyCheckScreen(
                         DailyCalendar(month)
                     }
                     item(key = "daily-progress") {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            insideMargin = PaddingValues(16.dp),
+                        ) {
                             Row(modifier = Modifier.fillMaxWidth()) {
                                 Text(
-                                    text = "连续签到进度",
+                                    text = "本轮连续签到奖励",
                                     style = MiuixTheme.textStyles.body2,
+                                    fontWeight = FontWeight.SemiBold,
                                     color = MiuixTheme.colorScheme.onSurface,
                                 )
                                 Spacer(modifier = Modifier.weight(1f))
                                 Text(
-                                    text = "${streak.coerceAtMost(7)}/7",
+                                    text = "$cycleProgress/7",
                                     style = MiuixTheme.textStyles.footnote1,
                                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                                 )
                             }
+                            Spacer(modifier = Modifier.size(10.dp))
                             LinearProgressIndicator(
-                                progress = (streak.coerceIn(0, 7) / 7f),
+                                progress = cycleProgress / 7f,
                                 modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(modifier = Modifier.size(16.dp))
+                            DailyRewardMilestone(
+                                day = 3,
+                                coin = current.info.threeDaysCoin ?: DEFAULT_THREE_DAY_REWARD,
+                                experience = current.info.threeDaysExp ?: DEFAULT_THREE_DAY_REWARD,
+                                achieved = cycleProgress >= 3,
+                            )
+                            Spacer(modifier = Modifier.size(12.dp))
+                            DailyRewardMilestone(
+                                day = 7,
+                                coin = current.info.sevenDaysCoin ?: DEFAULT_SEVEN_DAY_REWARD,
+                                experience = current.info.sevenDaysExp ?: DEFAULT_SEVEN_DAY_REWARD,
+                                achieved = cycleProgress >= 7,
+                            )
+                            Spacer(modifier = Modifier.size(12.dp))
+                            Text(
+                                text = "完成第 7 天后，下一次签到从新一轮第 1 天继续累计。",
+                                style = MiuixTheme.textStyles.footnote2,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                             )
                         }
                     }
@@ -191,6 +217,59 @@ internal fun DailyCheckScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun DailyRewardMilestone(
+    day: Int,
+    coin: Int,
+    experience: Int,
+    achieved: Boolean,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(30.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(
+                    if (achieved) MiuixTheme.colorScheme.primary.copy(alpha = 0.16f)
+                    else MiuixTheme.colorScheme.surfaceContainerHigh,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (achieved) {
+                Icon(
+                    imageVector = MiuixIcons.Basic.Check,
+                    contentDescription = "第 $day 天奖励已达成",
+                    modifier = Modifier.size(18.dp),
+                    tint = MiuixTheme.colorScheme.primary,
+                )
+            } else {
+                Text(
+                    text = day.toString(),
+                    style = MiuixTheme.textStyles.footnote1,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+            }
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "连续签到 $day 天",
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "$coin 金币 + $experience 经验",
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
         }
     }
 }
@@ -269,6 +348,51 @@ internal data class DailyCalendarMonth(
     val cells: List<DailyCalendarCell>,
 )
 
+internal fun currentDailyStreak(
+    info: DailyCheckInfo,
+    now: Calendar = Calendar.getInstance(),
+): Int {
+    val signedDates = info.records
+        .asSequence()
+        .filter { it.signed == true }
+        .mapNotNull { record ->
+            record.date?.trim()?.let { date ->
+                runCatching { LocalDate.parse(date.take(10)) }.getOrNull()
+                    ?: date.toIntOrNull()
+                        ?.takeIf { it in 1..31 }
+                        ?.let { day ->
+                            runCatching {
+                                LocalDate.of(
+                                    now.get(Calendar.YEAR),
+                                    now.get(Calendar.MONTH) + 1,
+                                    day,
+                                )
+                            }.getOrNull()
+                        }
+            }
+        }
+        .toSet()
+    if (signedDates.isEmpty()) return 0
+
+    val today = LocalDate.of(
+        now.get(Calendar.YEAR),
+        now.get(Calendar.MONTH) + 1,
+        now.get(Calendar.DAY_OF_MONTH),
+    )
+    var cursor = if (today in signedDates) today else today.minusDays(1)
+    var streak = 0
+    while (cursor in signedDates) {
+        streak++
+        cursor = cursor.minusDays(1)
+    }
+    return streak
+}
+
+internal fun dailyRewardCycleProgress(streak: Int): Int {
+    if (streak <= 0) return 0
+    return (streak - 1) % 7 + 1
+}
+
 internal fun currentMonthCalendar(info: DailyCheckInfo, now: Calendar = Calendar.getInstance()): DailyCalendarMonth {
     val year = now.get(Calendar.YEAR)
     val month = now.get(Calendar.MONTH) + 1
@@ -337,3 +461,5 @@ private sealed interface DailyUiState {
 }
 
 private val WEEK_LABELS = listOf("一", "二", "三", "四", "五", "六", "日")
+private const val DEFAULT_THREE_DAY_REWARD = 150
+private const val DEFAULT_SEVEN_DAY_REWARD = 350

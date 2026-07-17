@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -55,6 +54,7 @@ internal fun MiuixForegroundBlurHero(
     version: String,
     backdrop: LayerBackdrop,
     scrollProgress: () -> Float,
+    modifier: Modifier = Modifier,
 ) {
     val darkTheme = isSystemInDarkTheme()
     val titleBlend = remember(darkTheme) {
@@ -74,58 +74,50 @@ internal fun MiuixForegroundBlurHero(
     }
     val titleBlurColors = BlurDefaults.blurColors(blendColors = titleBlend)
 
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(350.dp),
-        contentAlignment = Alignment.Center,
+    Column(
+        modifier = modifier.graphicsLayer {
+            val progress = scrollProgress()
+            alpha = 1f - progress
+            scaleX = 1f - progress * 0.05f
+            scaleY = 1f - progress * 0.05f
+        },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Column(
-            modifier = Modifier.graphicsLayer {
-                val progress = scrollProgress()
-                alpha = 1f - progress
-                scaleX = 1f - progress * 0.05f
-                scaleY = 1f - progress * 0.05f
-                translationY = -progress * 42.dp.toPx()
-            },
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+        Box(
+            modifier = Modifier
+                .size(88.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(Color.White.copy(alpha = 0.96f)),
+            contentAlignment = Alignment.Center,
         ) {
-            Box(
-                modifier = Modifier
-                    .size(88.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(Color.White.copy(alpha = 0.96f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Image(
-                    painter = painterResource(R.drawable.jmx_logo),
-                    contentDescription = "JMComicX",
-                    modifier = Modifier.size(80.dp),
-                )
-            }
-            Text(
-                text = "JMComicX",
-                fontSize = 35.sp,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center,
-                color = MiuixTheme.colorScheme.onBackground,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .textureBlur(
-                        backdrop = backdrop,
-                        shape = RoundedCornerShape(16.dp),
-                        blurRadius = 150f,
-                        colors = titleBlurColors,
-                        contentBlendMode = BlendMode.DstIn,
-                    ),
-            )
-            Text(
-                text = "v$version",
-                style = MiuixTheme.textStyles.footnote1,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.alpha(0.92f),
+            Image(
+                painter = painterResource(R.drawable.jmx_logo),
+                contentDescription = "JMComicX",
+                modifier = Modifier.size(80.dp),
             )
         }
+        Text(
+            text = "JMComicX",
+            fontSize = 35.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+            color = MiuixTheme.colorScheme.onBackground,
+            modifier = Modifier
+                .fillMaxWidth()
+                .textureBlur(
+                    backdrop = backdrop,
+                    shape = RoundedCornerShape(16.dp),
+                    blurRadius = 150f,
+                    colors = titleBlurColors,
+                    contentBlendMode = BlendMode.DstIn,
+                ),
+        )
+        Text(
+            text = "v$version",
+            style = MiuixTheme.textStyles.footnote1,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier.alpha(0.92f),
+        )
     }
 }

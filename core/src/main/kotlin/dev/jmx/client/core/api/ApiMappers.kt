@@ -180,6 +180,10 @@ internal fun JsonObject.toDailyCheckInfo(): DailyCheckInfo {
         eventName = stringOrNull("event_name", "eventName"),
         currentProgress = stringOrNull("currentProgress", "current_progress"),
         records = recordList(),
+        threeDaysCoin = intOrNull("three_days_coin", "threeDaysCoin"),
+        threeDaysExp = intOrNull("three_days_exp", "threeDaysExp"),
+        sevenDaysCoin = intOrNull("seven_days_coin", "sevenDaysCoin"),
+        sevenDaysExp = intOrNull("seven_days_exp", "sevenDaysExp"),
         raw = toRawMap()
     )
 }

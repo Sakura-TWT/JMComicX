@@ -105,7 +105,7 @@ class ApiExtendedFacadeTest {
         server.enqueue(encryptedResponse("""{"total":2,"content":[{"id":"2","name":"fav"}]}"""))
         server.enqueue(
             encryptedResponse(
-                """{"daily_id":7,"event_name":"daily","currentProgress":"1","record":[[{"date":"2026-07-14","signed":true,"bonus":false}]]}"""
+                """{"daily_id":7,"event_name":"daily","currentProgress":"28","three_days_coin":"150","three_days_exp":"150","seven_days_coin":"350","seven_days_exp":"350","record":[[{"date":"2026-07-14","signed":true,"bonus":false}]]}"""
             )
         )
 
@@ -127,6 +127,10 @@ class ApiExtendedFacadeTest {
         assertTrue(daily is JmxResult.Success)
         assertEquals(7, (daily as JmxResult.Success).value.dailyId)
         assertEquals(true, daily.value.records.single().signed)
+        assertEquals(150, daily.value.threeDaysCoin)
+        assertEquals(150, daily.value.threeDaysExp)
+        assertEquals(350, daily.value.sevenDaysCoin)
+        assertEquals(350, daily.value.sevenDaysExp)
         assertEquals("/promote?_=10", server.takeRequest().path)
         assertEquals("/promote?_=11", server.takeRequest().path)
         assertEquals("/favorite?page=2&o=mr&folder_id=3", server.takeRequest().path)

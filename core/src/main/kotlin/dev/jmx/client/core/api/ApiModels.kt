@@ -207,6 +207,10 @@ data class DailyCheckInfo(
     val eventName: String?,
     val currentProgress: String?,
     val records: List<DailyRecord>,
+    val threeDaysCoin: Int? = null,
+    val threeDaysExp: Int? = null,
+    val sevenDaysCoin: Int? = null,
+    val sevenDaysExp: Int? = null,
     val raw: Map<String, Any?>
 )
 
