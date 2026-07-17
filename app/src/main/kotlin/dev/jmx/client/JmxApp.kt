@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -32,6 +33,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.zIndex
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.ui.NavDisplay
 import androidx.navigation3.ui.NavDisplayTransitionEffects
@@ -39,6 +43,7 @@ import androidx.core.graphics.drawable.toDrawable
 import androidx.core.view.WindowCompat
 import dev.jmx.client.core.result.JmxResult
 import dev.jmx.client.core.result.toUserMessage
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.NavigationBar
 import top.yukonga.miuix.kmp.basic.NavigationBarItem
@@ -68,6 +73,7 @@ fun JmxApp() {
     val context = LocalContext.current
     val applicationContext = context.applicationContext
     val uriHandler = LocalUriHandler.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val homeRepository = remember(applicationContext) { HomeRepository(applicationContext) }
     val updateManager = remember(applicationContext) { AppUpdateManager(applicationContext) }
     val updateState by updateManager.state.collectAsState()
@@ -94,6 +100,8 @@ fun JmxApp() {
     var loginFailure by remember { mutableStateOf<LoginUiFailure?>(null) }
     var pendingProtectedPage by remember { mutableStateOf<JmxRoute?>(null) }
     var autoCheckIn by rememberSaveable { mutableStateOf(settingsRepository.autoCheckInEnabled()) }
+    var accountSessionRestored by remember { mutableStateOf(false) }
+    var foregroundRevision by remember { mutableIntStateOf(0) }
     var homeState by remember { mutableStateOf<HomeUiState>(HomeUiState.Loading) }
     var homeRequestId by rememberSaveable { mutableIntStateOf(0) }
     var isHomeRefreshing by remember { mutableStateOf(false) }
@@ -156,13 +164,42 @@ fun JmxApp() {
         mainPagerState.syncPage()
     }
 
-    LaunchedEffect(accountProfile?.id, autoCheckIn, accountDataRepository) {
-        val profile = accountProfile
-        if (profile != null && autoCheckIn) accountDataRepository.autoCheckIn(profile)
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) foregroundRevision++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     LaunchedEffect(accountRepository) {
-        accountRepository.restoreSession()?.let { accountProfile = it }
+        try {
+            accountRepository.restoreSession()?.let { accountProfile = it }
+        } finally {
+            accountSessionRestored = true
+        }
+    }
+
+    LaunchedEffect(
+        accountProfile?.id,
+        autoCheckIn,
+        accountSessionRestored,
+        foregroundRevision,
+        accountDataRepository,
+        settingsRepository,
+    ) {
+        val profile = accountProfile
+        if (profile == null || !autoCheckIn || !accountSessionRestored) return@LaunchedEffect
+        if (settingsRepository.autoCheckInCompletedToday()) return@LaunchedEffect
+
+        for (delayMillis in AUTO_CHECK_IN_RETRY_DELAYS_MILLIS) {
+            if (delayMillis > 0L) delay(delayMillis)
+            if (settingsRepository.autoCheckInCompletedToday()) return@LaunchedEffect
+            if (accountDataRepository.autoCheckIn(profile)) {
+                settingsRepository.markAutoCheckInCompleted()
+                return@LaunchedEffect
+            }
+        }
     }
 
     LaunchedEffect(homeRepository, homeRequestId) {
@@ -624,3 +661,4 @@ private data class JmxTab(
 )
 
 private const val ACCOUNT_TAB_INDEX = 1
+private val AUTO_CHECK_IN_RETRY_DELAYS_MILLIS = longArrayOf(0L, 2_000L, 10_000L, 30_000L)

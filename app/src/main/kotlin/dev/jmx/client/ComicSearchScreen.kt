@@ -7,9 +7,14 @@ import android.view.Window
 import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -47,6 +52,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.Modifier
@@ -66,6 +72,7 @@ import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
 import dev.jmx.client.core.api.AlbumDetail
 import dev.jmx.client.core.api.SearchPage
+import dev.jmx.client.core.protocol.JmxMagicConstants
 import dev.jmx.client.core.result.JmxResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -77,6 +84,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
+import top.yukonga.miuix.kmp.basic.DropdownEntry
+import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InputField
@@ -87,6 +96,8 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.Check
 import top.yukonga.miuix.kmp.icon.basic.Search
 import top.yukonga.miuix.kmp.icon.extended.Delete
+import top.yukonga.miuix.kmp.icon.extended.Sort
+import top.yukonga.miuix.kmp.menu.WindowIconDropdownMenu
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
@@ -115,6 +126,8 @@ internal fun ComicSearchScreen(
     var deletingHistory by rememberSaveable { mutableStateOf(false) }
     var initialQueryConsumed by rememberSaveable(initialQuery) { mutableStateOf(false) }
     var inputEnabled by rememberSaveable(initialQuery) { mutableStateOf(initialQuery.isNullOrBlank()) }
+    var inputMode by rememberSaveable(initialQuery) { mutableStateOf(initialQuery.isNullOrBlank()) }
+    var searchOrder by rememberSaveable { mutableStateOf(ComicSearchOrder.LATEST) }
     val coroutineScope = rememberCoroutineScope()
     val searchSurfaceColor = MiuixTheme.colorScheme.surface
     val activity = context.findActivity()
@@ -214,6 +227,18 @@ internal fun ComicSearchScreen(
         onDismiss()
     }
 
+    fun cancelInputMode() {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+        deletingHistory = false
+        if (submittedQuery == null) {
+            dismissSearch()
+        } else {
+            query = submittedQuery.orEmpty()
+            inputMode = false
+        }
+    }
+
     fun openAlbum(album: HomeAlbum, sourceBounds: Rect?) {
         focusManager.clearFocus(force = true)
         keyboardController?.hide()
@@ -229,6 +254,7 @@ internal fun ComicSearchScreen(
         history = historyStore.record(history, normalizedQuery)
         deletingHistory = false
         submittedQuery = normalizedQuery
+        inputMode = false
         searchRequestId++
     }
 
@@ -242,16 +268,17 @@ internal fun ComicSearchScreen(
         }
     }
 
-    LaunchedEffect(submittedQuery, searchRequestId, repository) {
+    LaunchedEffect(submittedQuery, searchRequestId, searchOrder, repository) {
         val normalizedQuery = submittedQuery ?: return@LaunchedEffect
         state = ComicSearchUiState.Loading
-        when (val result = repository.search(normalizedQuery, page = 1)) {
+        when (val result = repository.search(normalizedQuery, page = 1, order = searchOrder)) {
             is ComicSearchResult.Direct -> {
                 state = ComicSearchUiState.Content(
                     query = normalizedQuery,
                     albums = listOf(result.album),
                     total = 1,
                     nextPage = 2,
+                    order = searchOrder,
                     endReached = true,
                 )
                 openAlbum(result.album, null)
@@ -265,6 +292,7 @@ internal fun ComicSearchScreen(
                         albums = result.albums,
                         total = result.total,
                         nextPage = 2,
+                        order = searchOrder,
                         endReached = result.endReached,
                     )
                 }
@@ -278,9 +306,9 @@ internal fun ComicSearchScreen(
         if (content.isLoadingMore || content.endReached) return
         state = content.copy(isLoadingMore = true, loadMoreError = null)
         coroutineScope.launch {
-            val result = repository.search(content.query, content.nextPage)
+            val result = repository.search(content.query, content.nextPage, content.order)
             val latest = state as? ComicSearchUiState.Content
-            if (latest?.query != content.query) return@launch
+            if (latest?.query != content.query || latest.order != content.order) return@launch
             state = when (result) {
                 is ComicSearchResult.Page -> {
                     val mergedPage = mergeSearchAlbums(
@@ -307,7 +335,11 @@ internal fun ComicSearchScreen(
     }
 
     BackHandler {
-        if (deletingHistory) deletingHistory = false else dismissSearch()
+        when {
+            deletingHistory -> deletingHistory = false
+            inputMode -> cancelInputMode()
+            else -> dismissSearch()
+        }
     }
     SearchBar(
         inputField = {
@@ -315,8 +347,6 @@ internal fun ComicSearchScreen(
                 query = query,
                 onQueryChange = {
                     query = it
-                    submittedQuery = null
-                    state = ComicSearchUiState.Idle
                 },
                 onSearch = ::submitSearch,
                 enabled = inputEnabled,
@@ -331,8 +361,10 @@ internal fun ComicSearchScreen(
                             .padding(start = 16.dp, end = 8.dp),
                     )
                 },
-                expanded = true,
-                onExpandedChange = { if (!it) dismissSearch() },
+                expanded = inputMode,
+                onExpandedChange = { expanded ->
+                    if (expanded) inputMode = true else cancelInputMode()
+                },
                 label = "搜索标题、标签或JM车号",
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -340,13 +372,31 @@ internal fun ComicSearchScreen(
         expanded = true,
         onExpandedChange = { if (!it) dismissSearch() },
         outsideEndAction = {
-            Text(
-                text = "取消",
-                color = MiuixTheme.colorScheme.primary,
-                modifier = Modifier
-                    .clickable(onClick = ::dismissSearch)
-                    .padding(start = 4.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
-            )
+            AnimatedContent(
+                targetState = inputMode,
+                transitionSpec = {
+                    (fadeIn(tween(180)) + slideInHorizontally { it / 3 }) togetherWith
+                        (fadeOut(tween(120)) + slideOutHorizontally { it / 3 })
+                },
+                label = "SearchEndAction",
+            ) { editing ->
+                if (editing) {
+                    Text(
+                        text = "取消",
+                        color = MiuixTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clickable(onClick = ::cancelInputMode)
+                            .padding(start = 4.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
+                    )
+                } else {
+                    SearchOrderDropdown(
+                        selected = searchOrder,
+                        onSelected = { order ->
+                            if (order != searchOrder) searchOrder = order
+                        },
+                    )
+                }
+            }
         },
         modifier = Modifier
             .fillMaxSize()
@@ -359,30 +409,84 @@ internal fun ComicSearchScreen(
                 .weight(1f)
                 .background(MiuixTheme.colorScheme.surface),
         ) {
-            when (val current = state) {
-                ComicSearchUiState.Idle -> SearchHistory(
-                    history = history,
-                    deleting = deletingHistory,
-                    onDeletingChange = { deletingHistory = it },
-                    onSelected = ::submitSearch,
-                    onDelete = { historyQuery ->
-                        history = historyStore.remove(history, historyQuery)
-                        if (history.isEmpty()) deletingHistory = false
-                    },
-                )
-                ComicSearchUiState.Loading -> SearchLoading()
-                is ComicSearchUiState.Empty -> SearchMessage("未找到“${current.query}”相关漫画")
-                is ComicSearchUiState.Error -> SearchError(
-                    message = current.message,
-                    onRetry = { searchRequestId++ },
-                )
-                is ComicSearchUiState.Content -> SearchResultGrid(
-                    content = current,
-                    liftedAlbumId = liftedAlbumId,
-                    onLoadMore = ::loadMore,
-                    onAlbumSelected = { album, bounds -> openAlbum(album, bounds) },
-                )
+            AnimatedContent(
+                targetState = inputMode,
+                transitionSpec = {
+                    (fadeIn(tween(190)) + slideInHorizontally { if (targetState) -it / 8 else it / 8 }) togetherWith
+                        (fadeOut(tween(130)) + slideOutHorizontally { if (targetState) it / 8 else -it / 8 })
+                },
+                label = "SearchModeContent",
+            ) { editing ->
+                if (editing) {
+                    SearchHistory(
+                        history = history,
+                        deleting = deletingHistory,
+                        onDeletingChange = { deletingHistory = it },
+                        onSelected = ::submitSearch,
+                        onDelete = { historyQuery ->
+                            history = historyStore.remove(history, historyQuery)
+                            if (history.isEmpty()) deletingHistory = false
+                        },
+                    )
+                } else {
+                    when (val current = state) {
+                        ComicSearchUiState.Idle -> SearchMessage("输入关键词后执行搜索")
+                        ComicSearchUiState.Loading -> SearchLoading()
+                        is ComicSearchUiState.Empty -> SearchMessage("未找到“${current.query}”相关漫画")
+                        is ComicSearchUiState.Error -> SearchError(
+                            message = current.message,
+                            onRetry = { searchRequestId++ },
+                        )
+                        is ComicSearchUiState.Content -> key(current.query, current.order) {
+                            SearchResultGrid(
+                                content = current,
+                                liftedAlbumId = liftedAlbumId,
+                                onLoadMore = ::loadMore,
+                                onAlbumSelected = { album, bounds -> openAlbum(album, bounds) },
+                            )
+                        }
+                    }
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun SearchOrderDropdown(
+    selected: ComicSearchOrder,
+    onSelected: (ComicSearchOrder) -> Unit,
+) {
+    val entry = DropdownEntry(
+        items = ComicSearchOrder.entries.map { order ->
+            DropdownItem(
+                text = order.label,
+                selected = order == selected,
+                onClick = { onSelected(order) },
+            )
+        },
+    )
+    Row(
+        modifier = Modifier.padding(end = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text = selected.label,
+            color = MiuixTheme.colorScheme.primary,
+            style = MiuixTheme.textStyles.footnote1,
+        )
+        WindowIconDropdownMenu(
+            entry = entry,
+            minWidth = 42.dp,
+            minHeight = 42.dp,
+        ) {
+            Icon(
+                imageVector = MiuixIcons.Sort,
+                contentDescription = "结果排序：${selected.label}",
+                modifier = Modifier.size(20.dp),
+                tint = MiuixTheme.colorScheme.primary,
+            )
         }
     }
 }
@@ -577,7 +681,11 @@ private fun SearchError(message: String, onRetry: () -> Unit) {
 internal class ComicSearchRepository(
     private val homeRepository: HomeRepository,
 ) {
-    suspend fun search(query: String, page: Int): ComicSearchResult {
+    suspend fun search(
+        query: String,
+        page: Int,
+        order: ComicSearchOrder = ComicSearchOrder.LATEST,
+    ): ComicSearchResult {
         val normalizedQuery = query.trim()
         val directId = normalizedQuery.toJmSearchIdOrNull()
         if (directId != null) return loadDirectAlbum(directId)
@@ -594,6 +702,7 @@ internal class ComicSearchRepository(
                             homeRepository.core.albumApi.search(
                                 query = variant,
                                 page = page,
+                                order = order.apiValue,
                                 mainTag = mainTag,
                             )
                         }
@@ -638,6 +747,16 @@ internal class ComicSearchRepository(
     }
 }
 
+internal enum class ComicSearchOrder(
+    val apiValue: String,
+    val label: String,
+) {
+    LATEST(JmxMagicConstants.ORDER_BY_LATEST, "最新"),
+    MOST_VIEWED(JmxMagicConstants.ORDER_BY_VIEW, "最多点击"),
+    MOST_PICTURES(JmxMagicConstants.ORDER_BY_PICTURE, "最多图片"),
+    MOST_LIKED(JmxMagicConstants.ORDER_BY_LIKE, "最多爱心"),
+}
+
 internal sealed interface ComicSearchResult {
     data class Direct(val album: HomeAlbum) : ComicSearchResult
     data class Page(
@@ -676,6 +795,7 @@ private sealed interface ComicSearchUiState {
         val albums: List<HomeAlbum>,
         val total: Int?,
         val nextPage: Int,
+        val order: ComicSearchOrder,
         val isLoadingMore: Boolean = false,
         val endReached: Boolean = false,
         val loadMoreError: String? = null,
