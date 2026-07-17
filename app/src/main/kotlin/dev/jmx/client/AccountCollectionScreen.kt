@@ -37,14 +37,16 @@ internal fun AccountCollectionScreen(
     innerPadding: PaddingValues,
     kind: AccountCollectionKind,
     repository: AccountDataRepository,
+    sessionRevision: Int,
     liftedAlbumId: String?,
     onAlbumSelected: (HomeAlbum, Rect) -> Unit,
+    onRequireLogin: () -> Unit,
 ) {
     var state by remember(kind) { mutableStateOf<AccountCollectionState>(AccountCollectionState.Loading) }
     var retryKey by remember(kind) { mutableIntStateOf(0) }
     val coroutineScope = rememberCoroutineScope()
 
-    LaunchedEffect(kind, retryKey, repository) {
+    LaunchedEffect(kind, retryKey, sessionRevision, repository) {
         state = when (val result = repository.loadCollection(kind, page = 1)) {
             is JmxResult.Success -> {
                 val total = result.value.total
@@ -56,7 +58,16 @@ internal fun AccountCollectionScreen(
                         (total != null && result.value.albums.size >= total),
                 )
             }
-            is JmxResult.Failure -> AccountCollectionState.Error(result.error.toUiMessage())
+            is JmxResult.Failure -> {
+                if (result.error.requiresSessionRecovery()) onRequireLogin()
+                AccountCollectionState.Error(
+                    if (result.error.requiresSessionRecovery()) {
+                        "登录状态已失效，请重新登录"
+                    } else {
+                        result.error.toUiMessage()
+                    },
+                )
+            }
         }
     }
 
@@ -84,8 +95,14 @@ internal fun AccountCollectionScreen(
                 }
                 is JmxResult.Failure -> latest.copy(
                     loadingMore = false,
-                    loadMoreError = result.error.toUiMessage(),
-                )
+                    loadMoreError = if (result.error.requiresSessionRecovery()) {
+                        "登录状态已失效，请重新登录"
+                    } else {
+                        result.error.toUiMessage()
+                    },
+                ).also {
+                    if (result.error.requiresSessionRecovery()) onRequireLogin()
+                }
             }
         }
     }

@@ -125,7 +125,7 @@ internal class AccountRepository(
     }
 }
 
-private fun JmxError.requiresSessionRecovery(): Boolean = when (this) {
+internal fun JmxError.requiresSessionRecovery(): Boolean = when (this) {
     is JmxError.Http -> code == 401
     is JmxError.Api -> code == 401
     else -> false

@@ -67,13 +67,13 @@ class SessionManager(
     }
 
     fun replicateSessionCookiesToHosts(apiHosts: List<String>): JmxResult<Int> {
-        val source = cookieStore.snapshot()
+        val source = cookieStore.snapshot().latestByIdentity()
         if (source.isEmpty()) return JmxResult.Success(0)
         var installed = 0
         for (host in apiHosts.distinct()) {
             val url = host.normalizedBaseUrlOrNull()
                 ?: return JmxResult.Failure(JmxError.Domain("API 域名无效", endpoint = host))
-            val cloned = source.map { cookie -> cookie.forHost(url.host) }
+            val cloned = source.map { cookie -> cookie.forHost(url.host) }.latestByIdentity()
             cookieStore.save(url, cloned)
             installed += cloned.size
         }
@@ -108,6 +108,11 @@ class SessionManager(
         }
         return builder.build()
     }
+
+    private fun List<Cookie>.latestByIdentity(): List<Cookie> =
+        asReversed()
+            .distinctBy { "${it.domain}|${it.path}|${it.name}" }
+            .asReversed()
 
     private companion object {
         const val AVS_COOKIE_NAME = "AVS"

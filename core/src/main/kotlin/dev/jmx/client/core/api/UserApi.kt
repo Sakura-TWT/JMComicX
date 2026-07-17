@@ -26,7 +26,6 @@ class UserApi(
         }
 
         val temporaryCookieStore = InMemoryCookieStore()
-        temporaryCookieStore.replace(sessionManager.cookies())
         val loginClient = apiClient.withCookieJar(StoreBackedCookieJar(temporaryCookieStore))
         val response = when (
             val result = loginClient.requestJsonResponse(
@@ -64,7 +63,7 @@ class UserApi(
             addAll(sessionSyncHosts())
         }.filter { it.isNotBlank() }.distinct()
         if (hosts.isNotEmpty()) {
-            when (val replicated = sessionManager.replicateSessionCookiesToHosts(hosts)) {
+            when (val replicated = sessionManager.syncAvsCookieToHostsIfPresent(hosts)) {
                 is JmxResult.Success -> Unit
                 is JmxResult.Failure -> return replicated
             }

@@ -53,6 +53,7 @@ internal data class ThirdPartyLibrary(
 
 internal val thirdPartyLibraries = listOf(
     ThirdPartyLibrary("Compose Miuix", "Apache-2.0", "https://github.com/compose-miuix-ui/miuix"),
+    ThirdPartyLibrary("JMComic-Crawler-Python", "MIT", "https://github.com/hect0x7/JMComic-Crawler-Python"),
     ThirdPartyLibrary("AndroidX / Jetpack Compose", "Apache-2.0", "https://source.android.com/docs/setup/about/licenses"),
     ThirdPartyLibrary("Kotlin", "Apache-2.0", "https://github.com/JetBrains/kotlin"),
     ThirdPartyLibrary("Coil", "Apache-2.0", "https://github.com/coil-kt/coil"),

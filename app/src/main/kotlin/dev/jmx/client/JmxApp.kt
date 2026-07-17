@@ -55,7 +55,7 @@ import top.yukonga.miuix.kmp.icon.basic.Search
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
-fun JmxApp(onColdStartReady: () -> Unit = {}) {
+fun JmxApp() {
     val tabs = remember {
         listOf(
             JmxTab("首页", MiuixIcons.Home),
@@ -88,6 +88,7 @@ fun JmxApp(onColdStartReady: () -> Unit = {}) {
     }
     val coroutineScope = rememberCoroutineScope()
     var accountProfile by remember(accountRepository) { mutableStateOf(accountRepository.restore()) }
+    var accountSessionRevision by rememberSaveable { mutableIntStateOf(0) }
     var showLogin by rememberSaveable { mutableStateOf(false) }
     var loginSubmitting by remember { mutableStateOf(false) }
     var loginFailure by remember { mutableStateOf<LoginUiFailure?>(null) }
@@ -162,10 +163,6 @@ fun JmxApp(onColdStartReady: () -> Unit = {}) {
 
     LaunchedEffect(accountRepository) {
         accountRepository.restoreSession()?.let { accountProfile = it }
-    }
-
-    LaunchedEffect(homeState) {
-        if (homeState !is HomeUiState.Loading) onColdStartReady()
     }
 
     LaunchedEffect(homeRepository, homeRequestId) {
@@ -407,6 +404,7 @@ fun JmxApp(onColdStartReady: () -> Unit = {}) {
                                         AccountCollectionKind.HISTORY
                                     },
                                     repository = accountDataRepository,
+                                    sessionRevision = accountSessionRevision,
                                     liftedAlbumId = detailRequest
                                         ?.takeIf {
                                             it.origin == AlbumDetailOrigin.ACCOUNT && it.sourceBounds != null
@@ -421,6 +419,10 @@ fun JmxApp(onColdStartReady: () -> Unit = {}) {
                                                 origin = AlbumDetailOrigin.ACCOUNT,
                                             )
                                         }
+                                    },
+                                    onRequireLogin = {
+                                        pendingProtectedPage = route
+                                        requestLogin()
                                     },
                                 )
                                 JmxRoute.DAILY -> accountProfile?.let {
@@ -576,6 +578,7 @@ fun JmxApp(onColdStartReady: () -> Unit = {}) {
                         when (val result = accountRepository.login(username, password)) {
                             is JmxResult.Success -> {
                                 accountProfile = result.value
+                                accountSessionRevision++
                                 showLogin = false
                                 pendingProtectedPage?.let(::navigateAccount)
                                 pendingProtectedPage = null

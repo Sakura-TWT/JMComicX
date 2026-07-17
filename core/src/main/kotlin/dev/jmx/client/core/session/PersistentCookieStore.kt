@@ -21,6 +21,7 @@ class PersistentCookieStore(
             writeCookies(
                 (retained + cookies.filter { !it.isExpired() })
                     .filter { !it.isExpired() }
+                    .latestByIdentity()
             )
         }
     }
@@ -41,7 +42,7 @@ class PersistentCookieStore(
 
     override fun replace(cookies: List<Cookie>) {
         synchronized(lock) {
-            writeCookies(cookies.filter { !it.isExpired() }.distinctBy { it.identityKey() })
+            writeCookies(cookies.filter { !it.isExpired() }.latestByIdentity())
         }
     }
 
@@ -59,14 +60,18 @@ class PersistentCookieStore(
     }
 
     private fun writeCookies(cookies: List<Cookie>) {
-        if (cookies.isEmpty()) {
+        val normalized = cookies.latestByIdentity()
+        if (normalized.isEmpty()) {
             keyValueStore.putString(KEY_COOKIES, null)
         } else {
-            keyValueStore.putString(KEY_COOKIES, gson.toJson(cookies.map { it.toPersistedCookie() }))
+            keyValueStore.putString(KEY_COOKIES, gson.toJson(normalized.map { it.toPersistedCookie() }))
         }
     }
 
     private fun Cookie.identityKey(): String = "${domain}|${path}|${name}"
+
+    private fun List<Cookie>.latestByIdentity(): List<Cookie> =
+        asReversed().distinctBy { it.identityKey() }.asReversed()
 
     private fun Cookie.isExpired(): Boolean = expiresAt < nowMillis()
 

@@ -14,13 +14,20 @@ import android.os.BatteryManager
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +49,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -52,17 +60,22 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntSize
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -86,6 +99,7 @@ import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.result.JmxResult
 import dev.jmx.client.core.runtime.JmxCore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -266,16 +280,7 @@ private fun ComicReaderContent(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MiuixTheme.colorScheme.surface)
-                .pointerInput(Unit) {
-                    detectTapGestures { offset ->
-                        val activeTop = size.height * READER_TAP_REGION_TOP_FRACTION
-                        val activeBottom = size.height * READER_TAP_REGION_BOTTOM_FRACTION
-                        if (offset.y in activeTop..activeBottom) {
-                            controlsVisible = !controlsVisible
-                        }
-                    }
-                },
+                .background(MiuixTheme.colorScheme.surface),
         ) {
             when (val state = chapterState) {
                 ReaderChapterState.Loading -> ReaderLoading(chapterName = selectedChapter.displayName(selectedChapterIndex))
@@ -298,6 +303,7 @@ private fun ComicReaderContent(
                         failedPages.remove(index)
                         pageRetryKeys[index] = (pageRetryKeys[index] ?: 0) + 1
                     },
+                    onToggleControls = { controlsVisible = !controlsVisible },
                 )
             }
 
@@ -376,10 +382,13 @@ private fun ReaderPages(
     onPageFailed: (Int, String) -> Unit,
     onPageLoaded: (Int) -> Unit,
     onRetryPage: (Int) -> Unit,
+    onToggleControls: () -> Unit,
 ) {
+    var zoomedPageKey by remember(pages) { mutableStateOf<String?>(null) }
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
+        userScrollEnabled = zoomedPageKey == null,
     ) {
         itemsIndexed(
             items = pages,
@@ -393,6 +402,15 @@ private fun ReaderPages(
                 onError = { message -> onPageFailed(index, message) },
                 onLoaded = { onPageLoaded(index) },
                 onRetry = { onRetryPage(index) },
+                zoomEnabled = zoomedPageKey == null || zoomedPageKey == page.plan.cacheKey,
+                onZoomedChange = { zoomed ->
+                    if (zoomed) {
+                        zoomedPageKey = page.plan.cacheKey
+                    } else if (zoomedPageKey == page.plan.cacheKey) {
+                        zoomedPageKey = null
+                    }
+                },
+                onToggleControls = onToggleControls,
             )
         }
     }
@@ -406,6 +424,9 @@ private fun ReaderPageImage(
     onError: (String) -> Unit,
     onLoaded: () -> Unit,
     onRetry: () -> Unit,
+    zoomEnabled: Boolean,
+    onZoomedChange: (Boolean) -> Unit,
+    onToggleControls: () -> Unit,
 ) {
     val context = LocalContext.current
     val request = remember(page, retryKey) { buildReaderImageRequest(context, page, retryKey) }
@@ -413,27 +434,149 @@ private fun ReaderPageImage(
         ReaderPageError(pageNumber = page.index + 1, message = knownError, onRetry = onRetry)
         return
     }
-    SubcomposeAsyncImage(
-        model = request,
-        contentDescription = "第 ${page.index + 1} 页",
-        modifier = Modifier.fillMaxWidth(),
-        contentScale = ContentScale.FillWidth,
-        loading = { ReaderPageLoading(page.index + 1) },
-        error = { state ->
-            LaunchedEffect(state.result.throwable) {
-                onError(state.result.throwable.message ?: "图片请求失败")
+    val coroutineScope = rememberCoroutineScope()
+    var scale by remember(page.plan.cacheKey) { mutableFloatStateOf(READER_MIN_ZOOM) }
+    var offset by remember(page.plan.cacheKey) { mutableStateOf(Offset.Zero) }
+    var viewportSize by remember(page.plan.cacheKey) { mutableStateOf(IntSize.Zero) }
+    var zoomAnimation by remember(page.plan.cacheKey) { mutableStateOf<Job?>(null) }
+    val interactionSource = remember(page.plan.cacheKey) { MutableInteractionSource() }
+    val isZoomed = isReaderZoomed(scale)
+
+    LaunchedEffect(isZoomed) { onZoomedChange(isZoomed) }
+    LaunchedEffect(zoomEnabled) {
+        if (!zoomEnabled) {
+            zoomAnimation?.cancel()
+            scale = READER_MIN_ZOOM
+            offset = Offset.Zero
+        }
+    }
+    DisposableEffect(page.plan.cacheKey) {
+        onDispose { zoomAnimation?.cancel() }
+    }
+
+    fun animateZoom(targetScale: Float, focus: Offset) {
+        zoomAnimation?.cancel()
+        val startScale = scale
+        val startOffset = offset
+        val targetOffset = if (!isReaderZoomed(targetScale)) {
+            Offset.Zero
+        } else {
+            readerZoomOffsetAfterGesture(
+                currentOffset = ReaderZoomOffset(startOffset.x, startOffset.y),
+                currentScale = startScale,
+                requestedScale = targetScale,
+                focusX = focus.x,
+                focusY = focus.y,
+                viewportWidth = viewportSize.width.toFloat(),
+                viewportHeight = viewportSize.height.toFloat(),
+            ).offset.toOffset()
+        }
+        zoomAnimation = coroutineScope.launch {
+            animate(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = tween(READER_DOUBLE_TAP_ANIMATION_MILLIS),
+            ) { progress, _ ->
+                scale = startScale + (targetScale - startScale) * progress
+                offset = Offset(
+                    x = startOffset.x + (targetOffset.x - startOffset.x) * progress,
+                    y = startOffset.y + (targetOffset.y - startOffset.y) * progress,
+                )
             }
-            ReaderPageError(
-                pageNumber = page.index + 1,
-                message = state.result.throwable.message ?: "图片请求失败",
-                onRetry = onRetry,
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clipToBounds()
+            .onSizeChanged { size ->
+                viewportSize = size
+                offset = constrainReaderZoomOffset(
+                    offset = ReaderZoomOffset(offset.x, offset.y),
+                    scale = scale,
+                    viewportWidth = size.width.toFloat(),
+                    viewportHeight = size.height.toFloat(),
+                ).toOffset()
+            }
+            .combinedClickable(
+                enabled = zoomEnabled,
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onToggleControls,
+                onDoubleClick = {
+                    val target = if (isReaderZoomed(scale)) {
+                        READER_MIN_ZOOM
+                    } else {
+                        READER_DOUBLE_TAP_ZOOM
+                    }
+                    animateZoom(
+                        targetScale = target,
+                        focus = Offset(viewportSize.width / 2f, viewportSize.height / 2f),
+                    )
+                },
             )
-        },
-        success = {
-            LaunchedEffect(page.plan.cacheKey) { onLoaded() }
-            SubcomposeAsyncImageContent(modifier = Modifier.fillMaxWidth())
-        },
-    )
+            .pointerInput(page.plan.cacheKey, zoomEnabled) {
+                if (!zoomEnabled) return@pointerInput
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var transforming = false
+                    do {
+                        val event = awaitPointerEvent()
+                        val pressedPointers = event.changes.count { it.pressed }
+                        if (pressedPointers > 0 && (pressedPointers >= 2 || isReaderZoomed(scale) || transforming)) {
+                            transforming = true
+                            zoomAnimation?.cancel()
+                            val centroid = event.calculateCentroid()
+                            val pan = event.calculatePan()
+                            val next = readerZoomOffsetAfterGesture(
+                                currentOffset = ReaderZoomOffset(offset.x, offset.y),
+                                currentScale = scale,
+                                requestedScale = scale * event.calculateZoom(),
+                                focusX = centroid.x,
+                                focusY = centroid.y,
+                                viewportWidth = viewportSize.width.toFloat(),
+                                viewportHeight = viewportSize.height.toFloat(),
+                                panX = pan.x,
+                                panY = pan.y,
+                            )
+                            scale = next.scale
+                            offset = next.offset.toOffset()
+                            event.changes.forEach { it.consume() }
+                        }
+                    } while (event.changes.any { it.pressed })
+                }
+            },
+    ) {
+        SubcomposeAsyncImage(
+            model = request,
+            contentDescription = "第 ${page.index + 1} 页",
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = offset.x
+                    translationY = offset.y
+                },
+            contentScale = ContentScale.FillWidth,
+            loading = { ReaderPageLoading(page.index + 1) },
+            error = { state ->
+                LaunchedEffect(state.result.throwable) {
+                    onError(state.result.throwable.message ?: "图片请求失败")
+                }
+                ReaderPageError(
+                    pageNumber = page.index + 1,
+                    message = state.result.throwable.message ?: "图片请求失败",
+                    onRetry = onRetry,
+                )
+            },
+            success = {
+                LaunchedEffect(page.plan.cacheKey) { onLoaded() }
+                SubcomposeAsyncImageContent(modifier = Modifier.fillMaxWidth())
+            },
+        )
+    }
 }
 
 @Composable
@@ -1013,6 +1156,72 @@ internal fun readerPageFromSlider(value: Float, totalPages: Int): Int {
     return value.roundToInt().coerceIn(0, totalPages - 1)
 }
 
+internal fun isReaderZoomed(scale: Float): Boolean =
+    scale > READER_MIN_ZOOM + READER_ZOOM_EPSILON
+
+internal data class ReaderZoomOffset(
+    val x: Float,
+    val y: Float,
+) {
+    fun toOffset(): Offset = Offset(x, y)
+}
+
+internal data class ReaderZoomTransform(
+    val scale: Float,
+    val offset: ReaderZoomOffset,
+)
+
+internal fun constrainReaderZoomOffset(
+    offset: ReaderZoomOffset,
+    scale: Float,
+    viewportWidth: Float,
+    viewportHeight: Float,
+): ReaderZoomOffset {
+    val safeScale = scale.coerceIn(READER_MIN_ZOOM, READER_MAX_ZOOM)
+    val maxX = (viewportWidth * (safeScale - 1f) / 2f).coerceAtLeast(0f)
+    val maxY = (viewportHeight * (safeScale - 1f) / 2f).coerceAtLeast(0f)
+    return ReaderZoomOffset(
+        x = offset.x.coerceIn(-maxX, maxX),
+        y = offset.y.coerceIn(-maxY, maxY),
+    )
+}
+
+internal fun readerZoomOffsetAfterGesture(
+    currentOffset: ReaderZoomOffset,
+    currentScale: Float,
+    requestedScale: Float,
+    focusX: Float,
+    focusY: Float,
+    viewportWidth: Float,
+    viewportHeight: Float,
+    panX: Float = 0f,
+    panY: Float = 0f,
+): ReaderZoomTransform {
+    val nextScale = requestedScale.coerceIn(READER_MIN_ZOOM, READER_MAX_ZOOM)
+    if (!isReaderZoomed(nextScale) || viewportWidth <= 0f || viewportHeight <= 0f) {
+        return ReaderZoomTransform(READER_MIN_ZOOM, ReaderZoomOffset(0f, 0f))
+    }
+    val safeCurrentScale = currentScale.coerceIn(READER_MIN_ZOOM, READER_MAX_ZOOM)
+    val ratio = nextScale / safeCurrentScale
+    val centerX = viewportWidth / 2f
+    val centerY = viewportHeight / 2f
+    val relativeFocusX = if (focusX.isFinite()) focusX - centerX else 0f
+    val relativeFocusY = if (focusY.isFinite()) focusY - centerY else 0f
+    val candidate = ReaderZoomOffset(
+        x = currentOffset.x * ratio + relativeFocusX * (1f - ratio) + panX,
+        y = currentOffset.y * ratio + relativeFocusY * (1f - ratio) + panY,
+    )
+    return ReaderZoomTransform(
+        scale = nextScale,
+        offset = constrainReaderZoomOffset(
+            offset = candidate,
+            scale = nextScale,
+            viewportWidth = viewportWidth,
+            viewportHeight = viewportHeight,
+        ),
+    )
+}
+
 internal object ReaderVolumeKeyDispatcher {
     var handler: ((Int) -> Boolean)? = null
 
@@ -1137,8 +1346,11 @@ private const val READER_PREFERENCES_NAME = "reader_settings"
 private const val READER_VOLUME_KEYS = "volume_key_paging"
 private const val READER_BATTERY_TIME = "show_battery_time"
 private const val READER_PAGE_NUMBER = "show_page_number"
-private const val READER_TAP_REGION_TOP_FRACTION = 0.2f
-private const val READER_TAP_REGION_BOTTOM_FRACTION = 0.8f
+private const val READER_MIN_ZOOM = 1f
+private const val READER_MAX_ZOOM = 4f
+private const val READER_DOUBLE_TAP_ZOOM = 2.5f
+private const val READER_ZOOM_EPSILON = 0.01f
+private const val READER_DOUBLE_TAP_ANIMATION_MILLIS = 180
 private const val READER_TEMPLATE_TIMEOUT_MILLIS = 15_000L
 private val READER_VOLUME_KEY_CODES = setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)
 private const val READER_RESTORE_VERSION = "decoded-v1"

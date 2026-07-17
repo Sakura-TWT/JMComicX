@@ -2,7 +2,6 @@ package dev.jmx.client
 
 import android.graphics.Color
 import android.os.Bundle
-import android.os.SystemClock
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -19,9 +18,6 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
 
 class MainActivity : ComponentActivity() {
-    @Volatile
-    private var startupContentReady = false
-
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (ReaderVolumeKeyDispatcher.shouldConsume(keyCode)) {
             if (event.repeatCount == 0) ReaderVolumeKeyDispatcher.dispatch(keyCode)
@@ -36,22 +32,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val startupStartedAt = SystemClock.elapsedRealtime()
-        val startupSplash = installSplashScreen()
+        installSplashScreen()
         super.onCreate(savedInstanceState)
-        startupSplash.setKeepOnScreenCondition {
-            !startupContentReady &&
-                SystemClock.elapsedRealtime() - startupStartedAt < MAX_SPLASH_HOLD_MILLIS
-        }
-        startupSplash.setOnExitAnimationListener { provider ->
-            provider.view.animate()
-                .alpha(0f)
-                .scaleX(1.04f)
-                .scaleY(1.04f)
-                .setDuration(SPLASH_EXIT_DURATION_MILLIS)
-                .withEndAction(provider::remove)
-                .start()
-        }
 
         setContent {
             val darkMode = isSystemInDarkTheme()
@@ -69,15 +51,13 @@ class MainActivity : ComponentActivity() {
             }
 
             JmxAppTheme {
-                JmxApp(onColdStartReady = { startupContentReady = true })
+                JmxApp()
             }
         }
     }
 }
 
 private val LIGHT_WINDOW_BACKGROUND = Color.rgb(250, 250, 250)
-private const val MAX_SPLASH_HOLD_MILLIS = 2_500L
-private const val SPLASH_EXIT_DURATION_MILLIS = 220L
 
 @Composable
 private fun JmxAppTheme(content: @Composable () -> Unit) {

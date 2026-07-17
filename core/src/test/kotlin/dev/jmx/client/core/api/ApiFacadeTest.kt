@@ -122,7 +122,7 @@ class ApiFacadeTest {
     }
 
     @Test
-    fun userApiSeedsExistingCookiesIntoLoginRequest() {
+    fun userApiStartsLoginWithCleanTemporarySession() {
         val endpointManager = ApiEndpointManager(listOf(server.url("/").toString()))
         val store = InMemoryCookieStore()
         val session = SessionManager(store)
@@ -144,7 +144,7 @@ class ApiFacadeTest {
         assertTrue(result is JmxResult.Success)
         val recorded = server.takeRequest()
         val cookieHeader = recorded.getHeader("Cookie").orEmpty()
-        assertTrue("login must carry pre-seeded guest cookie, got=$cookieHeader", cookieHeader.contains("GUEST=seed"))
+        assertTrue("login must not carry stale guest cookie, got=$cookieHeader", !cookieHeader.contains("GUEST=seed"))
     }
 
     @Test

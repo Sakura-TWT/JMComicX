@@ -25,6 +25,7 @@ class InMemoryCookieStore(
             }
             this.cookies = (retained + cookies.filter { !it.isExpired() })
                 .filter { !it.isExpired() }
+                .latestByIdentity()
         }
     }
 
@@ -39,7 +40,7 @@ class InMemoryCookieStore(
 
     override fun replace(cookies: List<Cookie>) {
         synchronized(lock) {
-            this.cookies = cookies.filter { !it.isExpired() }.distinctBy { it.identityKey() }
+            this.cookies = cookies.filter { !it.isExpired() }.latestByIdentity()
         }
     }
 
@@ -50,6 +51,9 @@ class InMemoryCookieStore(
     }
 
     private fun Cookie.identityKey(): String = "${domain}|${path}|${name}"
+
+    private fun List<Cookie>.latestByIdentity(): List<Cookie> =
+        asReversed().distinctBy { it.identityKey() }.asReversed()
 
     private fun Cookie.isExpired(): Boolean = expiresAt < nowMillis()
 }
@@ -67,11 +71,11 @@ class StoreBackedCookieJar(
         val matched = store.load(url)
         if (alwaysAttachNames.isEmpty()) return matched
         val present = matched.map { it.name.lowercase() }.toHashSet()
-        val extras = store.snapshot()
-            .filter { cookie ->
-                alwaysAttachNames.any { it.equals(cookie.name, ignoreCase = true) } &&
-                    cookie.name.lowercase() !in present
-            }
+        val snapshot = store.snapshot()
+        val extras = alwaysAttachNames.mapNotNull { name ->
+            if (name.lowercase() in present) null
+            else snapshot.lastOrNull { it.name.equals(name, ignoreCase = true) }
+        }
         return if (extras.isEmpty()) matched else matched + extras
     }
 }
