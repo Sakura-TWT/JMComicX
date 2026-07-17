@@ -7,3 +7,8 @@ local-credentials.properties
 **/local-credentials.properties
 docs/
 *.md
+!README.md
+app/signing/
+*.jks
+*.keystore
+signing.properties

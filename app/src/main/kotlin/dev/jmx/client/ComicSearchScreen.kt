@@ -164,6 +164,7 @@ internal fun ComicSearchScreen(
         }
         ViewCompat.requestApplyInsets(scrim)
         window.setBackgroundDrawable(color.toDrawable())
+        @Suppress("DEPRECATION")
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         val lightStatusBars = searchSurfaceColor.luminance() > 0.5f
         val insetsAnimationCallback = object : WindowInsetsAnimationCompat.Callback(

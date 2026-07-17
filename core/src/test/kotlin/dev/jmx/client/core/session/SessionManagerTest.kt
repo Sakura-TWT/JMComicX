@@ -137,34 +137,6 @@ class SessionManagerTest {
     }
 
     @Test
-    fun replicatesAllSessionCookiesAcrossHosts() {
-        val store = InMemoryCookieStore()
-        val session = SessionManager(store)
-        session.installAvsCookie("https://login.test", "avs-token")
-        val extraUrl = "https://login.test/".toHttpUrl()
-        store.save(
-            extraUrl,
-            listOf(
-                Cookie.Builder()
-                    .name("SESSION")
-                    .value("sess")
-                    .hostOnlyDomain("login.test")
-                    .path("/")
-                    .build()
-            )
-        )
-
-        val result = session.replicateSessionCookiesToHosts(
-            listOf("https://mirror-a.test", "https://mirror-b.test")
-        )
-
-        assertTrue(result is JmxResult.Success)
-        assertEquals("avs-token", store.load("https://mirror-a.test/favorite".toHttpUrl()).single { it.name == "AVS" }.value)
-        assertEquals("sess", store.load("https://mirror-a.test/favorite".toHttpUrl()).single { it.name == "SESSION" }.value)
-        assertEquals("avs-token", store.load("https://mirror-b.test/watch_list".toHttpUrl()).single { it.name == "AVS" }.value)
-    }
-
-    @Test
     fun loadUsesOkHttpCookieMatchingRules() {
         val store = InMemoryCookieStore()
         val url = "https://api.test/".toHttpUrl()

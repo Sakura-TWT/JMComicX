@@ -179,8 +179,8 @@ private suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutine
     continuation.invokeOnCancellation { cancel() }
     enqueue(
         object : Callback {
-            override fun onFailure(call: Call, error: IOException) {
-                if (!continuation.isCancelled) continuation.resumeWithException(error)
+            override fun onFailure(call: Call, e: IOException) {
+                if (!continuation.isCancelled) continuation.resumeWithException(e)
             }
 
             override fun onResponse(call: Call, response: Response) {

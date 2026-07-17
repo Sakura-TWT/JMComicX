@@ -10,6 +10,7 @@ import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.invalidateDraw
+import androidx.compose.ui.platform.InspectorInfo
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -77,6 +78,16 @@ private data class BgEffectElement(
             colorStage = colorStage,
             alpha = alpha,
         )
+    }
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "bgEffectDraw"
+        properties["preset"] = preset
+        properties["deviceType"] = deviceType
+        properties["isDarkTheme"] = isDarkTheme
+        properties["effectBackground"] = effectBackground
+        properties["isFullSize"] = isFullSize
+        properties["playing"] = playing
     }
 }
 
