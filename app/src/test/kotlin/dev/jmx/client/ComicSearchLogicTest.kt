@@ -20,6 +20,21 @@ class ComicSearchLogicTest {
     }
 
     @Test
+    fun tagFilteredPaginationCanContinuePastAnEmptyFilteredPage() {
+        val first = HomeAlbum("1", "A", "作者", "cover-1", "https://img.test")
+
+        val filteredPage = mergeSearchAlbums(
+            existing = listOf(first),
+            incoming = listOf(first),
+            sourceEndReached = false,
+            filterActive = true,
+        )
+
+        assertEquals(listOf(first), filteredPage.albums)
+        assertEquals(false, filteredPage.endReached)
+    }
+
+    @Test
     fun historyKeepsNewestUniqueQueriesWithinLimit() {
         assertEquals(
             listOf("女性向", "連載中", "JM123"),

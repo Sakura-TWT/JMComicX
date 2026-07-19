@@ -18,6 +18,11 @@ class AlbumDetailTransitionTest {
             "账号权限不足",
             ActionResult("error", "账号权限不足", null, emptyMap()).rejectionMessageOrNull(),
         )
+        assertEquals(
+            "勿短时间重复留言,请重新确认留言内容",
+            ActionResult(null, "勿短时间重复留言,请重新确认留言内容", null, emptyMap())
+                .rejectionMessageOrNull(),
+        )
     }
 
     @Test

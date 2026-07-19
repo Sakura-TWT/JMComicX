@@ -284,6 +284,8 @@ private fun AlbumDetailScreen(
     var pendingAction by remember(album.id) { mutableStateOf<DetailAccountAction?>(null) }
     var actionError by remember(album.id) { mutableStateOf<String?>(null) }
     var showCommentComposer by rememberSaveable(album.id) { mutableStateOf(false) }
+    var replyCommentId by rememberSaveable(album.id) { mutableStateOf<String?>(null) }
+    var replyCommentUsername by rememberSaveable(album.id) { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
     val hapticFeedback = LocalHapticFeedback.current
 
@@ -397,6 +399,16 @@ private fun AlbumDetailScreen(
         }
     }
 
+    fun openCommentComposer(comment: CommentItem? = null) {
+        if (!authenticated) {
+            onRequireLogin()
+            return
+        }
+        replyCommentId = comment?.id?.takeIf(String::isNotBlank)
+        replyCommentUsername = comment?.username?.takeIf(String::isNotBlank)
+        showCommentComposer = true
+    }
+
     fun submitComment(comment: String) {
         if (!authenticated) {
             showCommentComposer = false
@@ -407,19 +419,31 @@ private fun AlbumDetailScreen(
         pendingAction = DetailAccountAction.COMMENT
         actionError = null
         coroutineScope.launch {
-            when (val result = repository.commentAlbum(album.id, comment.trim())) {
+            when (val result = repository.commentAlbum(album.id, comment.trim(), replyCommentId)) {
                 is JmxResult.Success -> {
                     val rejection = result.value.rejectionMessageOrNull()
                     if (rejection != null) {
                         actionError = rejection
                     } else {
                         showCommentComposer = false
-                        state = repository.load(album.id)
+                        replyCommentId = null
+                        replyCommentUsername = null
+                        val latest = state as? AlbumDetailUiState.Content
+                        if (latest != null) {
+                            state = latest.copy(
+                                comments = latest.comments.copy(isLoading = true, error = null),
+                            )
+                            state = latest.copy(
+                                comments = repository.loadInitialComments(album.id),
+                            )
+                        }
                     }
                 }
                 is JmxResult.Failure -> {
                     if (result.error.requiresLogin()) {
                         showCommentComposer = false
+                        replyCommentId = null
+                        replyCommentUsername = null
                         onRequireLogin()
                     } else {
                         actionError = result.error.toUiMessage()
@@ -454,7 +478,7 @@ private fun AlbumDetailScreen(
                 onClick = {
                     val content = state as? AlbumDetailUiState.Content
                     if (selectedTab == DETAIL_COMMENTS_TAB) {
-                        if (authenticated) showCommentComposer = true else onRequireLogin()
+                        openCommentComposer()
                     } else if (content != null) {
                         val firstChapter = content.detail.readingChapters().firstOrNull()
                         if (firstChapter != null) {
@@ -515,6 +539,7 @@ private fun AlbumDetailScreen(
                 }
             },
             onLoadMoreComments = ::loadMoreComments,
+            onReplyComment = ::openCommentComposer,
             onLike = ::likeAlbum,
             onFavorite = ::favoriteAlbum,
             onSearchRequested = onSearchRequested,
@@ -529,6 +554,7 @@ private fun AlbumDetailScreen(
     CommentComposerDialog(
         show = showCommentComposer,
         submitting = pendingAction == DetailAccountAction.COMMENT,
+        replyingTo = replyCommentUsername,
         onDismiss = { if (pendingAction == null) showCommentComposer = false },
         onSubmit = ::submitComment,
     )
@@ -550,6 +576,7 @@ private fun DetailBody(
     onCoverTargetChanged: (Rect) -> Unit,
     onChapterSelected: (AlbumChapter) -> Unit,
     onLoadMoreComments: () -> Unit,
+    onReplyComment: (CommentItem) -> Unit,
     onLike: () -> Unit,
     onFavorite: () -> Unit,
     onSearchRequested: (String) -> Unit,
@@ -641,7 +668,11 @@ private fun DetailBody(
                 onSearchRequested = onSearchRequested,
             )
             selectedTab == DETAIL_CATALOG_TAB && detail != null -> catalogItems(detail, onChapterSelected)
-            selectedTab == DETAIL_COMMENTS_TAB -> commentsItems(comments, onLoadMoreComments)
+            selectedTab == DETAIL_COMMENTS_TAB -> commentsItems(
+                comments = comments,
+                onRetry = onLoadMoreComments,
+                onReplyComment = onReplyComment,
+            )
         }
     }
 }
@@ -861,15 +892,24 @@ private fun DetailAction(
 private fun CommentComposerDialog(
     show: Boolean,
     submitting: Boolean,
+    replyingTo: String?,
     onDismiss: () -> Unit,
     onSubmit: (String) -> Unit,
 ) {
     var comment by remember(show) { mutableStateOf("") }
     WindowDialog(
         show = show,
-        title = "发表评论",
+        title = if (replyingTo == null) "发表评论" else "回复评论",
         onDismissRequest = { if (!submitting) onDismiss() },
     ) {
+        replyingTo?.let { username ->
+            Text(
+                text = "回复 @$username",
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
         TextField(
             value = comment,
             onValueChange = { comment = it },
@@ -1029,6 +1069,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.catalogItems(
 private fun androidx.compose.foundation.lazy.LazyListScope.commentsItems(
     comments: DetailCommentsState?,
     onRetry: () -> Unit,
+    onReplyComment: (CommentItem) -> Unit,
 ) {
     when {
         comments?.error != null && comments.items.isEmpty() -> item(key = "comments-error") {
@@ -1055,7 +1096,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.commentsItems(
             items = comments.items,
             key = { index, comment -> "${comment.id.orEmpty()}:$index" },
         ) { _, comment ->
-            CommentCard(comment = comment)
+            CommentCard(comment = comment, onReply = onReplyComment)
         }
     }
     if (comments != null && comments.items.isNotEmpty()) {
@@ -1129,7 +1170,10 @@ private fun DetailLabels(
 }
 
 @Composable
-private fun CommentCard(comment: CommentItem) {
+private fun CommentCard(
+    comment: CommentItem,
+    onReply: (CommentItem) -> Unit,
+) {
     var repliesExpanded by rememberSaveable(comment.id, comment.replies.size) { mutableStateOf(false) }
     val replyArrowRotation by animateFloatAsState(
         targetValue = if (repliesExpanded) 180f else 0f,
@@ -1147,6 +1191,7 @@ private fun CommentCard(comment: CommentItem) {
         ) {
             Text(
                 text = comment.username?.takeIf { it.isNotBlank() } ?: "匿名用户",
+                modifier = Modifier.clickable { onReply(comment) },
                 style = MiuixTheme.textStyles.body2,
                 fontWeight = FontWeight.SemiBold,
                 color = MiuixTheme.colorScheme.onSurface,
@@ -1162,6 +1207,7 @@ private fun CommentCard(comment: CommentItem) {
         Spacer(modifier = Modifier.height(8.dp))
         Text(
             text = comment.content?.decodeHtml()?.trim().orEmpty().ifBlank { "评论内容为空" },
+            modifier = Modifier.clickable { onReply(comment) },
             style = MiuixTheme.textStyles.body2,
             color = MiuixTheme.colorScheme.onSurface,
         )
@@ -1194,14 +1240,17 @@ private fun CommentCard(comment: CommentItem) {
                 enter = expandVertically(animationSpec = tween(260)) + fadeIn(tween(180)),
                 exit = shrinkVertically(animationSpec = tween(210)) + fadeOut(tween(120)),
             ) {
-                CommentReplies(replies = comment.replies)
+                CommentReplies(replies = comment.replies, onReply = onReply)
             }
         }
     }
 }
 
 @Composable
-private fun CommentReplies(replies: List<CommentItem>) {
+private fun CommentReplies(
+    replies: List<CommentItem>,
+    onReply: (CommentItem) -> Unit,
+) {
     val railColor = MiuixTheme.colorScheme.primaryContainer
     Column(
         modifier = Modifier
@@ -1219,7 +1268,10 @@ private fun CommentReplies(replies: List<CommentItem>) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         replies.forEach { reply ->
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(
+                modifier = Modifier.clickable { onReply(reply) },
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1301,12 +1353,17 @@ internal class AlbumDetailRepository(
     suspend fun favoriteAlbum(albumId: String): JmxResult<ActionResult> =
         accountRepository.withSessionRecovery { core.interactionApi.favoriteAlbum(albumId) }
 
-    suspend fun commentAlbum(albumId: String, comment: String): JmxResult<ActionResult> =
+    suspend fun commentAlbum(
+        albumId: String,
+        comment: String,
+        commentId: String? = null,
+    ): JmxResult<ActionResult> =
         accountRepository.withSessionRecovery {
             core.interactionApi.commentAlbum(
                 albumId = albumId,
                 content = comment,
                 status = "1",
+                commentId = commentId,
             )
         }
 
@@ -1459,8 +1516,16 @@ private enum class DetailAccountAction { LIKE, FAVORITE, COMMENT }
 
 internal fun ActionResult.rejectionMessageOrNull(): String? {
     val normalizedStatus = status?.trim()?.lowercase()
-    if (normalizedStatus.isNullOrEmpty() || normalizedStatus in DETAIL_SUCCESS_STATUSES) return null
-    return message?.takeIf { it.isNotBlank() } ?: "服务未接受本次操作（$status）"
+    val normalizedMessage = message?.trim()?.takeIf { it.isNotBlank() }
+    if (normalizedStatus in DETAIL_SUCCESS_STATUSES) return null
+    if (normalizedStatus.isNullOrEmpty()) {
+        return normalizedMessage?.takeIf(::looksLikeActionRejection)
+    }
+    return normalizedMessage ?: "服务未接受本次操作（$status）"
+}
+
+private fun looksLikeActionRejection(message: String): Boolean {
+    return listOf("重复留言", "失败", "拒绝", "禁止", "无权限").any(message::contains)
 }
 
 internal data class DetailCommentsState(
