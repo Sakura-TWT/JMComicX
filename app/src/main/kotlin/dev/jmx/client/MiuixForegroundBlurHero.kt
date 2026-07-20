@@ -2,7 +2,6 @@ package dev.jmx.client
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +24,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.jmx.client.effect.BgEffectBackground
+import dev.jmx.client.effect.usesDarkEffectPreset
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.blur.BlendColorEntry
 import top.yukonga.miuix.kmp.blur.BlurBlendMode
@@ -56,7 +56,7 @@ internal fun MiuixForegroundBlurHero(
     scrollProgress: () -> Float,
     modifier: Modifier = Modifier,
 ) {
-    val darkTheme = isSystemInDarkTheme()
+    val darkTheme = MiuixTheme.colorScheme.surface.usesDarkEffectPreset()
     val titleBlend = remember(darkTheme) {
         if (darkTheme) {
             listOf(

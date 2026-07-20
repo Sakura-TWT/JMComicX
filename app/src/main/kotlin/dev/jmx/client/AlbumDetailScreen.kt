@@ -13,6 +13,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -40,6 +41,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -443,10 +445,10 @@ private fun AlbumDetailScreen(
             return
         }
         val groups = bookshelfRepository.groups()
-        if (groups.size >= 2) {
+        if (groups.isNotEmpty()) {
             showBookshelfGroupPicker = true
         } else {
-            bookshelfRepository.add(album, groups.firstOrNull()?.let { setOf(it.id) }.orEmpty())
+            bookshelfRepository.add(album)
             inBookshelf = true
             resumeEntry = bookshelfRepository.entry(album.id)
             onBookshelfChanged()
@@ -1110,16 +1112,25 @@ private fun BookshelfGroupPickerDialog(
     onConfirm: (Set<String>) -> Unit,
 ) {
     var selectedGroupIds by remember(show, groups) {
-        mutableStateOf(groups.firstOrNull()?.let { setOf(it.id) }.orEmpty())
+        mutableStateOf(emptySet<String>())
     }
     WindowDialog(
         show = show,
         title = "选择书架分组",
-        summary = "可同时加入多个分组，漫画也会保留在“全部”中。",
+        summary = "不选择分组时只加入“全部”，也可以同时加入多个自定义分组。",
         onDismissRequest = onDismiss,
     ) {
         groups.forEach { group ->
             val selected = group.id in selectedGroupIds
+            val itemColor by animateColorAsState(
+                targetValue = if (selected) {
+                    MiuixTheme.colorScheme.primaryContainer
+                } else {
+                    MiuixTheme.colorScheme.surfaceContainerHigh
+                },
+                animationSpec = tween(180),
+                label = "DetailBookshelfGroupColor",
+            )
             Surface(
                 onClick = {
                     selectedGroupIds = if (selected) {
@@ -1129,11 +1140,7 @@ private fun BookshelfGroupPickerDialog(
                     }
                 },
                 shape = RoundedCornerShape(8.dp),
-                color = if (selected) {
-                    MiuixTheme.colorScheme.primaryContainer
-                } else {
-                    MiuixTheme.colorScheme.surfaceContainerHigh
-                },
+                color = itemColor,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 3.dp),
@@ -1152,24 +1159,54 @@ private fun BookshelfGroupPickerDialog(
                             MiuixTheme.colorScheme.onSurface
                         },
                     )
-                    if (selected) {
-                        Icon(
-                            imageVector = MiuixIcons.Basic.Check,
-                            contentDescription = "已选择",
-                            tint = MiuixTheme.colorScheme.primary,
-                        )
-                    }
+                    DetailGroupSelectionIndicator(selected = selected)
                 }
             }
         }
         Spacer(modifier = Modifier.height(12.dp))
         TextButton(
-            text = "加入书架",
-            enabled = selectedGroupIds.isNotEmpty(),
+            text = if (selectedGroupIds.isEmpty()) "仅加入全部" else "加入书架",
             onClick = { onConfirm(selectedGroupIds) },
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.textButtonColorsPrimary(),
         )
+    }
+}
+
+@Composable
+private fun DetailGroupSelectionIndicator(selected: Boolean) {
+    val backgroundColor by animateColorAsState(
+        targetValue = if (selected) {
+            MiuixTheme.colorScheme.primary
+        } else {
+            MiuixTheme.colorScheme.surface.copy(alpha = 0.9f)
+        },
+        animationSpec = tween(180),
+        label = "DetailGroupSelectionIndicator",
+    )
+    Surface(
+        modifier = Modifier.size(28.dp),
+        shape = CircleShape,
+        color = backgroundColor,
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (selected) {
+                MiuixTheme.colorScheme.primary
+            } else {
+                MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.5f)
+            },
+        ),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            if (selected) {
+                Icon(
+                    imageVector = MiuixIcons.Basic.Check,
+                    contentDescription = "已选择",
+                    modifier = Modifier.size(17.dp),
+                    tint = MiuixTheme.colorScheme.onPrimary,
+                )
+            }
+        }
     }
 }
 

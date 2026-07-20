@@ -108,6 +108,19 @@ internal class BookshelfRepository(
         changed
     }
 
+    fun addEntriesToGroups(albumIds: Set<String>, groupIds: Set<String>): Int = synchronized(lock) {
+        val validGroupIds = groupIds.intersect(readGroups().mapTo(mutableSetOf(), BookshelfGroup::id))
+        if (albumIds.isEmpty() || validGroupIds.isEmpty()) return@synchronized 0
+        val (updated, changed) = assignBookshelfGroups(
+            entries = readEntries(),
+            albumIds = albumIds,
+            groupIds = validGroupIds,
+            updatedAt = now(),
+        )
+        if (changed > 0) writeEntries(updated)
+        changed
+    }
+
     fun remove(albumId: String): Boolean = synchronized(lock) {
         val current = readEntries()
         val updated = current.filterNot { it.albumId == albumId }
@@ -329,6 +342,27 @@ internal fun updateBookshelfProgress(
     }
 }
 
+internal fun assignBookshelfGroups(
+    entries: List<BookshelfEntry>,
+    albumIds: Set<String>,
+    groupIds: Set<String>,
+    updatedAt: Long,
+): Pair<List<BookshelfEntry>, Int> {
+    var changed = 0
+    val updated = entries.map { entry ->
+        if (entry.albumId !in albumIds || entry.groupIds.containsAll(groupIds)) {
+            entry
+        } else {
+            changed++
+            entry.copy(
+                groupIds = entry.groupIds + groupIds,
+                updatedAt = updatedAt,
+            )
+        }
+    }
+    return updated to changed
+}
+
 internal fun parseBookshelfTagRules(value: String): List<String> = value
     .split(BOOKSHELF_TAG_RULE_DELIMITERS)
     .mapNotNull(::normalizeSearchTag)
@@ -339,6 +373,17 @@ internal fun matchesBookshelfTagRules(albumTags: List<String>, rules: List<Strin
     val available = albumTags.mapNotNull(::normalizeSearchTag).distinct()
     return rules.mapNotNull(::normalizeSearchTag).all { target ->
         available.any { tag -> tag == target || tag.contains(target) || target.contains(tag) }
+    }
+}
+
+internal fun HomeAlbum.matchesBookshelfPickerQuery(query: String): Boolean {
+    val rawQuery = query.trim()
+    if (rawQuery.isEmpty()) return true
+    val vehicleNumber = rawQuery.lowercase(Locale.ROOT).removePrefix("jm").trim()
+    if (vehicleNumber.isNotEmpty() && id.contains(vehicleNumber, ignoreCase = true)) return true
+    val normalizedQuery = normalizeSearchTag(rawQuery) ?: return false
+    return listOf(name, author).any { value ->
+        normalizeSearchTag(value)?.contains(normalizedQuery) == true
     }
 }
 
