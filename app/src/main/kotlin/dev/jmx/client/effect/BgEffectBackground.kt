@@ -9,11 +9,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.luminance
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import top.yukonga.miuix.kmp.blur.isRuntimeShaderSupported
@@ -41,7 +41,7 @@ fun BgEffectBackground(
     ) {
         val surface = MiuixTheme.colorScheme.surface
         val deviceType = DeviceType.PHONE
-        val isDarkTheme = isSystemInDarkTheme()
+        val isDarkTheme = surface.usesDarkEffectPreset()
         val painter = remember(isOs3Effect) { BgEffectPainter(isOs3Effect) }
 
         val preset = remember(deviceType, isDarkTheme, isOs3Effect) {
@@ -86,3 +86,5 @@ fun BgEffectBackground(
         content()
     }
 }
+
+internal fun androidx.compose.ui.graphics.Color.usesDarkEffectPreset(): Boolean = luminance() < 0.5f

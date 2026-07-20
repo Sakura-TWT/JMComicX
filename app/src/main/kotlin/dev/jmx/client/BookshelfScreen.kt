@@ -9,6 +9,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,6 +33,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -84,12 +86,15 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.Check
 import top.yukonga.miuix.kmp.icon.basic.Search
 import top.yukonga.miuix.kmp.icon.extended.Delete
+import top.yukonga.miuix.kmp.icon.extended.AddFolder
+import top.yukonga.miuix.kmp.icon.extended.ExpandMore
 import top.yukonga.miuix.kmp.icon.extended.ListView
 import top.yukonga.miuix.kmp.icon.extended.Notes
 import top.yukonga.miuix.kmp.icon.extended.Refresh
 import top.yukonga.miuix.kmp.icon.extended.SelectAll
 import top.yukonga.miuix.kmp.icon.extended.Close
 import top.yukonga.miuix.kmp.menu.WindowIconCascadingDropdownMenu
+import top.yukonga.miuix.kmp.menu.WindowIconDropdownMenu
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
@@ -123,6 +128,7 @@ internal fun BookshelfScreen(
     var manualFavorites by remember { mutableStateOf<List<HomeAlbum>>(emptyList()) }
     var manualLoading by remember { mutableStateOf(false) }
     var manualError by remember { mutableStateOf<String?>(null) }
+    var manualSource by remember { mutableStateOf(ManualBookshelfSource.BOOKSHELF) }
     var manualQuery by remember { mutableStateOf("") }
     var manualSearchExpanded by remember { mutableStateOf(false) }
     var selectedManualIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -130,6 +136,7 @@ internal fun BookshelfScreen(
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingRemoval by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingGroupDeletion by remember { mutableStateOf<BookshelfGroup?>(null) }
+    var showSelectionGroupPicker by remember { mutableStateOf(false) }
     var contentRevision by remember { mutableIntStateOf(0) }
     val coroutineScope = rememberCoroutineScope()
     val hapticFeedback = LocalHapticFeedback.current
@@ -289,6 +296,20 @@ internal fun BookshelfScreen(
                                     tint = MiuixTheme.colorScheme.onBackground,
                                 )
                             }
+                            if (selectedGroupId == ALL_BOOKSHELF_GROUP_ID && groups.isNotEmpty()) {
+                                IconButton(
+                                    onClick = { showSelectionGroupPicker = true },
+                                    enabled = selectedIds.isNotEmpty(),
+                                    minWidth = 42.dp,
+                                    minHeight = 42.dp,
+                                ) {
+                                    Icon(
+                                        imageVector = MiuixIcons.AddFolder,
+                                        contentDescription = "将已选漫画加入分组",
+                                        tint = MiuixTheme.colorScheme.primary,
+                                    )
+                                }
+                            }
                             IconButton(
                                 onClick = { pendingRemoval = selectedIds },
                                 enabled = selectedIds.isNotEmpty(),
@@ -396,40 +417,10 @@ internal fun BookshelfScreen(
                                         },
                                     )
                                     if (selectionMode) {
-                                        val selected = entry.albumId in selectedIds
-                                        val overlayColor by animateColorAsState(
-                                            targetValue = if (selected) {
-                                                MiuixTheme.colorScheme.primary.copy(alpha = 0.16f)
-                                            } else {
-                                                Color.Transparent
-                                            },
-                                            animationSpec = tween(220),
-                                            label = "BookshelfSelectionOverlay",
+                                        BookshelfSelectionOverlay(
+                                            selected = entry.albumId in selectedIds,
+                                            modifier = Modifier.matchParentSize(),
                                         )
-                                        val checkAlpha by animateFloatAsState(
-                                            targetValue = if (selected) 1f else 0f,
-                                            animationSpec = tween(160),
-                                            label = "BookshelfSelectionCheck",
-                                        )
-                                        Box(
-                                            modifier = Modifier
-                                                .matchParentSize()
-                                                .background(overlayColor),
-                                        ) {
-                                            Icon(
-                                                imageVector = MiuixIcons.Basic.Check,
-                                                contentDescription = "已选择",
-                                                modifier = Modifier
-                                                    .align(Alignment.TopEnd)
-                                                    .padding(8.dp)
-                                                    .graphicsLayer {
-                                                        alpha = checkAlpha
-                                                        scaleX = 0.82f + 0.18f * checkAlpha
-                                                        scaleY = 0.82f + 0.18f * checkAlpha
-                                                    },
-                                                tint = MiuixTheme.colorScheme.primary,
-                                            )
-                                        }
                                     }
                                 }
                                 entry.lastReadAt?.let {
@@ -506,6 +497,7 @@ internal fun BookshelfScreen(
         onManualSelect = { group ->
             manualGroup = group
             showGroupManager = false
+            manualSource = ManualBookshelfSource.BOOKSHELF
             selectedManualIds = emptySet()
             manualQuery = ""
             manualSearchExpanded = false
@@ -513,24 +505,44 @@ internal fun BookshelfScreen(
         },
     )
 
+    val manualAlbums = when (manualSource) {
+        ManualBookshelfSource.BOOKSHELF -> remember(contentRevision, revision, repository) {
+            repository.entries(ALL_BOOKSHELF_GROUP_ID).map(BookshelfEntry::toHomeAlbum)
+        }
+        ManualBookshelfSource.FAVORITES -> manualFavorites
+    }
     ManualBookshelfPickerDialog(
         show = showManualPicker,
         group = manualGroup,
-        favorites = manualFavorites,
+        source = manualSource,
+        albums = manualAlbums,
         selectedIds = selectedManualIds,
         query = manualQuery,
         searchExpanded = manualSearchExpanded,
         loading = manualLoading,
         error = manualError,
+        onSourceChange = { source ->
+            manualSource = source
+            selectedManualIds = emptySet()
+            manualQuery = ""
+            manualError = null
+        },
         onQueryChange = { manualQuery = it },
         onSearchExpandedChange = { manualSearchExpanded = it },
         onToggle = { id ->
             selectedManualIds = if (id in selectedManualIds) selectedManualIds - id else selectedManualIds + id
         },
+        onToggleAll = { visibleIds ->
+            selectedManualIds = if (selectedManualIds.containsAll(visibleIds)) {
+                selectedManualIds - visibleIds
+            } else {
+                selectedManualIds + visibleIds
+            }
+        },
         onDismiss = { showManualPicker = false },
         onConfirm = {
             manualGroup?.let { group ->
-                val albums = manualFavorites.filter { it.id in selectedManualIds }
+                val albums = manualAlbums.filter { it.id in selectedManualIds }
                 repository.addAllToGroup(albums, group.id)
             }
             showManualPicker = false
@@ -538,11 +550,37 @@ internal fun BookshelfScreen(
         },
     )
 
-    LaunchedEffect(showManualPicker, authenticated) {
+    BookshelfBatchGroupPickerDialog(
+        show = showSelectionGroupPicker,
+        groups = groups,
+        selectedCount = selectedIds.size,
+        onDismiss = { showSelectionGroupPicker = false },
+        onConfirm = { groupIds ->
+            val changed = repository.addEntriesToGroups(selectedIds, groupIds)
+            showSelectionGroupPicker = false
+            selectionMode = false
+            selectedIds = emptySet()
+            reload()
+            hapticFeedback.performHapticFeedback(HapticFeedbackType.Confirm)
+            operationMessage = if (changed > 0) {
+                "已将 $changed 部漫画加入所选分组。"
+            } else {
+                "所选漫画已经在这些分组中。"
+            }
+        },
+    )
+
+    LaunchedEffect(showManualPicker, manualSource, authenticated) {
         if (!showManualPicker) return@LaunchedEffect
+        if (manualSource == ManualBookshelfSource.BOOKSHELF) {
+            manualLoading = false
+            manualError = null
+            return@LaunchedEffect
+        }
         if (!authenticated) {
             onRequireLogin()
-            showManualPicker = false
+            manualSource = ManualBookshelfSource.BOOKSHELF
+            operationMessage = "登录后才能读取“我的收藏”，已切换回默认书架。"
             return@LaunchedEffect
         }
         manualLoading = true
@@ -775,7 +813,7 @@ private fun BookshelfGroupManagerDialog(
             }
             Spacer(modifier = Modifier.height(12.dp))
             TextButton(
-                text = "手动选择收藏漫画",
+                text = "添加当前分组漫画",
                 enabled = !running,
                 onClick = { onManualSelect(selectedGroup) },
                 modifier = Modifier.fillMaxWidth(),
@@ -809,21 +847,33 @@ private fun BookshelfGroupManagerDialog(
 private fun ManualBookshelfPickerDialog(
     show: Boolean,
     group: BookshelfGroup?,
-    favorites: List<HomeAlbum>,
+    source: ManualBookshelfSource,
+    albums: List<HomeAlbum>,
     selectedIds: Set<String>,
     query: String,
     searchExpanded: Boolean,
     loading: Boolean,
     error: String?,
+    onSourceChange: (ManualBookshelfSource) -> Unit,
     onQueryChange: (String) -> Unit,
     onSearchExpandedChange: (Boolean) -> Unit,
     onToggle: (String) -> Unit,
+    onToggleAll: (Set<String>) -> Unit,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
-    val filtered = favorites.filter { album ->
-        query.isBlank() || album.name.contains(query, ignoreCase = true) || album.id.contains(query)
-    }
+    val filtered = albums.filter { album -> album.matchesBookshelfPickerQuery(query) }
+    val visibleIds = filtered.mapTo(linkedSetOf(), HomeAlbum::id)
+    val allVisibleSelected = visibleIds.isNotEmpty() && selectedIds.containsAll(visibleIds)
+    val sourceEntry = DropdownEntry(
+        items = ManualBookshelfSource.entries.map { option ->
+            DropdownItem(
+                text = option.label,
+                selected = option == source,
+                onClick = { onSourceChange(option) },
+            )
+        },
+    )
     WindowDialog(
         show = show,
         title = "手动加入 ${group?.name.orEmpty()}",
@@ -832,18 +882,55 @@ private fun ManualBookshelfPickerDialog(
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(
-                onClick = { onSearchExpandedChange(!searchExpanded) },
-                minWidth = 42.dp,
+            WindowIconDropdownMenu(
+                entry = sourceEntry,
+                minWidth = 116.dp,
                 minHeight = 42.dp,
             ) {
-                Icon(
-                    imageVector = MiuixIcons.Basic.Search,
-                    contentDescription = "搜索收藏",
-                    tint = MiuixTheme.colorScheme.primary,
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = source.label,
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.primary,
+                    )
+                    Icon(
+                        imageVector = MiuixIcons.ExpandMore,
+                        contentDescription = "切换内容来源",
+                        modifier = Modifier.size(18.dp),
+                        tint = MiuixTheme.colorScheme.primary,
+                    )
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = { onSearchExpandedChange(!searchExpanded) },
+                    minWidth = 42.dp,
+                    minHeight = 42.dp,
+                ) {
+                    Icon(
+                        imageVector = MiuixIcons.Basic.Search,
+                        contentDescription = "搜索当前来源",
+                        tint = MiuixTheme.colorScheme.primary,
+                    )
+                }
+                IconButton(
+                    onClick = { onToggleAll(visibleIds) },
+                    enabled = visibleIds.isNotEmpty() && !loading,
+                    minWidth = 42.dp,
+                    minHeight = 42.dp,
+                ) {
+                    Icon(
+                        imageVector = MiuixIcons.SelectAll,
+                        contentDescription = if (allVisibleSelected) "取消全选" else "全选当前结果",
+                        tint = MiuixTheme.colorScheme.primary,
+                    )
+                }
             }
         }
         if (searchExpanded) {
@@ -866,21 +953,30 @@ private fun ManualBookshelfPickerDialog(
                     textAlign = TextAlign.Center,
                 )
                 filtered.isEmpty() -> Text(
-                    text = "没有匹配的收藏漫画",
+                    text = if (source == ManualBookshelfSource.FAVORITES) {
+                        "没有匹配的收藏漫画"
+                    } else {
+                        "默认书架中没有匹配的漫画"
+                    },
                     modifier = Modifier.align(Alignment.Center),
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )
                 else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(filtered, key = HomeAlbum::id) { album ->
                         val selected = album.id in selectedIds
-                        Surface(
-                            onClick = { onToggle(album.id) },
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (selected) {
+                        val itemColor by animateColorAsState(
+                            targetValue = if (selected) {
                                 MiuixTheme.colorScheme.primaryContainer
                             } else {
                                 MiuixTheme.colorScheme.surfaceContainerHigh
                             },
+                            animationSpec = tween(180),
+                            label = "ManualBookshelfItemColor",
+                        )
+                        Surface(
+                            onClick = { onToggle(album.id) },
+                            shape = RoundedCornerShape(8.dp),
+                            color = itemColor,
                             modifier = Modifier.padding(vertical = 3.dp),
                         ) {
                             Row(
@@ -904,13 +1000,7 @@ private fun ManualBookshelfPickerDialog(
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                 }
-                                if (selected) {
-                                    Icon(
-                                        imageVector = MiuixIcons.Basic.Check,
-                                        contentDescription = "已选择",
-                                        tint = MiuixTheme.colorScheme.primary,
-                                    )
-                                }
+                                MiuixSelectionIndicator(selected = selected)
                             }
                         }
                     }
@@ -924,6 +1014,156 @@ private fun ManualBookshelfPickerDialog(
             enabled = !loading && selectedIds.isNotEmpty(),
             modifier = Modifier.fillMaxWidth(),
         )
+    }
+}
+
+@Composable
+private fun BookshelfBatchGroupPickerDialog(
+    show: Boolean,
+    groups: List<BookshelfGroup>,
+    selectedCount: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (Set<String>) -> Unit,
+) {
+    var selectedGroupIds by remember(show, groups) { mutableStateOf(emptySet<String>()) }
+    WindowDialog(
+        show = show,
+        title = "加入分组",
+        summary = "将已选择的 $selectedCount 部漫画加入一个或多个分组。",
+        onDismissRequest = onDismiss,
+    ) {
+        groups.forEach { group ->
+            val selected = group.id in selectedGroupIds
+            val itemColor by animateColorAsState(
+                targetValue = if (selected) {
+                    MiuixTheme.colorScheme.primaryContainer
+                } else {
+                    MiuixTheme.colorScheme.surfaceContainerHigh
+                },
+                animationSpec = tween(180),
+                label = "BookshelfGroupSelectionColor",
+            )
+            Surface(
+                onClick = {
+                    selectedGroupIds = if (selected) {
+                        selectedGroupIds - group.id
+                    } else {
+                        selectedGroupIds + group.id
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                shape = RoundedCornerShape(8.dp),
+                color = itemColor,
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = group.name,
+                        style = MiuixTheme.textStyles.body2,
+                        color = if (selected) {
+                            MiuixTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MiuixTheme.colorScheme.onSurface
+                        },
+                    )
+                    MiuixSelectionIndicator(selected = selected)
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            TextButton(
+                text = "取消",
+                onClick = onDismiss,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(
+                text = "确定",
+                enabled = selectedGroupIds.isNotEmpty(),
+                onClick = { onConfirm(selectedGroupIds) },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun BookshelfSelectionOverlay(
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val overlayColor by animateColorAsState(
+        targetValue = if (selected) {
+            MiuixTheme.colorScheme.primary.copy(alpha = 0.14f)
+        } else {
+            Color.Transparent
+        },
+        animationSpec = tween(200),
+        label = "BookshelfSelectionOverlay",
+    )
+    Box(modifier = modifier.background(overlayColor)) {
+        MiuixSelectionIndicator(
+            selected = selected,
+            modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+        )
+    }
+}
+
+@Composable
+private fun MiuixSelectionIndicator(
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val backgroundColor by animateColorAsState(
+        targetValue = if (selected) {
+            MiuixTheme.colorScheme.primary
+        } else {
+            MiuixTheme.colorScheme.surface.copy(alpha = 0.9f)
+        },
+        animationSpec = tween(180),
+        label = "MiuixSelectionIndicatorBackground",
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (selected) {
+            MiuixTheme.colorScheme.primary
+        } else {
+            MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.5f)
+        },
+        animationSpec = tween(180),
+        label = "MiuixSelectionIndicatorBorder",
+    )
+    val checkAlpha by animateFloatAsState(
+        targetValue = if (selected) 1f else 0f,
+        animationSpec = tween(150),
+        label = "MiuixSelectionIndicatorCheck",
+    )
+    Surface(
+        modifier = modifier.size(28.dp),
+        shape = CircleShape,
+        color = backgroundColor,
+        border = BorderStroke(1.dp, borderColor),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = MiuixIcons.Basic.Check,
+                contentDescription = if (selected) "已选择" else null,
+                modifier = Modifier
+                    .size(17.dp)
+                    .graphicsLayer {
+                        alpha = checkAlpha
+                        scaleX = 0.82f + checkAlpha * 0.18f
+                        scaleY = 0.82f + checkAlpha * 0.18f
+                    },
+                tint = MiuixTheme.colorScheme.onPrimary,
+            )
+        }
     }
 }
 
@@ -1039,3 +1279,8 @@ private data class BookshelfGroupSyncOutcome(
     val matched: Int,
     val changed: Int,
 )
+
+private enum class ManualBookshelfSource(val label: String) {
+    BOOKSHELF("默认书架"),
+    FAVORITES("我的收藏"),
+}

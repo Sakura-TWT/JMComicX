@@ -114,4 +114,42 @@ class BookshelfRepositoryTest {
         assertTrue(matchesBookshelfTagRules(listOf("韓漫", "全彩", "連載中"), rules))
         assertFalse(matchesBookshelfTagRules(listOf("韩漫", "全彩"), rules))
     }
+
+    @Test
+    fun assigningEntriesToGroupsOnlyChangesSelectedAlbums() {
+        val entries = listOf(
+            BookshelfEntry("1", "第一本", "", "", "", 10L, groupIds = setOf("group-a")),
+            BookshelfEntry("2", "第二本", "", "", "", 20L),
+            BookshelfEntry("3", "第三本", "", "", "", 30L),
+        )
+
+        val (updated, changed) = assignBookshelfGroups(
+            entries = entries,
+            albumIds = setOf("1", "2"),
+            groupIds = setOf("group-b"),
+            updatedAt = 100L,
+        )
+
+        assertEquals(2, changed)
+        assertEquals(setOf("group-a", "group-b"), updated.first { it.albumId == "1" }.groupIds)
+        assertEquals(setOf("group-b"), updated.first { it.albumId == "2" }.groupIds)
+        assertTrue(updated.first { it.albumId == "3" }.groupIds.isEmpty())
+        assertEquals(100L, updated.first { it.albumId == "1" }.updatedAt)
+    }
+
+    @Test
+    fun pickerSearchMatchesSimplifiedTraditionalAndVehicleNumber() {
+        val album = HomeAlbum(
+            id = "438516",
+            name = "異世界全彩漫畫",
+            author = "測試作者",
+            coverUrl = "",
+            imageHost = "",
+        )
+
+        assertTrue(album.matchesBookshelfPickerQuery("异世界"))
+        assertTrue(album.matchesBookshelfPickerQuery("测试作者"))
+        assertTrue(album.matchesBookshelfPickerQuery("JM438516"))
+        assertFalse(album.matchesBookshelfPickerQuery("韩漫"))
+    }
 }
