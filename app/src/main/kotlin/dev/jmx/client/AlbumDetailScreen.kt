@@ -12,6 +12,8 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -30,10 +32,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -98,21 +103,21 @@ import top.yukonga.miuix.kmp.basic.FloatingActionButton
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
-import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Surface
 import top.yukonga.miuix.kmp.basic.TabRowWithContour
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.basic.Check
 import top.yukonga.miuix.kmp.icon.extended.Back
-import top.yukonga.miuix.kmp.icon.extended.Download
 import top.yukonga.miuix.kmp.icon.extended.Edit
 import top.yukonga.miuix.kmp.icon.extended.ExpandMore
 import top.yukonga.miuix.kmp.icon.extended.Favorites
 import top.yukonga.miuix.kmp.icon.extended.FavoritesFill
 import top.yukonga.miuix.kmp.icon.extended.Play
 import top.yukonga.miuix.kmp.icon.extended.Send
+import top.yukonga.miuix.kmp.icon.extended.Notes
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
@@ -122,7 +127,7 @@ internal data class AlbumDetailTransitionRequest(
     val origin: AlbumDetailOrigin,
 )
 
-internal enum class AlbumDetailOrigin { HOME, SEARCH, ACCOUNT }
+internal enum class AlbumDetailOrigin { HOME, SEARCH, ACCOUNT, BOOKSHELF }
 
 @Composable
 internal fun AlbumDetailTransitionHost(
@@ -131,6 +136,8 @@ internal fun AlbumDetailTransitionHost(
     readerActive: Boolean,
     authenticated: Boolean,
     onRequireLogin: () -> Unit,
+    bookshelfRepository: BookshelfRepository,
+    onBookshelfChanged: () -> Unit,
     onFavoriteChanged: (Boolean) -> Unit,
     onSearchRequested: (String) -> Unit,
     onStartReading: (ReaderLaunchRequest) -> Unit,
@@ -212,6 +219,8 @@ internal fun AlbumDetailTransitionHost(
             readerActive = readerActive,
             authenticated = authenticated,
             onRequireLogin = onRequireLogin,
+            bookshelfRepository = bookshelfRepository,
+            onBookshelfChanged = onBookshelfChanged,
             onFavoriteChanged = onFavoriteChanged,
             onSearchRequested = { query -> exitDetail(query) },
             onStartReading = onStartReading,
@@ -269,6 +278,8 @@ private fun AlbumDetailScreen(
     readerActive: Boolean,
     authenticated: Boolean,
     onRequireLogin: () -> Unit,
+    bookshelfRepository: BookshelfRepository,
+    onBookshelfChanged: () -> Unit,
     onFavoriteChanged: (Boolean) -> Unit,
     onSearchRequested: (String) -> Unit,
     onStartReading: (ReaderLaunchRequest) -> Unit,
@@ -286,6 +297,13 @@ private fun AlbumDetailScreen(
     var showCommentComposer by rememberSaveable(album.id) { mutableStateOf(false) }
     var replyCommentId by rememberSaveable(album.id) { mutableStateOf<String?>(null) }
     var replyCommentUsername by rememberSaveable(album.id) { mutableStateOf<String?>(null) }
+    var inBookshelf by remember(album.id, bookshelfRepository) {
+        mutableStateOf(bookshelfRepository.contains(album.id))
+    }
+    var resumeEntry by remember(album.id, bookshelfRepository) {
+        mutableStateOf(bookshelfRepository.entry(album.id))
+    }
+    var showBookshelfGroupPicker by remember(album.id) { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
     val hapticFeedback = LocalHapticFeedback.current
 
@@ -409,6 +427,33 @@ private fun AlbumDetailScreen(
         showCommentComposer = true
     }
 
+    LaunchedEffect(album.id, bookshelfRepository, readerActive) {
+        val latest = bookshelfRepository.entry(album.id)
+        resumeEntry = latest
+        inBookshelf = latest != null
+    }
+
+    fun toggleBookshelf() {
+        if (inBookshelf) {
+            bookshelfRepository.remove(album.id)
+            inBookshelf = false
+            resumeEntry = null
+            onBookshelfChanged()
+            hapticFeedback.performHapticFeedback(HapticFeedbackType.Confirm)
+            return
+        }
+        val groups = bookshelfRepository.groups()
+        if (groups.size >= 2) {
+            showBookshelfGroupPicker = true
+        } else {
+            bookshelfRepository.add(album, groups.firstOrNull()?.let { setOf(it.id) }.orEmpty())
+            inBookshelf = true
+            resumeEntry = bookshelfRepository.entry(album.id)
+            onBookshelfChanged()
+            hapticFeedback.performHapticFeedback(HapticFeedbackType.Confirm)
+        }
+    }
+
     fun submitComment(comment: String) {
         if (!authenticated) {
             showCommentComposer = false
@@ -457,20 +502,12 @@ private fun AlbumDetailScreen(
     Scaffold(
         modifier = modifier,
         topBar = {
-            SmallTopAppBar(
+            AlbumDetailTopBar(
                 title = when (val current = state) {
                     is AlbumDetailUiState.Content -> current.detail.name ?: album.name
                     else -> album.name
                 },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = MiuixIcons.Back,
-                            contentDescription = "返回",
-                            tint = MiuixTheme.colorScheme.onBackground,
-                        )
-                    }
-                },
+                onBack = onBack,
             )
         },
         floatingActionButton = {
@@ -480,13 +517,22 @@ private fun AlbumDetailScreen(
                     if (selectedTab == DETAIL_COMMENTS_TAB) {
                         openCommentComposer()
                     } else if (content != null) {
-                        val firstChapter = content.detail.readingChapters().firstOrNull()
+                        val chapters = content.detail.readingChapters()
+                        val savedChapterId = resumeEntry?.lastChapterId
+                        val firstChapter = savedChapterId
+                            ?.let { id -> chapters.firstOrNull { it.id == id } }
+                            ?: chapters.firstOrNull()
                         if (firstChapter != null) {
                             onStartReading(
                                 ReaderLaunchRequest(
                                     album = album,
                                     detail = content.detail,
                                     initialChapterId = firstChapter.id,
+                                    initialPageIndex = if (firstChapter.id == savedChapterId) {
+                                        resumeEntry?.lastPageIndex ?: 0
+                                    } else {
+                                        0
+                                    },
                                 ),
                             )
                         }
@@ -508,7 +554,11 @@ private fun AlbumDetailScreen(
                         tint = MiuixTheme.colorScheme.onPrimary,
                     )
                     Text(
-                        text = if (selectedTab == DETAIL_COMMENTS_TAB) "发表" else "开始观看",
+                        text = when {
+                            selectedTab == DETAIL_COMMENTS_TAB -> "发表"
+                            resumeEntry?.lastChapterId != null -> "继续阅读"
+                            else -> "开始观看"
+                        },
                         style = MiuixTheme.textStyles.button,
                         color = MiuixTheme.colorScheme.onPrimary,
                     )
@@ -542,6 +592,8 @@ private fun AlbumDetailScreen(
             onReplyComment = ::openCommentComposer,
             onLike = ::likeAlbum,
             onFavorite = ::favoriteAlbum,
+            inBookshelf = inBookshelf,
+            onBookshelf = ::toggleBookshelf,
             onSearchRequested = onSearchRequested,
             pendingAction = pendingAction,
             onRetry = {
@@ -562,6 +614,58 @@ private fun AlbumDetailScreen(
         message = actionError,
         onDismiss = { actionError = null },
     )
+    BookshelfGroupPickerDialog(
+        show = showBookshelfGroupPicker,
+        groups = bookshelfRepository.groups(),
+        onDismiss = { showBookshelfGroupPicker = false },
+        onConfirm = { selectedGroupIds ->
+            bookshelfRepository.add(album, selectedGroupIds)
+            inBookshelf = true
+            resumeEntry = bookshelfRepository.entry(album.id)
+            showBookshelfGroupPicker = false
+            onBookshelfChanged()
+            hapticFeedback.performHapticFeedback(HapticFeedbackType.Confirm)
+        },
+    )
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AlbumDetailTopBar(
+    title: String,
+    onBack: () -> Unit,
+) {
+    Surface(color = MiuixTheme.colorScheme.surface) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .height(64.dp),
+        ) {
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier.align(Alignment.CenterStart),
+            ) {
+                Icon(
+                    imageVector = MiuixIcons.Back,
+                    contentDescription = "返回",
+                    tint = MiuixTheme.colorScheme.onBackground,
+                )
+            }
+            Text(
+                text = title,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .fillMaxWidth()
+                    .padding(horizontal = 72.dp)
+                    .basicMarquee(),
+                style = MiuixTheme.textStyles.title3,
+                color = MiuixTheme.colorScheme.onSurface,
+                maxLines = 1,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
 }
 
 @Composable
@@ -579,6 +683,8 @@ private fun DetailBody(
     onReplyComment: (CommentItem) -> Unit,
     onLike: () -> Unit,
     onFavorite: () -> Unit,
+    inBookshelf: Boolean,
+    onBookshelf: () -> Unit,
     onSearchRequested: (String) -> Unit,
     pendingAction: DetailAccountAction?,
     onRetry: () -> Unit,
@@ -611,11 +717,34 @@ private fun DetailBody(
         onLoadMoreComments()
     }
 
+    val tabSwipeThreshold = with(density) { 56.dp.toPx() }
+
     LazyColumn(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
-            .background(MiuixTheme.colorScheme.surface),
+            .background(MiuixTheme.colorScheme.surface)
+            .pointerInput(selectedTab) {
+                var dragDistance = 0f
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { change, dragAmount ->
+                        dragDistance += dragAmount
+                        change.consume()
+                    },
+                    onDragEnd = {
+                        when {
+                            dragDistance <= -tabSwipeThreshold && selectedTab < DETAIL_COMMENTS_TAB -> {
+                                onTabSelected(selectedTab + 1)
+                            }
+                            dragDistance >= tabSwipeThreshold && selectedTab > DETAIL_INFO_TAB -> {
+                                onTabSelected(selectedTab - 1)
+                            }
+                        }
+                        dragDistance = 0f
+                    },
+                    onDragCancel = { dragDistance = 0f },
+                )
+            },
         contentPadding = PaddingValues(
             start = DETAIL_HORIZONTAL_PADDING,
             top = coverTop,
@@ -639,6 +768,8 @@ private fun DetailBody(
                 onCommentsSelected = { onTabSelected(DETAIL_COMMENTS_TAB) },
                 onLike = onLike,
                 onFavorite = onFavorite,
+                inBookshelf = inBookshelf,
+                onBookshelf = onBookshelf,
                 pendingAction = pendingAction,
             )
         }
@@ -776,6 +907,8 @@ private fun DetailActions(
     onCommentsSelected: () -> Unit,
     onLike: () -> Unit,
     onFavorite: () -> Unit,
+    inBookshelf: Boolean,
+    onBookshelf: () -> Unit,
     pendingAction: DetailAccountAction?,
 ) {
     Row(
@@ -814,10 +947,13 @@ private fun DetailActions(
             onClick = onFavorite,
         )
         DetailAction(
-            icon = MiuixIcons.Download,
-            value = "下载",
-            label = "下载",
-            enabled = false,
+            icon = MiuixIcons.Notes,
+            value = if (inBookshelf) "已加入" else "加入",
+            label = "书架",
+            enabled = detail != null,
+            selected = inBookshelf,
+            selectedPrimary = true,
+            onClick = onBookshelf,
         )
     }
 }
@@ -829,11 +965,12 @@ private fun DetailAction(
     label: String,
     enabled: Boolean,
     selected: Boolean = false,
+    selectedPrimary: Boolean = false,
     loading: Boolean = false,
     onClick: () -> Unit = {},
 ) {
     val targetContentColor = if (selected) {
-        MiuixTheme.colorScheme.error
+        if (selectedPrimary) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.error
     } else if (enabled) {
         MiuixTheme.colorScheme.onSurface
     } else {
@@ -849,7 +986,11 @@ private fun DetailAction(
             onClick = onClick,
             enabled = enabled,
             backgroundColor = if (selected) {
-                MiuixTheme.colorScheme.errorContainer
+                if (selectedPrimary) {
+                    MiuixTheme.colorScheme.primaryContainer
+                } else {
+                    MiuixTheme.colorScheme.errorContainer
+                }
             } else {
                 MiuixTheme.colorScheme.surfaceContainerHigh
             },
@@ -955,6 +1096,77 @@ private fun DetailActionErrorDialog(
         TextButton(
             text = "知道了",
             onClick = onDismiss,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.textButtonColorsPrimary(),
+        )
+    }
+}
+
+@Composable
+private fun BookshelfGroupPickerDialog(
+    show: Boolean,
+    groups: List<BookshelfGroup>,
+    onDismiss: () -> Unit,
+    onConfirm: (Set<String>) -> Unit,
+) {
+    var selectedGroupIds by remember(show, groups) {
+        mutableStateOf(groups.firstOrNull()?.let { setOf(it.id) }.orEmpty())
+    }
+    WindowDialog(
+        show = show,
+        title = "选择书架分组",
+        summary = "可同时加入多个分组，漫画也会保留在“全部”中。",
+        onDismissRequest = onDismiss,
+    ) {
+        groups.forEach { group ->
+            val selected = group.id in selectedGroupIds
+            Surface(
+                onClick = {
+                    selectedGroupIds = if (selected) {
+                        selectedGroupIds - group.id
+                    } else {
+                        selectedGroupIds + group.id
+                    }
+                },
+                shape = RoundedCornerShape(8.dp),
+                color = if (selected) {
+                    MiuixTheme.colorScheme.primaryContainer
+                } else {
+                    MiuixTheme.colorScheme.surfaceContainerHigh
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 3.dp),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = group.name,
+                        style = MiuixTheme.textStyles.body2,
+                        color = if (selected) {
+                            MiuixTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MiuixTheme.colorScheme.onSurface
+                        },
+                    )
+                    if (selected) {
+                        Icon(
+                            imageVector = MiuixIcons.Basic.Check,
+                            contentDescription = "已选择",
+                            tint = MiuixTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        TextButton(
+            text = "加入书架",
+            enabled = selectedGroupIds.isNotEmpty(),
+            onClick = { onConfirm(selectedGroupIds) },
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.textButtonColorsPrimary(),
         )

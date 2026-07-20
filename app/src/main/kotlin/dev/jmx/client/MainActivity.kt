@@ -10,10 +10,13 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.core.graphics.drawable.toDrawable
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
 
@@ -36,7 +39,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         setContent {
-            val darkMode = isSystemInDarkTheme()
+            val context = LocalContext.current
+            val themeStore = remember(context) { AppThemeModeStore(context) }
+            var themeMode by remember(themeStore) { mutableStateOf(themeStore.load()) }
+            val darkMode = themeMode.isDark(isSystemInDarkTheme())
             DisposableEffect(darkMode) {
                 val systemBarColor = if (darkMode) Color.BLACK else LIGHT_WINDOW_BACKGROUND
                 window.setBackgroundDrawable(systemBarColor.toDrawable())
@@ -50,8 +56,14 @@ class MainActivity : ComponentActivity() {
                 onDispose {}
             }
 
-            JmxAppTheme {
-                JmxApp()
+            JmxAppTheme(themeMode) {
+                JmxApp(
+                    themeMode = themeMode,
+                    onThemeModeChanged = { updated ->
+                        themeMode = updated
+                        themeStore.save(updated)
+                    },
+                )
             }
         }
     }
@@ -60,7 +72,10 @@ class MainActivity : ComponentActivity() {
 private val LIGHT_WINDOW_BACKGROUND = Color.rgb(250, 250, 250)
 
 @Composable
-private fun JmxAppTheme(content: @Composable () -> Unit) {
-    val controller = remember { ThemeController(ColorSchemeMode.System) }
+private fun JmxAppTheme(
+    themeMode: AppThemeMode,
+    content: @Composable () -> Unit,
+) {
+    val controller = remember(themeMode) { ThemeController(themeMode.toMiuixMode()) }
     MiuixTheme(controller = controller, content = content)
 }

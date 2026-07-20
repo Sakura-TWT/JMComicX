@@ -441,10 +441,12 @@ internal fun ComicSearchScreen(
                     )
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        SearchTagFilterButton(
-                            active = tagFilter.enabled,
-                            onClick = { showTagFilter = true },
-                        )
+                        if (SEARCH_TAG_FILTER_UI_ENABLED) {
+                            SearchTagFilterButton(
+                                active = tagFilter.enabled,
+                                onClick = { showTagFilter = true },
+                            )
+                        }
                         SearchOrderDropdown(
                             selected = searchOrder,
                             onSelected = { order ->
@@ -512,7 +514,7 @@ internal fun ComicSearchScreen(
         }
     }
 
-    if (showTagFilter) {
+    if (SEARCH_TAG_FILTER_UI_ENABLED && showTagFilter) {
         SearchTagFilterDialog(
             filter = tagFilter,
             builtInTags = DEFAULT_SEARCH_TAGS,
@@ -535,6 +537,8 @@ internal fun ComicSearchScreen(
         )
     }
 }
+
+private const val SEARCH_TAG_FILTER_UI_ENABLED = false
 
 @Composable
 private fun SearchTagFilterButton(

@@ -65,7 +65,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -127,12 +129,20 @@ import top.yukonga.miuix.kmp.icon.extended.VolumeUp
 import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.theme.lightColorScheme
 
 internal data class ReaderLaunchRequest(
     val album: HomeAlbum,
     val detail: AlbumDetail,
     val initialChapterId: String,
+    val initialPageIndex: Int = 0,
+)
+
+internal data class ReaderProgressUpdate(
+    val album: HomeAlbum,
+    val chapterId: String,
+    val chapterName: String,
+    val pageIndex: Int,
+    val pageCount: Int,
 )
 
 internal data class ReaderPage(
@@ -155,18 +165,22 @@ internal sealed interface ReaderChapterState {
 internal fun ComicReaderScreen(
     request: ReaderLaunchRequest,
     repository: ComicReaderRepository,
+    onProgress: (ReaderProgressUpdate) -> Unit,
     onBack: () -> Unit,
 ) {
-    val readerColors = remember { lightColorScheme() }
-    MiuixTheme(colors = readerColors) {
-        ComicReaderContent(request = request, repository = repository, onBack = onBack)
-    }
+    ComicReaderContent(
+        request = request,
+        repository = repository,
+        onProgress = onProgress,
+        onBack = onBack,
+    )
 }
 
 @Composable
 private fun ComicReaderContent(
     request: ReaderLaunchRequest,
     repository: ComicReaderRepository,
+    onProgress: (ReaderProgressUpdate) -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -177,8 +191,16 @@ private fun ComicReaderContent(
     var selectedChapterIndex by rememberSaveable(request.album.id) {
         mutableIntStateOf(initialChapterIndex)
     }
+    var initialProgressConsumed by rememberSaveable(request.album.id) { mutableStateOf(false) }
     selectedChapterIndex = selectedChapterIndex.coerceIn(chapters.indices)
     val selectedChapter = chapters[selectedChapterIndex]
+    val initialPageForChapter = if (
+        !initialProgressConsumed && selectedChapter.id == request.initialChapterId
+    ) {
+        request.initialPageIndex.coerceAtLeast(0)
+    } else {
+        0
+    }
     var chapterState by remember(request.album.id) {
         mutableStateOf<ReaderChapterState>(ReaderChapterState.Loading)
     }
@@ -186,12 +208,16 @@ private fun ComicReaderContent(
     var controlsVisible by rememberSaveable(request.album.id) { mutableStateOf(true) }
     var showCatalog by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
-    var currentPageIndex by remember(request.album.id) { mutableIntStateOf(0) }
+    var currentPageIndex by remember(request.album.id) {
+        mutableIntStateOf(request.initialPageIndex.coerceAtLeast(0))
+    }
     var sliderDraft by remember { mutableStateOf<Float?>(null) }
     val failedPages = remember(selectedChapter.id) { mutableStateMapOf<Int, String>() }
     val loadedPages = remember(selectedChapter.id) { mutableStateMapOf<Int, Boolean>() }
     val pageRetryKeys = remember(selectedChapter.id) { mutableStateMapOf<Int, Int>() }
-    val listState = key(selectedChapter.id) { rememberLazyListState() }
+    val listState = key(selectedChapter.id) {
+        rememberLazyListState(initialFirstVisibleItemIndex = initialPageForChapter)
+    }
     val coroutineScope = rememberCoroutineScope()
     val settingsStore = remember(context) { ReaderSettingsStore(context) }
     var settings by remember { mutableStateOf(settingsStore.load()) }
@@ -205,6 +231,7 @@ private fun ComicReaderContent(
         val safeIndex = index.coerceIn(chapters.indices)
         if (safeIndex == selectedChapterIndex) return
         selectedChapterIndex = safeIndex
+        initialProgressConsumed = true
         currentPageIndex = 0
         sliderDraft = null
         showCatalog = false
@@ -212,15 +239,41 @@ private fun ComicReaderContent(
 
     LaunchedEffect(selectedChapter.id, chapterRetryKey, repository) {
         chapterState = ReaderChapterState.Loading
-        currentPageIndex = 0
+        currentPageIndex = initialPageForChapter
         val loadedState = repository.loadChapter(
             chapterId = selectedChapter.id,
             imageHostHint = request.album.imageHost,
         )
         chapterState = loadedState
+        if (loadedState is ReaderChapterState.Content) {
+            val restoredPage = initialPageForChapter.coerceIn(loadedState.pages.indices)
+            currentPageIndex = restoredPage
+            listState.scrollToItem(restoredPage)
+            initialProgressConsumed = true
+        }
     }
 
     val pages = (chapterState as? ReaderChapterState.Content)?.pages.orEmpty()
+    val latestOnProgress by rememberUpdatedState(onProgress)
+
+    fun reportProgress() {
+        if (pages.isEmpty()) return
+        latestOnProgress(
+            ReaderProgressUpdate(
+                album = request.album,
+                chapterId = selectedChapter.id,
+                chapterName = selectedChapter.displayName(selectedChapterIndex),
+                pageIndex = currentPageIndex.coerceIn(pages.indices),
+                pageCount = pages.size,
+            ),
+        )
+    }
+
+    fun closeReader() {
+        reportProgress()
+        onBack()
+    }
+
     LaunchedEffect(listState, pages) {
         if (pages.isEmpty()) return@LaunchedEffect
         snapshotFlow {
@@ -240,6 +293,12 @@ private fun ComicReaderContent(
         if (pages.isNotEmpty() && loadedPages[currentPageIndex] == true) {
             repository.prefetchNext(pages, currentPageIndex)
         }
+    }
+
+    LaunchedEffect(request.album.id, selectedChapter.id, currentPageIndex, pages.size) {
+        if (pages.isEmpty()) return@LaunchedEffect
+        delay(READER_PROGRESS_SAVE_DELAY_MILLIS)
+        reportProgress()
     }
 
     fun scrollToPage(index: Int) {
@@ -272,8 +331,13 @@ private fun ComicReaderContent(
         onDispose { ReaderVolumeKeyDispatcher.handler = null }
     }
 
-    ReaderSystemBarsEffect(immersive = !controlsVisible && !showCatalog && !showSettings)
-    BackHandler(onBack = onBack)
+    val systemBarColor = MiuixTheme.colorScheme.background
+    ReaderSystemBarsEffect(
+        immersive = !controlsVisible && !showCatalog && !showSettings,
+        barColor = systemBarColor.toArgb(),
+        useDarkIcons = systemBarColor.luminance() > 0.5f,
+    )
+    BackHandler(onBack = ::closeReader)
 
     Scaffold(modifier = Modifier.fillMaxSize()) {
         Box(
@@ -286,7 +350,7 @@ private fun ComicReaderContent(
                 is ReaderChapterState.Error -> ReaderError(
                     message = state.message,
                     onRetry = { chapterRetryKey++ },
-                    onBack = onBack,
+                    onBack = ::closeReader,
                 )
                 is ReaderChapterState.Content -> ReaderPages(
                     pages = state.pages,
@@ -325,7 +389,7 @@ private fun ComicReaderContent(
                     chapter = selectedChapter,
                     chapterIndex = selectedChapterIndex,
                     chapterCount = chapters.size,
-                    onBack = onBack,
+                    onBack = ::closeReader,
                 )
             }
 
@@ -1276,16 +1340,29 @@ private fun Context.readBatteryStatus(intent: Intent?): ReaderBatteryStatus {
 }
 
 @Composable
-private fun ReaderSystemBarsEffect(immersive: Boolean) {
+private fun ReaderSystemBarsEffect(
+    immersive: Boolean,
+    barColor: Int,
+    useDarkIcons: Boolean,
+) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
-    DisposableEffect(activity, immersive) {
+    DisposableEffect(activity, immersive, barColor, useDarkIcons) {
         val window = activity?.window
         val controller = window?.let { WindowCompat.getInsetsController(it, it.decorView) }
         val previousLightStatusBars = controller?.isAppearanceLightStatusBars
         val previousLightNavigationBars = controller?.isAppearanceLightNavigationBars
-        controller?.isAppearanceLightStatusBars = true
-        controller?.isAppearanceLightNavigationBars = true
+        @Suppress("DEPRECATION")
+        val previousStatusBarColor = window?.statusBarColor
+        @Suppress("DEPRECATION")
+        val previousNavigationBarColor = window?.navigationBarColor
+        @Suppress("DEPRECATION")
+        if (window != null) {
+            window.statusBarColor = barColor
+            window.navigationBarColor = barColor
+        }
+        controller?.isAppearanceLightStatusBars = useDarkIcons
+        controller?.isAppearanceLightNavigationBars = useDarkIcons
         if (immersive) {
             controller?.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -1300,6 +1377,11 @@ private fun ReaderSystemBarsEffect(immersive: Boolean) {
             }
             if (previousLightNavigationBars != null) {
                 controller.isAppearanceLightNavigationBars = previousLightNavigationBars
+            }
+            @Suppress("DEPRECATION")
+            if (window != null && previousStatusBarColor != null && previousNavigationBarColor != null) {
+                window.statusBarColor = previousStatusBarColor
+                window.navigationBarColor = previousNavigationBarColor
             }
         }
     }
@@ -1328,6 +1410,7 @@ private const val READER_PREFERENCES_NAME = "reader_settings"
 private const val READER_VOLUME_KEYS = "volume_key_paging"
 private const val READER_BATTERY_TIME = "show_battery_time"
 private const val READER_PAGE_NUMBER = "show_page_number"
+private const val READER_PROGRESS_SAVE_DELAY_MILLIS = 350L
 private const val READER_MIN_ZOOM = 1f
 private const val READER_MAX_ZOOM = 4f
 private const val READER_DOUBLE_TAP_ZOOM = 2.5f
