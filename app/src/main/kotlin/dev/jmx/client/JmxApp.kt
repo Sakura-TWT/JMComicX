@@ -56,14 +56,19 @@ import top.yukonga.miuix.kmp.icon.extended.Contacts
 import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.icon.extended.Home
 import top.yukonga.miuix.kmp.icon.extended.Settings
+import top.yukonga.miuix.kmp.icon.extended.Notes
 import top.yukonga.miuix.kmp.icon.basic.Search
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
-fun JmxApp() {
+internal fun JmxApp(
+    themeMode: AppThemeMode,
+    onThemeModeChanged: (AppThemeMode) -> Unit,
+) {
     val tabs = remember {
         listOf(
             JmxTab("首页", MiuixIcons.Home),
+            JmxTab("书架", MiuixIcons.Notes),
             JmxTab("我的", MiuixIcons.Contacts),
         )
     }
@@ -92,6 +97,9 @@ fun JmxApp() {
     val settingsRepository = remember(homeRepository, applicationContext) {
         AppSettingsRepository(applicationContext, homeRepository.core, homeRepository)
     }
+    val bookshelfRepository = remember(applicationContext) {
+        BookshelfRepository(applicationContext)
+    }
     val coroutineScope = rememberCoroutineScope()
     var accountProfile by remember(accountRepository) { mutableStateOf(accountRepository.restore()) }
     var accountSessionRevision by rememberSaveable { mutableIntStateOf(0) }
@@ -109,6 +117,7 @@ fun JmxApp() {
     var pendingLoadMoreCategoryId by remember { mutableStateOf<String?>(null) }
     var detailRequest by remember { mutableStateOf<AlbumDetailTransitionRequest?>(null) }
     var readerRequest by remember { mutableStateOf<ReaderLaunchRequest?>(null) }
+    var bookshelfRevision by remember { mutableIntStateOf(0) }
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
     var pendingSearchQuery by rememberSaveable { mutableStateOf<String?>(null) }
     val searchTransitionProgress by animateFloatAsState(
@@ -369,6 +378,32 @@ fun JmxApp() {
                                             },
                                         )
                                     }
+                                    1 -> BookshelfScreen(
+                                        innerPadding = PaddingValues(
+                                            bottom = outerPadding.calculateBottomPadding(),
+                                        ),
+                                        repository = bookshelfRepository,
+                                        detailRepository = detailRepository,
+                                        accountDataRepository = accountDataRepository,
+                                        authenticated = accountProfile != null,
+                                        onRequireLogin = ::requestLogin,
+                                        revision = bookshelfRevision,
+                                        liftedAlbumId = detailRequest
+                                            ?.takeIf {
+                                                it.origin == AlbumDetailOrigin.BOOKSHELF && it.sourceBounds != null
+                                            }
+                                            ?.album
+                                            ?.id,
+                                        onAlbumSelected = { album, sourceBounds ->
+                                            if (detailRequest == null) {
+                                                detailRequest = AlbumDetailTransitionRequest(
+                                                    album = album,
+                                                    sourceBounds = sourceBounds,
+                                                    origin = AlbumDetailOrigin.BOOKSHELF,
+                                                )
+                                            }
+                                        },
+                                    )
                                     else -> Scaffold(
                                         modifier = Modifier.fillMaxSize(),
                                         topBar = {
@@ -479,6 +514,8 @@ fun JmxApp() {
                                 JmxRoute.SETTINGS -> SettingsScreen(
                                     innerPadding = innerPadding,
                                     repository = settingsRepository,
+                                    themeMode = themeMode,
+                                    onThemeModeChanged = onThemeModeChanged,
                                     autoCheckIn = autoCheckIn,
                                     onAutoCheckInChanged = {
                                         autoCheckIn = it
@@ -557,6 +594,8 @@ fun JmxApp() {
                     readerActive = readerRequest != null,
                     authenticated = accountProfile != null,
                     onRequireLogin = ::requestLogin,
+                    bookshelfRepository = bookshelfRepository,
+                    onBookshelfChanged = { bookshelfRevision++ },
                     onFavoriteChanged = { added ->
                         accountProfile?.let { profile ->
                             val current = profile.currentFavoriteCount ?: 0
@@ -591,7 +630,19 @@ fun JmxApp() {
                 ComicReaderScreen(
                     request = request,
                     repository = readerRepository,
-                    onBack = { readerRequest = null },
+                    onProgress = { progress ->
+                        bookshelfRepository.recordProgress(
+                            albumId = progress.album.id,
+                            chapterId = progress.chapterId,
+                            chapterName = progress.chapterName,
+                            pageIndex = progress.pageIndex,
+                            pageCount = progress.pageCount,
+                        )
+                    },
+                    onBack = {
+                        readerRequest = null
+                        bookshelfRevision++
+                    },
                 )
             }
         }
@@ -660,5 +711,5 @@ private data class JmxTab(
     val icon: ImageVector,
 )
 
-private const val ACCOUNT_TAB_INDEX = 1
+private const val ACCOUNT_TAB_INDEX = 2
 private val AUTO_CHECK_IN_RETRY_DELAYS_MILLIS = longArrayOf(0L, 2_000L, 10_000L, 30_000L)

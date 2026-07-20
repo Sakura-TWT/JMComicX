@@ -45,6 +45,7 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.Check
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
+import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
@@ -52,6 +53,8 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 internal fun SettingsScreen(
     innerPadding: PaddingValues,
     repository: AppSettingsRepository,
+    themeMode: AppThemeMode,
+    onThemeModeChanged: (AppThemeMode) -> Unit,
     autoCheckIn: Boolean,
     onAutoCheckInChanged: (Boolean) -> Unit,
     autoCheckUpdates: Boolean,
@@ -83,6 +86,22 @@ internal fun SettingsScreen(
         ),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        item(key = "settings-display") {
+            Column {
+                SmallTitle(text = "显示")
+                Card(modifier = Modifier.padding(horizontal = 12.dp)) {
+                    WindowDropdownPreference(
+                        title = "主题模式",
+                        summary = themeMode.summary,
+                        items = AppThemeMode.entries.map(AppThemeMode::label),
+                        selectedIndex = AppThemeMode.entries.indexOf(themeMode),
+                        onSelectedIndexChange = { index ->
+                            AppThemeMode.entries.getOrNull(index)?.let(onThemeModeChanged)
+                        },
+                    )
+                }
+            }
+        }
         item(key = "settings-service") {
             Column {
                 SmallTitle(text = "账户与服务")

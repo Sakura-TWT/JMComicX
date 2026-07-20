@@ -3,6 +3,7 @@ package dev.jmx.client
 import android.content.Context
 import android.text.Html
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -303,18 +304,15 @@ internal fun AlbumItem(
     album: HomeAlbum,
     coverLifted: Boolean,
     onSelected: (HomeAlbum, Rect) -> Unit,
+    onLongSelected: (() -> Unit)? = null,
 ) {
     var coverBounds by remember(album.id) { mutableStateOf(Rect.Zero) }
-    Surface(
-        onClick = {
-            if (coverBounds.width > 0f && coverBounds.height > 0f) {
-                onSelected(album, coverBounds)
-            }
-        },
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = Color.Transparent,
-    ) {
+    val select = {
+        if (coverBounds.width > 0f && coverBounds.height > 0f) {
+            onSelected(album, coverBounds)
+        }
+    }
+    val content: @Composable () -> Unit = {
         Column(modifier = Modifier.fillMaxWidth()) {
             AlbumCover(
                 album = album,
@@ -340,6 +338,27 @@ internal fun AlbumItem(
                 maxLines = 1,
             )
         }
+    }
+    if (onLongSelected == null) {
+        Surface(
+            onClick = select,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+            color = Color.Transparent,
+            content = content,
+        )
+    } else {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(
+                    onClick = select,
+                    onLongClick = onLongSelected,
+                ),
+            shape = RoundedCornerShape(8.dp),
+            color = Color.Transparent,
+            content = content,
+        )
     }
 }
 
