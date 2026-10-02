@@ -35,6 +35,7 @@ internal data class JmxRoute private constructor(
         MAIN(""),
         FAVORITES("漫画收藏"),
         HISTORY("观看历史"),
+        DOWNLOADS("离线下载"),
         DAILY("每日签到"),
         ABOUT("关于"),
         THIRD_PARTY("第三方开源库"),
@@ -46,6 +47,7 @@ internal data class JmxRoute private constructor(
         val MAIN = JmxRoute(Destination.MAIN)
         val FAVORITES = JmxRoute(Destination.FAVORITES)
         val HISTORY = JmxRoute(Destination.HISTORY)
+        val DOWNLOADS = JmxRoute(Destination.DOWNLOADS)
         val DAILY = JmxRoute(Destination.DAILY)
         val ABOUT = JmxRoute(Destination.ABOUT)
         val THIRD_PARTY = JmxRoute(Destination.THIRD_PARTY)

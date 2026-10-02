@@ -36,6 +36,10 @@ class JmxHttpClient(
     private val requestMetricsRecorder: RequestMetricsRecorder? = null,
     private val queryLanguageProvider: () -> String? = { null }
 ) {
+    private val nonReplayClient by lazy {
+        okHttpClient.newBuilder().retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).build()
+    }
+
     fun withCookieJar(cookieJar: CookieJar): JmxHttpClient {
         return JmxHttpClient(
             endpointManager = endpointManager,
@@ -80,7 +84,9 @@ class JmxHttpClient(
                     if (decision.shouldFailover) {
                         endpointManager.markFailure(baseUrl, result.error.message)
                     }
-                    if (!decision.shouldRetry) {
+                    // 收藏是 toggle：响应丢失时重放会取消刚刚加入的收藏。
+                    // 不在传输层重试，由调用方重新读取真实收藏态后决定下一步。
+                    if (!decision.shouldRetry || request.route == dev.jmx.client.core.protocol.ApiRoute.FavoriteAction) {
                         requestMetricsRecorder?.record(
                             RequestMetricRecord(
                                 route = request.route.path,
@@ -137,7 +143,8 @@ class JmxHttpClient(
         val url = buildUrl(baseUrl, apiRequest, token.timestampSeconds).unwrapOrReturn { return it }
         val request = buildRequest(url, apiRequest, token.token, token.tokenParam)
         return try {
-            okHttpClient.newCall(request).awaitResponse().use { response ->
+            val client = if (apiRequest.route == dev.jmx.client.core.protocol.ApiRoute.FavoriteAction) nonReplayClient else okHttpClient
+            client.newCall(request).awaitResponse().use { response ->
                 val body = response.body.string()
                 val contentType = response.body.contentType()?.toString()
                 val exchange = NetworkExchange(

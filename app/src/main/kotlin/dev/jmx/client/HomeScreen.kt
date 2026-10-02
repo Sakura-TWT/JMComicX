@@ -7,6 +7,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
@@ -41,8 +42,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -89,6 +94,8 @@ import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Image
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.PagerGestureNestedScrollConnection
+import top.yukonga.miuix.kmp.utils.pagerGestureOverride
 
 @Composable
 internal fun HomeScreen(
@@ -102,6 +109,7 @@ internal fun HomeScreen(
     onAlbumSelected: (HomeAlbum, Rect) -> Unit,
     onRefresh: () -> Unit,
     onRetry: () -> Unit,
+    pagerEnabled: Boolean = true,
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         when (state) {
@@ -109,6 +117,7 @@ internal fun HomeScreen(
             is HomeUiState.Content -> HomeContent(
                 categories = state.categories,
                 pagerState = pagerState,
+                pagerEnabled = pagerEnabled,
                 liftedAlbumId = liftedAlbumId,
                 onLoadMore = onLoadMore,
                 onAlbumSelected = onAlbumSelected,
@@ -136,6 +145,7 @@ internal fun HomeScreen(
 private fun HomeContent(
     categories: List<HomeCategory>,
     pagerState: PagerState,
+    pagerEnabled: Boolean,
     liftedAlbumId: String?,
     onLoadMore: (String) -> Unit,
     onAlbumSelected: (HomeAlbum, Rect) -> Unit,
@@ -154,7 +164,10 @@ private fun HomeContent(
             state = pagerState,
             modifier = Modifier
                 .fillMaxSize()
+                .pagerGestureOverride(pagerState, enabled = pagerEnabled)
                 .then(if (backdrop != null) Modifier.layerBackdrop(backdrop) else Modifier),
+            userScrollEnabled = false,
+            pageNestedScrollConnection = PagerGestureNestedScrollConnection,
             key = { categories[it].id },
         ) { page ->
             val pullToRefreshState = rememberPullToRefreshState()
@@ -281,6 +294,9 @@ internal fun AlbumItem(
     onSelected: (HomeAlbum, Rect) -> Unit,
     onLongSelected: (() -> Unit)? = null,
     updateChapters: Int = 0,
+    selected: Boolean? = null,
+    enabled: Boolean = true,
+    selectionOverlay: @Composable BoxScope.() -> Unit = {},
 ) {
     var coverBounds by remember(album.id) { mutableStateOf(Rect.Zero) }
     val select = {
@@ -294,6 +310,7 @@ internal fun AlbumItem(
                 AlbumCover(
                     album = album,
                     visible = !coverLifted,
+                    retryEnabled = enabled && selected == null,
                     onBoundsChanged = { coverBounds = it },
                 )
                 // 角标画在封面外层：封面会被详情页转场"抬起"做共享元素动画，
@@ -306,6 +323,7 @@ internal fun AlbumItem(
                             .padding(6.dp),
                     )
                 }
+                if (!coverLifted) selectionOverlay()
             }
             Spacer(modifier = Modifier.height(9.dp))
             Text(
@@ -327,21 +345,30 @@ internal fun AlbumItem(
             )
         }
     }
+    val itemModifier = Modifier.fillMaxWidth().then(
+        if (selected != null) Modifier.semantics(mergeDescendants = true) {
+            role = Role.Checkbox
+            toggleableState = ToggleableState(selected)
+        } else Modifier,
+    )
     if (onLongSelected == null) {
         Surface(
             onClick = select,
-            modifier = Modifier.fillMaxWidth(),
+            enabled = enabled,
+            modifier = itemModifier,
             shape = RoundedCornerShape(8.dp),
             color = Color.Transparent,
             content = content,
         )
     } else {
         Surface(
-            modifier = Modifier
-                .fillMaxWidth()
+            modifier = itemModifier
                 .combinedClickable(
+                    enabled = enabled,
                     onClick = select,
                     onLongClick = onLongSelected,
+                    onClickLabel = if (selected != null) { if (selected) "取消选择漫画" else "选择漫画" } else null,
+                    onLongClickLabel = "选择漫画",
                 ),
             shape = RoundedCornerShape(8.dp),
             color = Color.Transparent,
@@ -354,6 +381,7 @@ internal fun AlbumItem(
 private fun AlbumCover(
     album: HomeAlbum,
     visible: Boolean,
+    retryEnabled: Boolean,
     onBoundsChanged: (Rect) -> Unit,
 ) {
     val context = LocalContext.current
@@ -376,10 +404,10 @@ private fun AlbumCover(
     ) {
         if (visible && loadFailed) {
             FailedCover(
-                modifier = Modifier.clickable {
+                modifier = if (retryEnabled) Modifier.clickable {
                     loadFailed = false
                     retryAttempt++
-                },
+                } else Modifier,
             )
         } else if (visible) {
             AsyncImage(

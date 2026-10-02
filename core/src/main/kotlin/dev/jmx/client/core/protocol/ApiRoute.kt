@@ -23,6 +23,7 @@ enum class ApiRoute(
     CategoriesFilter("/categories/filter"),
     Favorite("/favorite"),
     FavoriteAction("/favorite", method = HttpMethod.Post),
+    FavoriteFolderAction("/favorite_folder", method = HttpMethod.Post),
     Like("/like", method = HttpMethod.Post),
     Promote("/promote"),
     PromoteList("/promote_list"),

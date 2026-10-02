@@ -6,6 +6,12 @@ import org.junit.Test
 
 class FavoritePageTest {
     @Test
+    fun pageSizeCountIsNotTotal() {
+        val page = JsonParser.parseString("""{"count":20,"list":[],"folder_list":[]}""").asJsonObject.toFavoritePage()
+        assertEquals(null, page.total)
+    }
+
+    @Test
     fun parsesFoldersAndListFromPythonShape() {
         val json = """
             {

@@ -6,9 +6,14 @@ import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -28,8 +33,8 @@ class BinaryDownloader(
     private val okHttpClient: OkHttpClient = defaultOkHttpClient(),
     private val bufferSize: Int = DEFAULT_BUFFER_SIZE,
     /**
-     * 单次 [download] 最多尝试几个地址（含首个）。大于 1 时启用图片 CDN / 后缀故障转移，
-     * 候补由 [ImageHostFailover] 按错误类型给出；非图片地址不会产生候补，等于不受影响。
+     * 单次 [download] 最多尝试几次（含首个，故障转移与原地址重试共用预算）。
+     * 图片 CDN / 后缀候补由 [ImageHostFailover] 给出；没有候补时只重试瞬时网络错误。
      *
      * 默认只给 3：每个失败的候补在最坏情况下要等满一个超时，而阅读器不能为一张图等上一分钟。
      * 常见故障（连不上、5xx、后缀猜错）第一或第二个候补就能救回来。
@@ -78,14 +83,31 @@ class BinaryDownloader(
                     is JmxResult.Failure -> {
                         lastFailure = result
                         reportHostResult(currentUrl, result.error)
-                        val nextUrl = nextCandidateUrl(
+                        if (attempt >= maxAttemptsPerDownload.coerceAtLeast(1)) break
+                        // No reset means no safe second attempt, including a partially-written failing sink.
+                        if (sink !is TruncatingSink && progress.bytesWritten > 0L) break
+                        val transient = DownloadRetry.transient(result.error)
+                        val mayFailover = transient ||
+                            (result.error is JmxError.Http && result.error.code in setOf(403, 404, 410)) ||
+                            (result.error is JmxError.Schema && result.error.field == "content-type")
+                        val candidate = if (mayFailover) nextCandidateUrl(
                             currentUrl = currentUrl,
                             error = result.error,
                             triedUrls = triedUrls,
                             bytesWritten = progress.bytesWritten,
                             sink = sink
-                        ) ?: break
-                        (sink as? TruncatingSink)?.truncate()
+                        ) else null
+                        val nextUrl = candidate ?: if (transient) currentUrl else break
+                        // Retry and CDN failover share the same finite attempt budget. Never retry storage.
+                        if (transient && (candidate == null ||
+                                (result.error as? JmxError.Http)?.retryAfterMillis != null)) {
+                            delay(DownloadRetry.delayMillis(result.error, attempt))
+                        }
+                        try { sinkOperation { (sink as? TruncatingSink)?.truncate() } }
+                        catch (error: DownloadSinkException) {
+                            lastFailure = JmxResult.Failure(JmxError.Unknown("下载文件写入失败", error))
+                            break
+                        }
                         progress.reset()
                         triedUrls += nextUrl
                         currentUrl = nextUrl
@@ -136,55 +158,37 @@ class BinaryDownloader(
         }
     }
 
-    private fun attemptDownload(request: DownloadRequest, sink: ByteSink): JmxResult<DownloadResult> {
+    private suspend fun attemptDownload(request: DownloadRequest, sink: ByteSink): JmxResult<DownloadResult> {
         request.observer.onEvent(DownloadEvent.Started(request.url))
         return try {
             val offset = request.rangeStartInclusive?.takeIf { it > 0L }
             val wantRange = request.preferRangeResume && offset != null
             if (wantRange) {
-                open(request, offset).use { response ->
+                val ranged = withResponse(request, offset) { response ->
                     when (response.code) {
-                        206 -> return writeBody(
-                            request, response, sink,
-                            resumedFromOffset = offset,
-                            usedRange = true
-                        )
+                        206 -> writeBody(request, response, sink, resumedFromOffset = offset, usedRange = true)
                         200 -> {
-                            (sink as? TruncatingSink)?.truncate()
-                            return writeBody(
-                                request, response, sink,
-                                resumedFromOffset = 0L,
-                                usedRange = false
-                            )
+                            sinkOperation { (sink as? TruncatingSink)?.truncate() }
+                            writeBody(request, response, sink, resumedFromOffset = 0L, usedRange = false)
                         }
-                        416 -> Unit
-                        else -> {
-                            if (!response.isSuccessful) {
-                                return failHttp(request, response)
-                            }
-                        }
+                        416 -> null
+                        else -> failHttp(request, response)
                     }
                 }
-                open(request, rangeStart = null).use { response ->
-                    (sink as? TruncatingSink)?.truncate()
-                    return writeBody(
-                        request, response, sink,
-                        resumedFromOffset = 0L,
-                        usedRange = false
-                    )
+                if (ranged != null) return ranged
+                withResponse(request, rangeStart = null) { response ->
+                    sinkOperation { (sink as? TruncatingSink)?.truncate() }
+                    writeBody(request, response, sink, resumedFromOffset = 0L, usedRange = false)
                 }
             } else {
-                open(request, rangeStart = null).use { response ->
-                    return writeBody(
-                        request, response, sink,
-                        resumedFromOffset = 0L,
-                        usedRange = false
-                    )
+                withResponse(request, rangeStart = null) { response ->
+                    writeBody(request, response, sink, resumedFromOffset = 0L, usedRange = false)
                 }
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (it: Throwable) {
+        } catch (it: Exception) {
+            currentCoroutineContext().ensureActive()
             val error = if (it is IOException) {
                 JmxError.Network(
                     "下载网络请求失败；" + DownloadFailureContext(url = request.url).describe(),
@@ -202,7 +206,11 @@ class BinaryDownloader(
         }
     }
 
-    private fun open(request: DownloadRequest, rangeStart: Long?): Response {
+    private suspend fun <T> withResponse(
+        request: DownloadRequest,
+        rangeStart: Long?,
+        block: suspend (Response) -> T,
+    ): T = coroutineScope {
         val builder = Request.Builder().url(request.url).get()
         request.headers.forEach { (key, value) ->
             if (!key.equals("Range", ignoreCase = true)) {
@@ -212,8 +220,23 @@ class BinaryDownloader(
         if (rangeStart != null && rangeStart > 0L) {
             builder.header("Range", "bytes=$rangeStart-")
         }
-        return okHttpClient.newCall(builder.build()).execute()
+        val call = okHttpClient.newCall(builder.build())
+        // Install before execute and retain until body close. A cancelled suspended child cancels
+        // the socket immediately, unlike invokeOnCompletion on the blocking download coroutine.
+        val cancellation = launch(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine<Nothing> { continuation ->
+                continuation.invokeOnCancellation { call.cancel() }
+            }
+        }
+        try {
+            currentCoroutineContext().ensureActive()
+            call.execute().use { response -> block(response) }
+        } finally { cancellation.cancel() }
     }
+
+    private inline fun <T> sinkOperation(block: () -> T): T = try { block() }
+    catch (cancelled: CancellationException) { throw cancelled }
+    catch (error: Exception) { throw DownloadSinkException(error) }
 
     private fun failHttp(request: DownloadRequest, response: Response): JmxResult<DownloadResult> {
         val contentType = response.body.contentType()?.toString()
@@ -225,13 +248,14 @@ class BinaryDownloader(
                 statusCode = response.code,
                 contentType = contentType,
                 contentLength = contentLength
-            ).describe()
+            ).describe(),
+            retryAfterMillis = DownloadRetry.retryAfter(response.header("Retry-After"))
         )
         request.observer.onEvent(DownloadEvent.Failed(request.url, error))
         return JmxResult.Failure(error)
     }
 
-    private fun writeBody(
+    private suspend fun writeBody(
         request: DownloadRequest,
         response: Response,
         sink: ByteSink,
@@ -281,7 +305,9 @@ class BinaryDownloader(
         var written = 0L
         body.byteStream().use { stream ->
             while (true) {
+                currentCoroutineContext().ensureActive()
                 val read = stream.read(buffer)
+                currentCoroutineContext().ensureActive()
                 if (read == -1) break
                 val totalAfter = resumedFromOffset + written + read
                 if (request.maxBytes != null && totalAfter > request.maxBytes) {
@@ -299,7 +325,7 @@ class BinaryDownloader(
                     request.observer.onEvent(DownloadEvent.Failed(request.url, error))
                     return JmxResult.Failure(error)
                 }
-                sink.write(buffer.copyOf(read))
+                sinkOperation { sink.write(buffer, 0, read) }
                 written += read
                 request.observer.onEvent(
                     DownloadEvent.Progress(

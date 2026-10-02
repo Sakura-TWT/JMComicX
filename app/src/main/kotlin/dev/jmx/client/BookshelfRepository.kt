@@ -18,6 +18,7 @@ internal enum class BookshelfSortOrder(
 ) {
     NAME("名称", BookshelfSortDirection.ASCENDING),
     UPDATED("更新时间", BookshelfSortDirection.ASCENDING),
+    ADDED("最近添加", BookshelfSortDirection.ASCENDING),
     RECENTLY_READ("最近阅读", BookshelfSortDirection.ASCENDING),
 }
 
@@ -467,6 +468,9 @@ internal fun sortBookshelf(
         BookshelfSortOrder.UPDATED ->
             compareByDescending<BookshelfEntry>(BookshelfEntry::updatedAt)
                 .thenByDescending(BookshelfEntry::addedAt)
+        BookshelfSortOrder.ADDED ->
+            compareByDescending<BookshelfEntry>(BookshelfEntry::addedAt)
+                .thenBy(BookshelfEntry::albumId)
         BookshelfSortOrder.RECENTLY_READ ->
             compareByDescending<BookshelfEntry> { it.lastReadAt ?: Long.MIN_VALUE }
                 .thenByDescending(BookshelfEntry::updatedAt)

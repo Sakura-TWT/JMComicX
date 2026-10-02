@@ -155,7 +155,7 @@ class BinaryDownloaderTest {
         )
 
         val result = kotlinx.coroutines.runBlocking {
-            BinaryDownloader().download(
+            BinaryDownloader(maxAttemptsPerDownload = 1).download(
                 DownloadRequest(
                     url = server.url("/image.webp").toString(),
                     acceptedContentTypes = setOf("image/*")
