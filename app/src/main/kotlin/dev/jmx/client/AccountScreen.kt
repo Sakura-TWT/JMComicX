@@ -50,6 +50,7 @@ import top.yukonga.miuix.kmp.blur.LayerBackdrop
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Contacts
+import top.yukonga.miuix.kmp.icon.extended.Download
 import top.yukonga.miuix.kmp.icon.extended.Favorites
 import top.yukonga.miuix.kmp.icon.extended.Info
 import top.yukonga.miuix.kmp.icon.extended.Recent
@@ -77,6 +78,7 @@ internal fun AccountScreen(
     onHistory: () -> Unit,
     onDaily: () -> Unit,
     onAbout: () -> Unit,
+    onDownloads: () -> Unit,
     favoriteUpdateCount: Int = 0,
 ) {
     val avatarUrl = remember(profile?.avatar, imageHost) {
@@ -198,6 +200,11 @@ internal fun AccountScreen(
                             }
                         },
                         onClick = onFavorites,
+                    )
+                    ArrowPreference(
+                        title = "离线下载",
+                        startAction = { AccountPreferenceIcon(MiuixIcons.Download, "离线下载") },
+                        onClick = onDownloads,
                     )
                     ArrowPreference(
                         title = "观看历史",

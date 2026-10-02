@@ -65,7 +65,8 @@ internal fun JsonObject.toFavoritePage(): FavoritePage {
     val folders = firstObjectList("folder_list", "folders", "folder")
         .mapNotNull { it.toFavoriteFolderOrNull() }
     return FavoritePage(
-        total = albumPage.total,
+        // 收藏响应的 count 是每页条数，不能当作总数（会截断分页，尤其是倒序）。
+        total = intOrNull("total"),
         content = albumPage.content,
         folders = folders,
         raw = albumPage.raw

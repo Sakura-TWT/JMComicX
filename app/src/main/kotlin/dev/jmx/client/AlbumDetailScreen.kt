@@ -121,6 +121,7 @@ import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.Check
 import top.yukonga.miuix.kmp.icon.extended.Back
+import top.yukonga.miuix.kmp.icon.extended.Download
 import top.yukonga.miuix.kmp.icon.extended.Edit
 import top.yukonga.miuix.kmp.icon.extended.ExpandMore
 import top.yukonga.miuix.kmp.icon.extended.Favorites
@@ -137,7 +138,7 @@ internal data class AlbumDetailTransitionRequest(
     val origin: AlbumDetailOrigin,
 )
 
-internal enum class AlbumDetailOrigin { HOME, SEARCH, ACCOUNT, BOOKSHELF }
+internal enum class AlbumDetailOrigin { HOME, SEARCH, ACCOUNT, BOOKSHELF, DOWNLOADS }
 
 @Composable
 internal fun AlbumDetailTransitionHost(
@@ -153,6 +154,11 @@ internal fun AlbumDetailTransitionHost(
     onStartReading: (ReaderLaunchRequest) -> Unit,
     onDismiss: () -> Unit,
     onChaptersLoaded: (String, Int) -> Unit = { _, _ -> },
+    favoriteRepository: AccountDataRepository,
+    sessionRevision: Int,
+    offlineAlbum: OfflineAlbum? = null,
+    offlineManifest: ReaderOfflineManifest? = null,
+    onDownload: (HomeAlbum, AlbumDetail, Set<String>) -> Unit,
     topBarBlurStyle: TopBarBlurStyle = TopBarBlurStyle.GAUSSIAN,
 ) {
     val transitionProgress = remember(request.album.id) { Animatable(0f) }
@@ -241,6 +247,12 @@ internal fun AlbumDetailTransitionHost(
             onBack = { exitDetail() },
             onCoverTargetChanged = { bounds -> targetBounds = bounds },
             onChaptersLoaded = onChaptersLoaded,
+            favoriteRepository = favoriteRepository,
+            sessionRevision = sessionRevision,
+            offline = request.origin == AlbumDetailOrigin.DOWNLOADS,
+            offlineAlbum = offlineAlbum,
+            offlineManifest = offlineManifest,
+            onDownload = onDownload,
             topBarBlurStyle = topBarBlurStyle,
             modifier = Modifier
                 .fillMaxSize()
@@ -301,6 +313,12 @@ private fun AlbumDetailScreen(
     onBack: () -> Unit,
     onCoverTargetChanged: (Rect) -> Unit,
     onChaptersLoaded: (String, Int) -> Unit = { _, _ -> },
+    favoriteRepository: AccountDataRepository,
+    sessionRevision: Int,
+    offline: Boolean,
+    offlineAlbum: OfflineAlbum? = null,
+    offlineManifest: ReaderOfflineManifest? = null,
+    onDownload: (HomeAlbum, AlbumDetail, Set<String>) -> Unit,
     topBarBlurStyle: TopBarBlurStyle = TopBarBlurStyle.GAUSSIAN,
     modifier: Modifier = Modifier,
 ) {
@@ -320,11 +338,24 @@ private fun AlbumDetailScreen(
         mutableStateOf(bookshelfRepository.entry(album.id))
     }
     var showBookshelfGroupPicker by remember(album.id) { mutableStateOf(false) }
+    var showFavoriteFolderPicker by remember(album.id) { mutableStateOf(false) }
+    var favoriteFolderError by remember(album.id) { mutableStateOf<String?>(null) }
+    var showDownloadPicker by remember(album.id) { mutableStateOf(false) }
+    val applicationContext = LocalContext.current.applicationContext
+    val offlineProgress = remember(applicationContext) { OfflineReadingProgressStore(applicationContext) }
     val coroutineScope = rememberCoroutineScope()
     val hapticFeedback = LocalHapticFeedback.current
     val pageBackdrop = rememberBarBackdrop()
 
-    LaunchedEffect(album.id, repository, retryKey) {
+    LaunchedEffect(album.id, repository, retryKey, offline, offlineAlbum?.detail) {
+        if (offline) {
+            state = if (offlineAlbum == null) AlbumDetailUiState.Error("本地下载已不可用，请返回下载页检查。")
+            else AlbumDetailUiState.Content(
+                detail = offlineAlbum.detail,
+                comments = DetailCommentsState(endReached = true, error = "离线模式不加载评论"),
+            )
+            return@LaunchedEffect
+        }
         val loaded = repository.load(album.id)
         state = loaded
         val content = loaded as? AlbumDetailUiState.Content ?: return@LaunchedEffect
@@ -338,9 +369,19 @@ private fun AlbumDetailScreen(
     }
 
     val detail = (state as? AlbumDetailUiState.Content)?.detail
-    LaunchedEffect(detail?.id, repository, readerActive) {
+    val visibleChapters = remember(detail, offline, offlineManifest) {
+        if (offline) offlineManifest?.chapters.orEmpty().map { it.toReaderChapter() }
+        else detail?.readingChapters().orEmpty()
+    }
+    LaunchedEffect(detail?.id, repository, readerActive, offline, offlineManifest) {
         pageSummary = if (detail == null) {
             AlbumPageSummary.Loading
+        } else if (offline) {
+            AlbumPageSummary.Ready(
+                totalPages = offlineManifest?.chapters?.sumOf { it.pages.size } ?: 0,
+                resolvedChapters = visibleChapters.size,
+                totalChapters = visibleChapters.size,
+            )
         } else if (readerActive) {
             pageSummary
         } else {
@@ -349,6 +390,7 @@ private fun AlbumDetailScreen(
     }
 
     fun loadMoreComments() {
+        if (offline) return
         val content = state as? AlbumDetailUiState.Content ?: return
         if (content.comments.isLoading || content.comments.endReached) return
         state = content.copy(comments = content.comments.copy(isLoading = true, error = null))
@@ -362,6 +404,7 @@ private fun AlbumDetailScreen(
     }
 
     fun likeAlbum() {
+        if (offline) { actionError = "离线模式不执行在线操作"; return }
         if (!authenticated) {
             onRequireLogin()
             return
@@ -399,11 +442,17 @@ private fun AlbumDetailScreen(
     }
 
     fun favoriteAlbum() {
+        if (offline) { actionError = "离线模式不执行在线操作"; return }
         if (!authenticated) {
             onRequireLogin()
             return
         }
         if (pendingAction != null || state !is AlbumDetailUiState.Content) return
+        if ((state as? AlbumDetailUiState.Content)?.detail?.isFavorite != true) {
+            favoriteFolderError = null
+            showFavoriteFolderPicker = true
+            return
+        }
         pendingAction = DetailAccountAction.FAVORITE
         actionError = null
         coroutineScope.launch {
@@ -436,7 +485,71 @@ private fun AlbumDetailScreen(
         }
     }
 
+    fun addFavorite(folderId: Int) {
+        if (pendingAction != null) return
+        pendingAction = DetailAccountAction.FAVORITE
+        favoriteFolderError = null
+        coroutineScope.launch {
+            try {
+                when (val result = favoriteRepository.addFavoriteToFolder(album.id, folderId)) {
+                    is JmxResult.Success -> {
+                        val current = state as? AlbumDetailUiState.Content
+                        if (current != null) {
+                            val wasFavorite = current.detail.isFavorite == true
+                            state = current.copy(detail = current.detail.copy(isFavorite = true))
+                            if (!wasFavorite) onFavoriteChanged(true)
+                        }
+                        favoriteFolderError = result.value.folderError?.toUiMessage()
+                        if (favoriteFolderError == null) {
+                            showFavoriteFolderPicker = false
+                            hapticFeedback.performHapticFeedback(HapticFeedbackType.Confirm)
+                        }
+                    }
+                    is JmxResult.Failure -> {
+                        favoriteFolderError = result.error.toUiMessage()
+                        if (result.error.requiresLogin()) onRequireLogin()
+                    }
+                }
+            } finally {
+                pendingAction = null
+            }
+        }
+    }
+
+    fun startReading(chapterId: String, pageIndex: Int = 0) {
+        val content = state as? AlbumDetailUiState.Content ?: return
+        val source = if (offline) {
+            val manifest = offlineManifest
+            val chapter = manifest?.chapters?.firstOrNull { it.id == chapterId }
+            if (chapter == null || chapter.expectedPageCount <= 0 || chapter.pages.size != chapter.expectedPageCount) {
+                actionError = "这一章尚未完整下载，请等待下载完成或重新下载"
+                return
+            }
+            ReaderResourceSource.Offline(manifest)
+        } else {
+            ReaderResourceSource.OnlineJm
+        }
+        onStartReading(ReaderLaunchRequest(
+            album = album,
+            detail = content.detail,
+            initialChapterId = chapterId,
+            initialPageIndex = pageIndex,
+            source = source,
+        ))
+    }
+
+    fun requestDownload() {
+        val content = state as? AlbumDetailUiState.Content ?: return
+        val chapters = content.detail.readingChapters()
+        if (chapters.size == 1) {
+            onDownload(album, content.detail, setOf(chapters.single().id))
+        } else {
+            showDownloadPicker = true
+        }
+    }
+
     fun openCommentComposer(comment: CommentItem? = null) {
+        if (offline) { actionError = "离线模式不加载评论"; return }
         if (!authenticated) {
             onRequireLogin()
             return
@@ -465,7 +578,7 @@ private fun AlbumDetailScreen(
         if (groups.isNotEmpty()) {
             showBookshelfGroupPicker = true
         } else {
-            bookshelfRepository.add(album)
+            bookshelfRepository.add(if (offline) repository.bookshelfAlbum(album) else album)
             inBookshelf = true
             resumeEntry = bookshelfRepository.entry(album.id)
             onBookshelfChanged()
@@ -532,6 +645,10 @@ private fun AlbumDetailScreen(
                         else -> album.name
                     },
                     onBack = onBack,
+                    onDownload = ::requestDownload,
+                    downloadEnabled = state is AlbumDetailUiState.Content,
+                    // 从离线下载页进来的是本地视图：这一页不联网，下载按钮没有去处。
+                    showDownload = !offline,
                     transparent = pageBackdrop != null,
                 )
             }
@@ -543,24 +660,20 @@ private fun AlbumDetailScreen(
                     if (selectedTab == DETAIL_COMMENTS_TAB) {
                         openCommentComposer()
                     } else if (content != null) {
-                        val chapters = content.detail.readingChapters()
-                        val savedChapterId = resumeEntry?.lastChapterId
+                        val chapters = visibleChapters
+                        val savedChapterId = if (offline) offlineProgress.chapterId(album.id) else resumeEntry?.lastChapterId
                         val firstChapter = savedChapterId
                             ?.let { id -> chapters.firstOrNull { it.id == id } }
                             ?: chapters.firstOrNull()
                         if (firstChapter != null) {
-                            onStartReading(
-                                ReaderLaunchRequest(
-                                    album = album,
-                                    detail = content.detail,
-                                    initialChapterId = firstChapter.id,
-                                    initialPageIndex = if (firstChapter.id == savedChapterId) {
-                                        resumeEntry?.lastPageIndex ?: 0
-                                    } else {
-                                        0
-                                    },
-                                ),
+                            startReading(
+                                firstChapter.id,
+                                if (firstChapter.id == savedChapterId) {
+                                    if (offline) offlineProgress.pageIndex(album.id) else resumeEntry?.lastPageIndex ?: 0
+                                } else 0,
                             )
+                        } else if (offline) {
+                            actionError = "还没有完整下载的章节"
                         }
                     }
                 },
@@ -582,7 +695,7 @@ private fun AlbumDetailScreen(
                     Text(
                         text = when {
                             selectedTab == DETAIL_COMMENTS_TAB -> "发表"
-                            resumeEntry?.lastChapterId != null -> "继续阅读"
+                            (offline && offlineProgress.chapterId(album.id) != null) || resumeEntry?.lastChapterId != null -> "继续阅读"
                             else -> "开始观看"
                         },
                         style = MiuixTheme.textStyles.button,
@@ -596,6 +709,7 @@ private fun AlbumDetailScreen(
         DetailBody(
             album = album,
             state = state,
+            chapters = visibleChapters,
             selectedTab = selectedTab,
             onTabSelected = { selectedTab = it },
             pageSummary = pageSummary,
@@ -603,18 +717,7 @@ private fun AlbumDetailScreen(
             innerPadding = innerPadding,
             backdrop = pageBackdrop,
             onCoverTargetChanged = onCoverTargetChanged,
-            onChapterSelected = { chapter ->
-                val content = state as? AlbumDetailUiState.Content
-                if (content != null) {
-                    onStartReading(
-                        ReaderLaunchRequest(
-                            album = album,
-                            detail = content.detail,
-                            initialChapterId = chapter.id,
-                        ),
-                    )
-                }
-            },
+            onChapterSelected = { chapter -> startReading(chapter.id) },
             onLoadMoreComments = ::loadMoreComments,
             onReplyComment = ::openCommentComposer,
             onLike = ::likeAlbum,
@@ -630,6 +733,34 @@ private fun AlbumDetailScreen(
         )
     }
 
+    FavoriteFolderPicker(
+        show = showFavoriteFolderPicker,
+        repository = favoriteRepository,
+        sessionRevision = sessionRevision,
+        onDismiss = { if (pendingAction == null) showFavoriteFolderPicker = false },
+        onConfirm = { folder -> folder.id.toIntOrNull()?.let(::addFavorite) },
+        onDefault = { addFavorite(0) },
+        busy = pendingAction == DetailAccountAction.FAVORITE,
+        error = favoriteFolderError,
+    )
+    DownloadChapterPicker(
+        show = showDownloadPicker,
+        albumTitle = album.name,
+        chapters = detail?.readingChapters().orEmpty().mapIndexed { index, chapter ->
+            DownloadChapterUiModel(
+                id = chapter.id,
+                title = chapter.displayName(index),
+                summary = if (offlineManifest?.chapters?.any {
+                    it.id == chapter.id && it.expectedPageCount > 0 && it.pages.size == it.expectedPageCount
+                } == true) "已下载" else null,
+            )
+        },
+        onDismiss = { showDownloadPicker = false },
+        onDownload = { ids ->
+            detail?.let { onDownload(album, it, ids) }
+            showDownloadPicker = false
+        },
+    )
     CommentComposerDialog(
         show = showCommentComposer,
         submitting = pendingAction == DetailAccountAction.COMMENT,
@@ -646,7 +777,7 @@ private fun AlbumDetailScreen(
         groups = bookshelfRepository.groups(),
         onDismiss = { showBookshelfGroupPicker = false },
         onConfirm = { selectedGroupIds ->
-            bookshelfRepository.add(album, selectedGroupIds)
+            bookshelfRepository.add(if (offline) repository.bookshelfAlbum(album) else album, selectedGroupIds)
             inBookshelf = true
             resumeEntry = bookshelfRepository.entry(album.id)
             showBookshelfGroupPicker = false
@@ -661,6 +792,9 @@ private fun AlbumDetailScreen(
 private fun AlbumDetailTopBar(
     title: String,
     onBack: () -> Unit,
+    onDownload: () -> Unit,
+    downloadEnabled: Boolean,
+    showDownload: Boolean = true,
     transparent: Boolean = false,
 ) {
     Surface(color = if (transparent) Color.Transparent else MiuixTheme.colorScheme.surface) {
@@ -679,6 +813,19 @@ private fun AlbumDetailTopBar(
                     contentDescription = "返回",
                     tint = MiuixTheme.colorScheme.onBackground,
                 )
+            }
+            if (showDownload) {
+                IconButton(
+                    onClick = onDownload,
+                    enabled = downloadEnabled,
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                ) {
+                    Icon(
+                        imageVector = MiuixIcons.Download,
+                        contentDescription = "下载漫画",
+                        tint = MiuixTheme.colorScheme.onBackground,
+                    )
+                }
             }
             Text(
                 text = title,
@@ -700,6 +847,7 @@ private fun AlbumDetailTopBar(
 private fun DetailBody(
     album: HomeAlbum,
     state: AlbumDetailUiState,
+    chapters: List<AlbumChapter>,
     selectedTab: Int,
     onTabSelected: (Int) -> Unit,
     pageSummary: AlbumPageSummary,
@@ -807,7 +955,7 @@ private fun DetailBody(
             TabRowWithContour(
                 tabs = listOf(
                     "介绍",
-                    "目录 ${detail?.readingChapters()?.size ?: 0}",
+                    "目录 ${chapters.size}",
                     "评论 ${detail?.commentTotal ?: comments?.total ?: 0}",
                 ),
                 selectedTabIndex = selectedTab,
@@ -828,7 +976,7 @@ private fun DetailBody(
                 pageSummary = pageSummary,
                 onSearchRequested = onSearchRequested,
             )
-            selectedTab == DETAIL_CATALOG_TAB && detail != null -> catalogItems(detail, onChapterSelected)
+            selectedTab == DETAIL_CATALOG_TAB && detail != null -> catalogItems(chapters, onChapterSelected)
             selectedTab == DETAIL_COMMENTS_TAB -> commentsItems(
                 comments = comments,
                 onRetry = onLoadMoreComments,
@@ -1315,10 +1463,20 @@ private fun androidx.compose.foundation.lazy.LazyListScope.detailInfoItems(
 }
 
 private fun androidx.compose.foundation.lazy.LazyListScope.catalogItems(
-    detail: AlbumDetail,
+    chapters: List<AlbumChapter>,
     onChapterSelected: (AlbumChapter) -> Unit,
 ) {
-    val chapters = detail.readingChapters()
+    if (chapters.isEmpty()) {
+        item(key = "catalog-empty") {
+            Text(
+                text = "暂无完整下载的章节，可返回离线下载页查看进度。",
+                modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
     itemsIndexed(
         items = chapters,
         key = { _, chapter -> chapter.id },
@@ -1644,11 +1802,19 @@ internal class AlbumDetailRepository(
 ) {
     private val chapterPageCounts = ConcurrentHashMap<String, Int>()
 
+    fun bookshelfAlbum(album: HomeAlbum): HomeAlbum {
+        val host = core.imageHostRegistry.current()
+        return album.copy(
+            imageHost = host,
+            coverUrl = dev.jmx.client.core.image.ImageUrl.albumCover(host, album.id),
+        )
+    }
+
     suspend fun likeAlbum(albumId: String): JmxResult<ActionResult> =
         accountRepository.withSessionRecovery { core.interactionApi.likeAlbum(albumId) }
 
     suspend fun favoriteAlbum(albumId: String): JmxResult<ActionResult> =
-        accountRepository.withSessionRecovery { core.interactionApi.favoriteAlbum(albumId) }
+        core.interactionApi.favoriteAlbum(albumId)
 
     suspend fun commentAlbum(
         albumId: String,

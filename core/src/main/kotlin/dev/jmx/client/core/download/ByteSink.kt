@@ -7,6 +7,11 @@ import java.nio.file.StandardOpenOption
 
 interface ByteSink {
     fun write(bytes: ByteArray)
+
+    /** The slice is borrowed only for this call; implementations must not retain the buffer. */
+    fun write(bytes: ByteArray, offset: Int, byteCount: Int) {
+        write(bytes.copyOfRange(offset, offset + byteCount))
+    }
 }
 
 class MemoryByteSink : ByteSink, TruncatingSink {
@@ -58,9 +63,10 @@ class FileByteSink(
         return Files.newOutputStream(path, *options)
     }
 
-    override fun write(bytes: ByteArray) {
-        stream.write(bytes)
-        stream.flush()
+    override fun write(bytes: ByteArray) = write(bytes, 0, bytes.size)
+
+    override fun write(bytes: ByteArray, offset: Int, byteCount: Int) {
+        stream.write(bytes, offset, byteCount)
     }
 
     override fun truncate() {

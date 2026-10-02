@@ -1,5 +1,11 @@
 package dev.jmx.client
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -56,6 +62,7 @@ import top.yukonga.miuix.kmp.basic.NavigationItem
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.utils.springAnimateToPage
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
@@ -155,8 +162,54 @@ internal fun JmxApp(
         }
     }
     val coroutineScope = rememberCoroutineScope()
+    val offlineManager = remember(applicationContext) { OfflineDownloadManager.get(applicationContext) }
+    val offlineAlbums by offlineManager.albums.collectAsState()
+    val offlineReady by offlineManager.ready.collectAsState()
+    val offlineError by offlineManager.initializationError.collectAsState()
+    val offlineProgress = remember(applicationContext) { OfflineReadingProgressStore(applicationContext) }
+    var offlineBusy by remember { mutableStateOf(false) }
+    var exportIds by remember { mutableStateOf<Set<String>?>(null) }
+    var detailOfflineManifest by remember { mutableStateOf<ReaderOfflineManifest?>(null) }
+
+    fun enqueueDownload(request: Triple<HomeAlbum, dev.jmx.client.core.api.AlbumDetail, Set<String>>) {
+        coroutineScope.launch {
+            try {
+                offlineManager.enqueue(request.first, request.second, request.third)
+                Toast.makeText(context, "已加入离线下载", Toast.LENGTH_SHORT).show()
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Toast.makeText(context, failure.message ?: "无法启动下载", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) Toast.makeText(context, "通知未开启，可在离线下载页查看进度", Toast.LENGTH_LONG).show()
+    }
+    fun requestDownload(album: HomeAlbum, detail: dev.jmx.client.core.api.AlbumDetail, ids: Set<String>) {
+        enqueueDownload(Triple(album, detail, ids.toSet()))
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+    fun downloadOperation(block: suspend () -> Unit) {
+        if (offlineBusy) return
+        offlineBusy = true
+        coroutineScope.launch {
+            try { block() }
+            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (failure: Exception) { Toast.makeText(context, failure.message ?: "下载操作失败", Toast.LENGTH_LONG).show() }
+            finally { offlineBusy = false }
+        }
+    }
+    LaunchedEffect(offlineManager) {
+        try { offlineManager.recoverPendingDownloads() }
+        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (_: Exception) { Toast.makeText(context, "下载任务恢复失败，可在离线下载页重试", Toast.LENGTH_LONG).show() }
+    }
     var accountProfile by remember(accountRepository) { mutableStateOf(accountRepository.restore()) }
     var accountSessionRevision by rememberSaveable { mutableIntStateOf(0) }
+    val favoriteSelection = remember(accountSessionRevision, accountProfile?.id) { FavoriteCollectionSelection() }
     var showLogin by rememberSaveable { mutableStateOf(false) }
     var loginSubmitting by remember { mutableStateOf(false) }
     var loginFailure by remember { mutableStateOf<LoginUiFailure?>(null) }
@@ -371,6 +424,7 @@ internal fun JmxApp(
             transition = NavTransitions.MiuixDefault,
         ) {
                 entry<JmxRoute> { route ->
+                    Box(Modifier.fillMaxSize().background(MiuixTheme.colorScheme.surface)) {
                     when (route) {
                         JmxRoute.MAIN -> {
                             val navigationBackdrop = rememberBarBackdrop()
@@ -497,8 +551,8 @@ internal fun JmxApp(
                                                     tabs = homeCategoryTitles,
                                                     selectedIndex = homePagerState.currentPage,
                                                     onTabSelected = { index ->
-                                                        coroutineScope.launch {
-                                                            homePagerState.animateScrollToPage(index)
+                                                        if (!searchExpanded && searchTransitionProgress == 0f && detailRequest == null && readerRequest == null) {
+                                                            coroutineScope.launch { homePagerState.springAnimateToPage(index) }
                                                         }
                                                     },
                                                     // 指示器与标签行滚动跟随分页实时进度，手动滑动时不再滞后。
@@ -523,6 +577,7 @@ internal fun JmxApp(
                                             state = homeState,
                                             isRefreshing = isHomeRefreshing,
                                             pagerState = homePagerState,
+                                            pagerEnabled = !searchExpanded && searchTransitionProgress == 0f && detailRequest == null && readerRequest == null,
                                             liftedAlbumId = detailRequest
                                                 ?.takeIf {
                                                     it.origin == AlbumDetailOrigin.HOME && it.sourceBounds != null
@@ -662,6 +717,7 @@ internal fun JmxApp(
                                             onHistory = { openProtectedAccountPage(JmxRoute.HISTORY) },
                                             onDaily = { openProtectedAccountPage(JmxRoute.DAILY) },
                                             onAbout = { navigateAccount(JmxRoute.ABOUT) },
+                                            onDownloads = { navigateAccount(JmxRoute.DOWNLOADS) },
                                             // 只数收藏里的更新：仅在书架、没被收藏的漫画不该让收藏冒红点。
                                             // release 下 albumUpdateRecords 恒为空，角标自然不显示。
                                             favoriteUpdateCount = albumUpdateRecords
@@ -674,6 +730,33 @@ internal fun JmxApp(
                                     }
                                 }
                         }
+                        JmxRoute.DOWNLOADS -> OfflineDownloadsScreen(
+                            state = OfflineDownloadsUiState(
+                                items = offlineAlbums.map { it.toDownloadUiModel() },
+                                loading = !offlineReady,
+                                error = offlineError,
+                                busy = offlineBusy,
+                            ),
+                            onBack = ::navigateAccountBack,
+                            onRetry = { downloadOperation { offlineManager.retryInitialization() } },
+                            onAlbumClick = { album, bounds ->
+                                if (detailRequest == null) downloadOperation {
+                                    val manifest = offlineManager.readerManifest(album.id)
+                                    if (manifest != null) {
+                                        detailOfflineManifest = manifest
+                                        detailRequest = AlbumDetailTransitionRequest(album, bounds, AlbumDetailOrigin.DOWNLOADS)
+                                    }
+                                }
+                            },
+                            onDelete = { ids -> downloadOperation { offlineManager.delete(ids) } },
+                            onExport = { exportIds = it },
+                            onPause = { id -> downloadOperation { offlineManager.pause(setOf(id)) } },
+                            onResume = { id -> downloadOperation { offlineManager.resume(setOf(id)) } },
+                            onRetryDownload = { id -> downloadOperation { offlineManager.resume(setOf(id)) } },
+                            onRetryDownloads = { ids -> downloadOperation { offlineManager.resume(ids) } },
+                            topBarBlurStyle = topBarBlurStyle,
+                            liftedAlbumId = detailRequest?.takeIf { it.origin == AlbumDetailOrigin.DOWNLOADS && it.sourceBounds != null }?.album?.id,
+                        )
                         JmxRoute.ABOUT -> AboutScreen(
                             innerPadding = PaddingValues(),
                             onBack = ::navigateAccountBack,
@@ -701,6 +784,9 @@ internal fun JmxApp(
                             modifier = Modifier.fillMaxSize(),
                             containerColor = Color.Transparent,
                             topBar = {
+                                // Favorites owns its real Scaffold.topBar; this parent is only a popup host.
+                                // Its fallback status-bar padding is not inherited by the favorites screen.
+                                if (route != JmxRoute.FAVORITES) {
                                 BlurredBar(
                                     backdrop = pageBackdrop,
                                     style = topBarBlurStyle,
@@ -717,23 +803,8 @@ internal fun JmxApp(
                                                 )
                                             }
                                         },
-                                        actions = {
-                                            if (route == JmxRoute.FAVORITES) {
-                                                FavoriteSortAction(
-                                                    order = favoriteSortOrder,
-                                                    direction = favoriteSortDirection,
-                                                    onOrderSelected = {
-                                                        favoriteSortOrder = it
-                                                        settingsRepository.setFavoriteSortOrder(it)
-                                                    },
-                                                    onDirectionSelected = {
-                                                        favoriteSortDirection = it
-                                                        settingsRepository.setFavoriteSortDirection(it)
-                                                    },
-                                                )
-                                            }
-                                        },
                                     )
+                                }
                                 }
                             },
                         ) { innerPadding ->
@@ -741,7 +812,7 @@ internal fun JmxApp(
                                 JmxRoute.FAVORITES,
                                 JmxRoute.HISTORY,
                                 -> AccountCollectionScreen(
-                                    innerPadding = innerPadding,
+                                    innerPadding = if (route == JmxRoute.FAVORITES) PaddingValues() else innerPadding,
                                     backdrop = pageBackdrop,
                                     kind = if (route == JmxRoute.FAVORITES) {
                                         AccountCollectionKind.FAVORITES
@@ -749,6 +820,8 @@ internal fun JmxApp(
                                         AccountCollectionKind.HISTORY
                                     },
                                     repository = accountDataRepository,
+                                    selection = favoriteSelection,
+                                    topBarBlurStyle = topBarBlurStyle,
                                     sessionRevision = accountSessionRevision,
                                     favoriteOrder = favoriteSortOrder,
                                     favoriteDirection = favoriteSortDirection,
@@ -772,6 +845,25 @@ internal fun JmxApp(
                                         pendingProtectedPage = route
                                         requestLogin()
                                     },
+                                    title = route.title.takeIf { route == JmxRoute.FAVORITES },
+                                    onBack = ::navigateAccountBack.takeIf { route == JmxRoute.FAVORITES },
+                                    topBarActions = {
+                                        if (route == JmxRoute.FAVORITES && !favoriteSelection.selecting) {
+                                            FavoriteSortAction(
+                                                order = favoriteSortOrder,
+                                                direction = favoriteSortDirection,
+                                                onExpandedChange = { favoriteSelection.sortMenuExpanded = it },
+                                                onOrderSelected = {
+                                                    favoriteSortOrder = it
+                                                    settingsRepository.setFavoriteSortOrder(it)
+                                                },
+                                                onDirectionSelected = {
+                                                    favoriteSortDirection = it
+                                                    settingsRepository.setFavoriteSortDirection(it)
+                                                },
+                                            )
+                                        }
+                                    },
                                 )
                                 JmxRoute.DAILY -> accountProfile?.let {
                                     DailyCheckScreen(
@@ -793,6 +885,7 @@ internal fun JmxApp(
                                     onHistory = { openProtectedAccountPage(JmxRoute.HISTORY) },
                                     onDaily = { openProtectedAccountPage(JmxRoute.DAILY) },
                                     onAbout = { navigateAccount(JmxRoute.ABOUT) },
+                                            onDownloads = { navigateAccount(JmxRoute.DOWNLOADS) },
                                 )
                                 JmxRoute.THIRD_PARTY -> ThirdPartyListScreen(innerPadding)
                                 JmxRoute.SETTINGS -> SettingsScreen(
@@ -847,10 +940,12 @@ internal fun JmxApp(
                                 JmxRoute.MAIN,
                                 JmxRoute.ABOUT,
                                 JmxRoute.GROUP_ORDER,
+                                JmxRoute.DOWNLOADS,
                                 -> Unit
                             }
                         }
                         }
+                    }
                     }
                 }
             }
@@ -901,6 +996,15 @@ internal fun JmxApp(
             detailRequest?.album?.id?.let { albumUpdateCenter.markSeen(it) }
         }
 
+        val offlineDetailVersion = offlineAlbums.firstOrNull { it.id == detailRequest?.album?.id }
+            ?.let { item -> item.chapters.map { it.id to it.completed } }
+        LaunchedEffect(detailRequest?.album?.id, offlineDetailVersion) {
+            val request = detailRequest
+            if (request?.origin == AlbumDetailOrigin.DOWNLOADS) {
+                detailOfflineManifest = offlineManager.readerManifest(request.album.id)
+            }
+        }
+
         detailRequest?.let { request ->
             Box(
                 modifier = Modifier
@@ -910,12 +1014,18 @@ internal fun JmxApp(
                 AlbumDetailTransitionHost(
                     request = request,
                     repository = detailRepository,
+                    favoriteRepository = accountDataRepository,
+                    sessionRevision = accountSessionRevision,
+                    offlineAlbum = if (request.origin == AlbumDetailOrigin.DOWNLOADS) offlineAlbums.firstOrNull { it.id == request.album.id } else null,
+                    offlineManifest = if (request.origin == AlbumDetailOrigin.DOWNLOADS) detailOfflineManifest else null,
+                    onDownload = ::requestDownload,
                     readerActive = readerRequest != null,
                     authenticated = accountProfile != null,
                     onRequireLogin = ::requestLogin,
                     bookshelfRepository = bookshelfRepository,
                     onBookshelfChanged = { bookshelfRevision++ },
                     onFavoriteChanged = { added ->
+                        accountSessionRevision++
                         accountProfile?.let { profile ->
                             val current = profile.currentFavoriteCount ?: 0
                             val maximum = profile.maxFavoriteCount ?: Int.MAX_VALUE
@@ -954,6 +1064,7 @@ internal fun JmxApp(
                     request = request,
                     repository = readerRepository,
                     onProgress = { progress ->
+                        if (request.source is ReaderResourceSource.Offline) offlineProgress.save(progress)
                         bookshelfRepository.recordProgress(
                             albumId = progress.album.id,
                             chapterId = progress.chapterId,
@@ -969,6 +1080,8 @@ internal fun JmxApp(
                 )
             }
         }
+
+        DownloadExportDialogs(manager = offlineManager, selectedIds = exportIds, onDismiss = { exportIds = null })
 
         AccountLoginDialog(
             show = showLogin,

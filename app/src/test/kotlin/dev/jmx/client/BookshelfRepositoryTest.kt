@@ -177,6 +177,32 @@ class BookshelfRepositoryTest {
     }
 
     @Test
+    fun recentlyAddedIgnoresMetadataAndReadingChanges() {
+        val entries = listOf(
+            BookshelfEntry("old", "Old", "", "", "", addedAt = 10L, updatedAt = 999L, lastReadAt = 999L),
+            BookshelfEntry("new", "New", "", "", "", addedAt = 20L, updatedAt = 20L),
+            BookshelfEntry("same", "Same", "", "", "", addedAt = 20L, updatedAt = 1000L),
+        )
+        assertEquals(
+            listOf("new", "same", "old"),
+            sortBookshelf(entries, BookshelfSortOrder.ADDED).map { it.albumId },
+        )
+        assertEquals(
+            listOf("old", "same", "new"),
+            sortBookshelf(entries, BookshelfSortOrder.ADDED, BookshelfSortDirection.DESCENDING)
+                .map { it.albumId },
+        )
+    }
+
+    @Test
+    fun addingAgainPreservesOriginalAddedTime() {
+        val initial = addToBookshelf(emptyList(), firstAlbum, addedAt = 10L).first
+        val updated = addToBookshelf(initial, firstAlbum.copy(name = "新名称"), addedAt = 100L).first
+        assertEquals(10L, updated.single().addedAt)
+        assertEquals(100L, updated.single().updatedAt)
+    }
+
+    @Test
     fun tagRulesRequireEveryRuleAndAcceptCommonDelimiters() {
         val rules = parseBookshelfTagRules("韩漫，全彩  连载中")
 

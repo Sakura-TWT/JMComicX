@@ -21,12 +21,29 @@ class InteractionApi(
 
     suspend fun favoriteAlbum(albumId: String): JmxResult<ActionResult> {
         if (albumId.isBlank()) return JmxResult.Failure(JmxError.Schema("albumId 为空", field = "albumId"))
-        return action(
+        return when (val result = action(
             ApiRoute.FavoriteAction,
-            form = {
-                form("aid", albumId)
-            }
-        )
+            form = { form("aid", albumId) },
+        )) {
+            is JmxResult.Failure -> result
+            is JmxResult.Success -> result.value.requireFavoriteSuccess()
+        }
+    }
+
+    /** 移动已有收藏；favorite 是 toggle，不能用作资料夹搬移。 */
+    suspend fun moveFavoritesToFolder(albumIds: List<String>, folderId: Int): JmxResult<ActionResult> {
+        if (folderId <= 0) return JmxResult.Failure(JmxError.Schema("请选择实际收藏资料夹", field = "folder_id"))
+        if (albumIds.isEmpty() || albumIds.any { !it.matches(Regex("[0-9]+")) }) {
+            return JmxResult.Failure(JmxError.Schema("漫画编号无效", field = "aid"))
+        }
+        return when (val result = action(ApiRoute.FavoriteFolderAction) {
+            form("type", "move")
+            form("folder_id", folderId.toString())
+            form("aid", albumIds.distinct().joinToString(","))
+        }) {
+            is JmxResult.Failure -> result
+            is JmxResult.Success -> result.value.requireFavoriteSuccess()
+        }
     }
 
     suspend fun albumComments(
@@ -90,3 +107,7 @@ class InteractionApi(
         return JmxResult.Success(root.toActionResult())
     }
 }
+
+internal fun ActionResult.requireFavoriteSuccess(): JmxResult<ActionResult> =
+    if (status == "ok") JmxResult.Success(this)
+    else JmxResult.Failure(JmxError.Schema(message ?: "收藏操作未得到服务端确认", field = "status"))

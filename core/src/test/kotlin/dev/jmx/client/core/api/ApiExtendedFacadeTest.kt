@@ -63,6 +63,46 @@ class ApiExtendedFacadeTest {
     }
 
     @Test
+    fun favoriteToggleIsNotRetriedOnTransientServerFailure() {
+        val api = InteractionApi(createClient(maxAttempts = 3))
+        server.enqueue(MockResponse().setResponseCode(503).setBody("temporarily unavailable"))
+        server.enqueue(encryptedResponse("""{"status":"ok","type":"remove"}"""))
+        val result = kotlinx.coroutines.runBlocking { api.favoriteAlbum("123") }
+        assertTrue(result is JmxResult.Failure)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun favoriteFolderMoveUsesDedicatedRouteAndDeduplicatesIds() {
+        val api = InteractionApi(createClient())
+        server.enqueue(encryptedResponse("""{"status":"ok","msg":"moved"}"""))
+        val result = kotlinx.coroutines.runBlocking { api.moveFavoritesToFolder(listOf("123", "456", "123"), 7) }
+        assertTrue(result is JmxResult.Success)
+        val request = server.takeRequest()
+        assertEquals("/favorite_folder", request.path)
+        assertEquals("type=move&folder_id=7&aid=123%2C456", request.body.readUtf8())
+    }
+
+    @Test
+    fun favoriteFolderMoveRejectsSyntheticDefaultFolderAndMalformedIds() {
+        val api = InteractionApi(createClient())
+        kotlinx.coroutines.runBlocking {
+            assertTrue(api.moveFavoritesToFolder(listOf("123"), 0) is JmxResult.Failure)
+            assertTrue(api.moveFavoritesToFolder(listOf("1,2"), 7) is JmxResult.Failure)
+            assertTrue(api.moveFavoritesToFolder(emptyList(), 7) is JmxResult.Failure)
+        }
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun favoriteFolderMoveRequiresExplicitSuccess() {
+        val api = InteractionApi(createClient())
+        server.enqueue(encryptedResponse("""{"status":"error","msg":"folder missing"}"""))
+        val result = kotlinx.coroutines.runBlocking { api.moveFavoritesToFolder(listOf("123"), 7) }
+        assertTrue(result is JmxResult.Failure)
+    }
+
+    @Test
     fun interactionApiParsesAlbumComments() {
         val api = InteractionApi(createClient())
         server.enqueue(
@@ -288,7 +328,7 @@ class ApiExtendedFacadeTest {
         assertEquals("/categories/filter?page=1&order=&c=doujin&o=mv_w", server.takeRequest().path)
     }
 
-    private fun createClient(): JmxApiClient {
+    private fun createClient(maxAttempts: Int = 1): JmxApiClient {
         val tokenProvider = ApiTokenProvider(
             clock = object : ApiClock {
                 override fun nowSeconds(): Long = TS
@@ -299,7 +339,7 @@ class ApiExtendedFacadeTest {
             JmxHttpClient(
                 endpointManager = ApiEndpointManager(listOf(server.url("/").toString())),
                 tokenProvider = tokenProvider,
-                retryPolicy = DefaultRetryPolicy(maxAttempts = 1)
+                retryPolicy = DefaultRetryPolicy(maxAttempts = maxAttempts)
             )
         )
     }

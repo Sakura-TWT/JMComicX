@@ -1,5 +1,6 @@
 package dev.jmx.client
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -9,10 +10,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,7 +33,6 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,13 +45,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -87,9 +88,9 @@ import top.yukonga.miuix.kmp.basic.TabRowWithContour
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.TopAppBarDefaults
 import top.yukonga.miuix.kmp.basic.rememberPullToRefreshState
 import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.basic.Check
 import top.yukonga.miuix.kmp.icon.basic.Search
 import top.yukonga.miuix.kmp.icon.extended.Delete
 import top.yukonga.miuix.kmp.icon.extended.AddFolder
@@ -105,6 +106,9 @@ import top.yukonga.miuix.kmp.menu.WindowIconCascadingDropdownMenu
 import top.yukonga.miuix.kmp.menu.WindowIconDropdownMenu
 import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.PagerGestureNestedScrollConnection
+import top.yukonga.miuix.kmp.utils.pagerGestureOverride
+import top.yukonga.miuix.kmp.utils.springAnimateToPage
 import top.yukonga.miuix.kmp.window.WindowDialog
 
 @Composable
@@ -138,6 +142,7 @@ internal fun BookshelfScreen(
         mutableStateOf(repository.entries(selectedGroupId, sortOrder, sortDirection))
     }
     var showGroupEditor by remember { mutableStateOf(false) }
+    var menuExpanded by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
     var showGroupManager by remember { mutableStateOf(false) }
     var editingGroup by remember { mutableStateOf<BookshelfGroup?>(null) }
@@ -228,8 +233,16 @@ internal fun BookshelfScreen(
     }
 
     LaunchedEffect(repository, revision, selectedGroupId, sortOrder, sortDirection) {
-        groups = repository.groups()
-        entries = repository.entries(selectedGroupId, sortOrder, sortDirection)
+        reload()
+    }
+    // Repository reads are synchronous: prune only against the freshly read active group,
+    // never against an adjacent pager page or an intermediate loading/empty placeholder.
+    LaunchedEffect(entries, selectionMode) {
+        if (selectionMode) selectedIds = selectedIds.intersect(entries.mapTo(hashSetOf(), BookshelfEntry::albumId))
+    }
+    BackHandler(enabled = selectionMode && !showSelectionGroupPicker && pendingRemoval.isEmpty() && operationMessage == null) {
+        selectionMode = false
+        selectedIds = emptySet()
     }
 
     fun requireAuthentication() {
@@ -396,6 +409,9 @@ internal fun BookshelfScreen(
             pagerState.scrollToPage(targetPage)
         }
     }
+    val pagerEnabled = !selectionMode && !menuExpanded && !showGroupEditor && !showGroupManager && !showManualPicker &&
+        !showSelectionGroupPicker && !showExportDialog && pendingRemoval.isEmpty() && pendingGroupDeletion == null &&
+        pendingImport == null && pendingImportReplace == null && !operationRunning && !transferRunning && operationMessage == null
     val menuEntry = DropdownEntry(
         items = buildList {
             add(
@@ -471,6 +487,7 @@ internal fun BookshelfScreen(
             ) { multiSelect ->
                 SmallTopAppBar(
                     title = if (multiSelect) "已选择 ${selectedIds.size} 部" else "书架",
+                    titlePadding = if (multiSelect) 8.dp else TopAppBarDefaults.TitlePadding,
                     color = if (activeBarBackdrop != null) androidx.compose.ui.graphics.Color.Transparent else MiuixTheme.colorScheme.surface,
                     navigationIcon = {
                         if (!multiSelect) {
@@ -561,7 +578,7 @@ internal fun BookshelfScreen(
                                     tint = MiuixTheme.colorScheme.onBackground,
                                 )
                             }
-                            WindowIconCascadingDropdownMenu(entry = menuEntry) {
+                            WindowIconCascadingDropdownMenu(entry = menuEntry, onExpandedChange = { menuExpanded = it }) {
                                 Icon(
                                     imageVector = MiuixIcons.ListView,
                                     contentDescription = "书架功能菜单",
@@ -577,9 +594,7 @@ internal fun BookshelfScreen(
                     tabs = groupTabs,
                     selectedIndex = pagerState.currentPage,
                     onTabSelected = { index ->
-                        selectionMode = false
-                        selectedIds = emptySet()
-                        coroutineScope.launch { pagerState.animateScrollToPage(index) }
+                        if (pagerEnabled) coroutineScope.launch { pagerState.springAnimateToPage(index) }
                     },
                     // 指示器跟随分页实时进度，手动滑动分组时标签不再等惯性停稳才切换。
                     selectionProgress = {
@@ -598,7 +613,10 @@ internal fun BookshelfScreen(
                     state = pagerState,
                     modifier = Modifier
                         .fillMaxSize()
+                        .pagerGestureOverride(pagerState, enabled = pagerEnabled)
                         .then(if (activeBarBackdrop != null) Modifier.layerBackdrop(activeBarBackdrop) else Modifier),
+                    userScrollEnabled = false,
+                    pageNestedScrollConnection = PagerGestureNestedScrollConnection,
                     key = { page -> groups.getOrNull(page - 1)?.id ?: ALL_BOOKSHELF_GROUP_ID },
                 ) { page ->
                 val pageGroupId = groups.getOrNull(page - 1)?.id ?: ALL_BOOKSHELF_GROUP_ID
@@ -657,13 +675,14 @@ internal fun BookshelfScreen(
                                         } else {
                                             updateRecords[entry.albumId]?.pendingChapters ?: 0
                                         },
+                                        selected = (entry.albumId in selectedIds).takeIf { selectionMode },
+                                        selectionOverlay = {
+                                            if (selectionMode) AlbumSelectionOverlay(
+                                                selected = entry.albumId in selectedIds,
+                                                modifier = Modifier.matchParentSize(),
+                                            )
+                                        },
                                     )
-                                    if (selectionMode) {
-                                        BookshelfSelectionOverlay(
-                                            selected = entry.albumId in selectedIds,
-                                            modifier = Modifier.matchParentSize(),
-                                        )
-                                    }
                                 }
                                 entry.lastReadAt?.let {
                                     Text(
@@ -930,6 +949,7 @@ internal fun BookshelfScreen(
                 selectedIds = emptySet()
                 selectionMode = false
                 reload()
+                hapticFeedback.performHapticFeedback(HapticFeedbackType.Confirm)
             },
             modifier = Modifier.fillMaxWidth(),
         )
@@ -1450,7 +1470,10 @@ private fun ManualBookshelfPickerDialog(
                             onClick = { onToggle(album.id) },
                             shape = RoundedCornerShape(8.dp),
                             color = itemColor,
-                            modifier = Modifier.padding(vertical = 3.dp),
+                            modifier = Modifier.padding(vertical = 3.dp).semantics(mergeDescendants = true) {
+                                role = Role.Checkbox
+                                toggleableState = ToggleableState(selected)
+                            },
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(8.dp),
@@ -1473,7 +1496,7 @@ private fun ManualBookshelfPickerDialog(
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                 }
-                                MiuixSelectionIndicator(selected = selected)
+                                Checkbox(state = ToggleableState(selected), onClick = null, modifier = Modifier.clearAndSetSemantics {})
                             }
                         }
                     }
@@ -1718,7 +1741,10 @@ private fun BookshelfGroupChecklist(
             )
             Surface(
                 onClick = { onToggle(group.id) },
-                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp).semantics(mergeDescendants = true) {
+                    role = Role.Checkbox
+                    toggleableState = ToggleableState(selected)
+                },
                 shape = RoundedCornerShape(8.dp),
                 color = itemColor,
             ) {
@@ -1747,7 +1773,7 @@ private fun BookshelfGroupChecklist(
                             )
                         }
                     }
-                    MiuixSelectionIndicator(selected = selected)
+                    Checkbox(state = ToggleableState(selected), onClick = null, modifier = Modifier.clearAndSetSemantics {})
                 }
             }
         }
@@ -1782,79 +1808,6 @@ private fun buildBookshelfImportMessage(outcome: BookshelfImportOutcome, replace
         head + "书架已达上限，有 ${outcome.droppedEntries} 部漫画未能导入。"
     } else {
         head
-    }
-}
-
-@Composable
-private fun BookshelfSelectionOverlay(
-    selected: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    val overlayColor by animateColorAsState(
-        targetValue = if (selected) {
-            MiuixTheme.colorScheme.primary.copy(alpha = 0.14f)
-        } else {
-            Color.Transparent
-        },
-        animationSpec = tween(200),
-        label = "BookshelfSelectionOverlay",
-    )
-    Box(modifier = modifier.background(overlayColor)) {
-        MiuixSelectionIndicator(
-            selected = selected,
-            modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
-        )
-    }
-}
-
-@Composable
-private fun MiuixSelectionIndicator(
-    selected: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    val backgroundColor by animateColorAsState(
-        targetValue = if (selected) {
-            MiuixTheme.colorScheme.primary
-        } else {
-            MiuixTheme.colorScheme.surface.copy(alpha = 0.9f)
-        },
-        animationSpec = tween(180),
-        label = "MiuixSelectionIndicatorBackground",
-    )
-    val borderColor by animateColorAsState(
-        targetValue = if (selected) {
-            MiuixTheme.colorScheme.primary
-        } else {
-            MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.5f)
-        },
-        animationSpec = tween(180),
-        label = "MiuixSelectionIndicatorBorder",
-    )
-    val checkAlpha by animateFloatAsState(
-        targetValue = if (selected) 1f else 0f,
-        animationSpec = tween(150),
-        label = "MiuixSelectionIndicatorCheck",
-    )
-    Surface(
-        modifier = modifier.size(28.dp),
-        shape = CircleShape,
-        color = backgroundColor,
-        border = BorderStroke(1.dp, borderColor),
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(
-                imageVector = MiuixIcons.Basic.Check,
-                contentDescription = if (selected) "已选择" else null,
-                modifier = Modifier
-                    .size(17.dp)
-                    .graphicsLayer {
-                        alpha = checkAlpha
-                        scaleX = 0.82f + checkAlpha * 0.18f
-                        scaleY = 0.82f + checkAlpha * 0.18f
-                    },
-                tint = MiuixTheme.colorScheme.onPrimary,
-            )
-        }
     }
 }
 

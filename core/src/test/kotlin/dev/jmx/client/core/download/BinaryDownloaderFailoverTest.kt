@@ -112,16 +112,18 @@ class BinaryDownloaderFailoverTest {
         assertEquals(1, events.count { it is DownloadEvent.Failed })
     }
 
-    /** 没有候补可换时不该重试，一次失败就返回。 */
+    /** A transient failure with no alternate host gets bounded same-address retry. */
     @Test
-    fun noCandidateMeansNoRetry() = runBlocking {
+    fun noCandidateRetriesTheSameAddress() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(500))
+        server.enqueue(imageResponse("recovered"))
 
         val result = downloader(imageHosts = emptyList())
             .download(imageRequest("00001.jpg"), MemoryByteSink())
 
-        assertTrue(result is JmxResult.Failure)
-        assertEquals(1, server.requestCount)
+        assertTrue(result is JmxResult.Success)
+        assertEquals(2, server.requestCount)
+        assertEquals(server.takeRequest().path, server.takeRequest().path)
     }
 
     /**

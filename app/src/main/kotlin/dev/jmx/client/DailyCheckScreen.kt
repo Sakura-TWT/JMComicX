@@ -35,7 +35,6 @@ import dev.jmx.client.core.result.JmxResult
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
 import top.yukonga.miuix.kmp.basic.Text
@@ -88,7 +87,7 @@ internal fun DailyCheckScreen(
             .background(MiuixTheme.colorScheme.surface),
     ) {
         when (val current = state) {
-            DailyUiState.Loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+            DailyUiState.Loading -> AccountPageLoading(Modifier.padding(innerPadding))
             DailyUiState.NoEvent -> DailyNoEventMessage(
                 onRetry = { retryKey++ },
             )

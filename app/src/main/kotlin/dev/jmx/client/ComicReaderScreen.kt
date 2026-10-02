@@ -173,6 +173,7 @@ internal data class ReaderLaunchRequest(
     val detail: AlbumDetail,
     val initialChapterId: String,
     val initialPageIndex: Int = 0,
+    val source: ReaderResourceSource = ReaderResourceSource.OnlineJm,
 )
 
 internal data class ReaderProgressUpdate(
@@ -185,15 +186,14 @@ internal data class ReaderProgressUpdate(
 
 internal data class ReaderPage(
     val index: Int,
-    val url: String,
-    val plan: ImagePlan,
-    val headers: NetworkHeaders,
-)
+    val resource: ReaderPageResource,
+) {
+    val cacheKey: String get() = resource.cacheKey
+}
 
 internal sealed interface ReaderChapterState {
     data object Loading : ReaderChapterState
     data class Content(
-        val template: ChapterTemplate,
         val pages: List<ReaderPage>,
     ) : ReaderChapterState
     data class Error(val message: String) : ReaderChapterState
@@ -206,12 +206,26 @@ internal fun ComicReaderScreen(
     onProgress: (ReaderProgressUpdate) -> Unit,
     onBack: () -> Unit,
 ) {
-    ComicReaderContent(
-        request = request,
-        repository = repository,
-        onProgress = onProgress,
-        onBack = onBack,
-    )
+    key(request.album.id, request.source) {
+        val offline = request.source as? ReaderResourceSource.Offline
+        val catalogError = offline?.manifest?.catalogError(request.album.id)
+            ?: if (offline != null && offline.manifest.chapters.none { it.id == request.initialChapterId }) {
+                "离线目录中没有请求的章节，不会请求网络。"
+            } else {
+                null
+            }
+        if (catalogError != null) {
+            BackHandler(onBack = onBack)
+            ReaderError(message = catalogError, onRetry = null, onBack = onBack)
+        } else {
+            ComicReaderContent(
+                request = request,
+                repository = repository,
+                onProgress = onProgress,
+                onBack = onBack,
+            )
+        }
+    }
 }
 
 @Composable
@@ -222,7 +236,16 @@ private fun ComicReaderContent(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
-    val chapters = remember(request.detail) { request.detail.readingChapters() }
+    val source = request.source
+    val offline = source as? ReaderResourceSource.Offline
+    val chapters = remember(request.detail, source) {
+        when (source) {
+            ReaderResourceSource.OnlineJm -> request.detail.readingChapters()
+            is ReaderResourceSource.Offline -> source.manifest.chapters.map { it.toReaderChapter() }
+        }
+    }
+    var offlineInspection by remember(source) { mutableStateOf<ReaderOfflineInspection?>(null) }
+    val availableChapterIds = offlineInspection?.availableChapterIds.orEmpty()
     val initialChapterIndex = remember(request.initialChapterId, chapters) {
         chapters.indexOfFirst { it.id == request.initialChapterId }.takeIf { it >= 0 } ?: 0
     }
@@ -232,6 +255,18 @@ private fun ComicReaderContent(
     var initialProgressConsumed by rememberSaveable(request.album.id) { mutableStateOf(false) }
     selectedChapterIndex = selectedChapterIndex.coerceIn(chapters.indices)
     val selectedChapter = chapters[selectedChapterIndex]
+    val previousChapterIndex = when (source) {
+        ReaderResourceSource.OnlineJm -> (selectedChapterIndex - 1).takeIf { it in chapters.indices }
+        is ReaderResourceSource.Offline -> readerOfflineAdjacentChapterIndex(
+            source.manifest.chapters, availableChapterIds, selectedChapterIndex, -1,
+        )
+    }
+    val nextChapterIndex = when (source) {
+        ReaderResourceSource.OnlineJm -> (selectedChapterIndex + 1).takeIf { it in chapters.indices }
+        is ReaderResourceSource.Offline -> readerOfflineAdjacentChapterIndex(
+            source.manifest.chapters, availableChapterIds, selectedChapterIndex, 1,
+        )
+    }
     val initialPageForChapter = if (
         !initialProgressConsumed && selectedChapter.id == request.initialChapterId
     ) {
@@ -239,7 +274,7 @@ private fun ComicReaderContent(
     } else {
         0
     }
-    var chapterState by remember(request.album.id) {
+    var chapterState by remember(request.album.id, selectedChapter.id) {
         mutableStateOf<ReaderChapterState>(ReaderChapterState.Loading)
     }
     var chapterRetryKey by remember(request.album.id) { mutableIntStateOf(0) }
@@ -306,6 +341,18 @@ private fun ComicReaderContent(
     fun selectChapter(index: Int, landing: ReaderChapterLanding = ReaderChapterLanding.INITIAL) {
         val safeIndex = index.coerceIn(chapters.indices)
         if (safeIndex == selectedChapterIndex) return
+        if (offline != null && chapters[safeIndex].id !in availableChapterIds) return
+        (chapterState as? ReaderChapterState.Content)?.pages?.takeIf { it.isNotEmpty() }?.let { loadedPages ->
+            onProgress(
+                ReaderProgressUpdate(
+                    album = request.album,
+                    chapterId = selectedChapter.id,
+                    chapterName = selectedChapter.displayName(selectedChapterIndex),
+                    pageIndex = currentPageIndex.coerceIn(loadedPages.indices),
+                    pageCount = loadedPages.size,
+                ),
+            )
+        }
         chapterLanding = landing
         selectedChapterIndex = safeIndex
         initialProgressConsumed = true
@@ -314,13 +361,25 @@ private fun ComicReaderContent(
         showCatalog = false
     }
 
-    LaunchedEffect(selectedChapter.id, chapterRetryKey, repository) {
+    LaunchedEffect(selectedChapter.id, chapterRetryKey, repository, source) {
         chapterState = ReaderChapterState.Loading
         currentPageIndex = initialPageForChapter
-        val loadedState = repository.loadChapter(
-            chapterId = selectedChapter.id,
-            imageHostHint = request.album.imageHost,
-        )
+        val loadedState = when (source) {
+            ReaderResourceSource.OnlineJm -> repository.loadChapter(
+                chapterId = selectedChapter.id,
+                imageHostHint = request.album.imageHost,
+            )
+            is ReaderResourceSource.Offline -> {
+                val inspection = withContext(Dispatchers.IO) {
+                    inspectReaderOfflineManifest(source.manifest, request.album.id)
+                }
+                offlineInspection = inspection
+                neighborPageCounts = inspection.chapters
+                    .filter { it.error == null }
+                    .associate { it.chapter.id to it.files.size }
+                inspection.readerChapterState(selectedChapter.id)
+            }
+        }
         chapterState = loadedState
         if (loadedState is ReaderChapterState.Content) {
             // 上拉换到上一话时落在最后一页：回看的自然预期是"接着刚才那一页往前"。
@@ -409,8 +468,8 @@ private fun ComicReaderContent(
 
     // 快读到章末（或回到章首）时把相邻那一话的模板与头几页备好，
     // 让"拉到底换章"落地即有画面，而不是先看一屏转圈；顺手把页数记下来给提示卡用。
-    LaunchedEffect(selectedChapter.id, pages.size, currentPageIndex, viewportWidthPx) {
-        if (pages.isEmpty()) return@LaunchedEffect
+    LaunchedEffect(selectedChapter.id, pages.size, currentPageIndex, viewportWidthPx, source) {
+        if (pages.isEmpty() || source != ReaderResourceSource.OnlineJm) return@LaunchedEffect
         val nearEnd = pages.lastIndex - currentPageIndex <= READER_CHAPTER_WARMUP_DISTANCE
         val nearStart = currentPageIndex <= READER_CHAPTER_WARMUP_DISTANCE
         suspend fun warmUp(chapter: AlbumChapter) {
@@ -475,17 +534,17 @@ private fun ComicReaderContent(
     val flipHint = remember(pages, flipThresholdPx) { ReaderFlipHintState(flipThresholdPx) }
     // 目标话必须 remember：这一层现在每一帧拖动都会重组，而 displayName() 里有一次
     // Html.fromHtml——按帧解 HTML 会实打实地拖慢手势。
-    val flipForwardTarget = remember(chapters, selectedChapterIndex, neighborPageCounts) {
+    val flipForwardTarget = remember(chapters, nextChapterIndex, neighborPageCounts) {
         readerFlipTarget(
             chapters = chapters,
-            index = selectedChapterIndex + 1,
+            index = nextChapterIndex ?: -1,
             pageCounts = neighborPageCounts,
         )
     }
-    val flipBackwardTarget = remember(chapters, selectedChapterIndex, neighborPageCounts) {
+    val flipBackwardTarget = remember(chapters, previousChapterIndex, neighborPageCounts) {
         readerFlipTarget(
             chapters = chapters,
-            index = selectedChapterIndex - 1,
+            index = previousChapterIndex ?: -1,
             pageCounts = neighborPageCounts,
         )
     }
@@ -546,10 +605,10 @@ private fun ComicReaderContent(
                     canFlipForward = flipForwardTarget != null,
                     canFlipBackward = flipBackwardTarget != null,
                     onFlipForward = {
-                        selectChapter(selectedChapterIndex + 1, ReaderChapterLanding.INITIAL)
+                        nextChapterIndex?.let { selectChapter(it, ReaderChapterLanding.INITIAL) }
                     },
                     onFlipBackward = {
-                        selectChapter(selectedChapterIndex - 1, ReaderChapterLanding.LAST)
+                        previousChapterIndex?.let { selectChapter(it, ReaderChapterLanding.LAST) }
                     },
                     onPageFailed = { index, message -> failedPages[index] = message },
                     onPageLoaded = { index, width, height ->
@@ -584,6 +643,7 @@ private fun ComicReaderContent(
                     chapter = selectedChapter,
                     chapterIndex = selectedChapterIndex,
                     chapterCount = chapters.size,
+                    source = source,
                     onBack = ::closeReader,
                 )
             }
@@ -611,11 +671,11 @@ private fun ComicReaderContent(
                         scrollToPage(readerPageFromSlider(sliderDraft ?: currentPageIndex.toFloat(), pages.size))
                         sliderDraft = null
                     },
-                    canPreviousChapter = selectedChapterIndex > 0,
-                    canNextChapter = selectedChapterIndex < chapters.lastIndex,
+                    canPreviousChapter = previousChapterIndex != null,
+                    canNextChapter = nextChapterIndex != null,
                     failedPage = failedPages.keys.minOrNull(),
-                    onPreviousChapter = { selectChapter(selectedChapterIndex - 1) },
-                    onNextChapter = { selectChapter(selectedChapterIndex + 1) },
+                    onPreviousChapter = { previousChapterIndex?.let { selectChapter(it) } },
+                    onNextChapter = { nextChapterIndex?.let { selectChapter(it) } },
                     onShowCatalog = { showCatalog = true },
                     onShowSettings = { showSettings = true },
                 )
@@ -625,6 +685,7 @@ private fun ComicReaderContent(
             ReaderChapterFlipCard(
                 visible = flipCard != null,
                 model = lastFlipCard,
+                source = source,
                 modifier = Modifier.align(
                     // 退场动画期间读的是快照，方向也得跟着快照，否则卡片会在淡出时换边。
                     if (lastFlipCard?.forward != false) Alignment.BottomCenter else Alignment.TopCenter,
@@ -635,6 +696,7 @@ private fun ComicReaderContent(
                 show = showCatalog,
                 chapters = chapters,
                 selectedChapterIndex = selectedChapterIndex,
+                availableChapterIds = if (offline != null) availableChapterIds else null,
                 onSelect = { selectChapter(it) },
                 onDismiss = { showCatalog = false },
             )
@@ -890,7 +952,7 @@ private fun ReaderPages(
         ) {
             itemsIndexed(
                 items = pages,
-                key = { _, page -> page.plan.cacheKey },
+                key = { _, page -> page.cacheKey },
                 contentType = { _, _ -> "reader-page" },
             ) { index, page ->
                 ReaderPageImage(
@@ -1040,6 +1102,7 @@ internal fun readerFlipShouldCancelAfterReverse(reverseTravelPx: Float, threshol
 private fun ReaderChapterFlipCard(
     visible: Boolean,
     model: ReaderFlipCardModel?,
+    source: ReaderResourceSource,
     modifier: Modifier = Modifier,
 ) {
     AnimatedVisibility(
@@ -1052,6 +1115,8 @@ private fun ReaderChapterFlipCard(
         val canFlip = card.target != null
         val forward = card.forward
         val title = when {
+            !canFlip && source is ReaderResourceSource.Offline ->
+                if (forward) "后面没有已下载章节" else "前面没有已下载章节"
             !canFlip -> if (forward) "已经是最后一话" else "已经是第一话"
             card.armed -> "松手进入"
             else -> if (forward) "继续上拉进入下一话" else "继续下拉进入上一话"
@@ -1195,9 +1260,9 @@ private fun ReaderPageImage(
         return
     }
     // 加载状态按 item 实例记：外层按页码记的话，页面被回收再复用时还带着上一次的 true。
-    var loading by remember(page.plan.cacheKey, retryKey) { mutableStateOf(true) }
-    var spinnerReady by remember(page.plan.cacheKey, retryKey) { mutableStateOf(false) }
-    LaunchedEffect(page.plan.cacheKey, retryKey) {
+    var loading by remember(page.cacheKey, retryKey) { mutableStateOf(true) }
+    var spinnerReady by remember(page.cacheKey, retryKey) { mutableStateOf(false) }
+    LaunchedEffect(page.cacheKey, retryKey) {
         // 命中内存/磁盘缓存时这一页几乎瞬间就出来，转圈立刻出现再消失就是一下灰闪。
         delay(READER_SPINNER_DELAY_MILLIS)
         spinnerReady = true
@@ -1291,6 +1356,7 @@ private fun ReaderTopBar(
     chapter: AlbumChapter,
     chapterIndex: Int,
     chapterCount: Int,
+    source: ReaderResourceSource,
     onBack: () -> Unit,
 ) {
     Surface(color = MiuixTheme.colorScheme.background) {
@@ -1309,7 +1375,10 @@ private fun ReaderTopBar(
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "第 ${chapterIndex + 1} / $chapterCount 话",
+                    text = when (source) {
+                        ReaderResourceSource.OnlineJm -> "第 ${chapterIndex + 1} / $chapterCount 话"
+                        is ReaderResourceSource.Offline -> "离线 · 第 ${chapterIndex + 1} / $chapterCount 话"
+                    },
                     style = MiuixTheme.textStyles.body2,
                     fontWeight = FontWeight.SemiBold,
                     color = MiuixTheme.colorScheme.onBackground,
@@ -1451,12 +1520,13 @@ private fun ReaderCatalogSheet(
     show: Boolean,
     chapters: List<AlbumChapter>,
     selectedChapterIndex: Int,
+    availableChapterIds: Set<String>?,
     onSelect: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
     OverlayBottomSheet(
         show = show,
-        title = "选择章节",
+        title = if (availableChapterIds == null) "选择章节" else "离线目录 · 仅已下载章节可读",
         onDismissRequest = onDismiss,
     ) {
         LazyColumn(modifier = Modifier.heightIn(max = 560.dp)) {
@@ -1466,7 +1536,12 @@ private fun ReaderCatalogSheet(
             ) { index, chapter ->
                 BasicComponent(
                     title = chapter.displayName(index),
-                    summary = "JM${chapter.id}",
+                    summary = when {
+                        availableChapterIds == null -> "JM${chapter.id}"
+                        chapter.id in availableChapterIds -> "JM${chapter.id} · 已下载"
+                        else -> "JM${chapter.id} · 未完整下载或文件缺失"
+                    },
+                    enabled = availableChapterIds == null || chapter.id in availableChapterIds,
                     onClick = { onSelect(index) },
                     startAction = {
                         Icon(
@@ -1624,7 +1699,7 @@ private fun ReaderLoading(chapterName: String) {
 }
 
 @Composable
-private fun ReaderError(message: String, onRetry: () -> Unit, onBack: () -> Unit) {
+private fun ReaderError(message: String, onRetry: (() -> Unit)?, onBack: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1647,7 +1722,7 @@ private fun ReaderError(message: String, onRetry: () -> Unit, onBack: () -> Unit
         Spacer(modifier = Modifier.height(18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             TextButton(text = "返回", onClick = onBack)
-            TextButton(text = "重试", onClick = onRetry)
+            if (onRetry != null) TextButton(text = "重试", onClick = onRetry)
         }
     }
 }
@@ -1758,15 +1833,17 @@ internal class ComicReaderRepository(
         val pages = imageUrls.mapIndexed { index, url ->
             ReaderPage(
                 index = index,
-                url = url,
-                plan = imagePipeline.plan(url, albumId, scrambleId),
-                headers = headers,
+                resource = ReaderPageResource.OnlineJm(
+                    url = url,
+                    plan = imagePipeline.plan(url, albumId, scrambleId),
+                    headers = headers,
+                ),
             )
         }
         return if (pages.isEmpty()) {
             ReaderChapterState.Error("章节没有返回可阅读的图片。")
         } else {
-            ReaderChapterState.Content(template = this, pages = pages)
+            ReaderChapterState.Content(pages = pages)
         }
     }
 
@@ -1825,20 +1902,26 @@ internal fun buildReaderImageRequest(
     retryKey: Int,
     viewportWidthPx: Int,
 ): ImageRequest {
+    val resource = when (val resource = page.resource) {
+        is ReaderPageResource.RestoredLocal -> return buildReaderOfflineImageRequest(
+            context, resource, retryKey, viewportWidthPx,
+        )
+        is ReaderPageResource.OnlineJm -> resource
+    }
     val builder = ImageRequest.Builder(context)
-        .data(page.url)
-        .httpHeaders(page.headers)
-        .allowHardware(!page.plan.requiresRestore)
+        .data(resource.url)
+        .httpHeaders(resource.headers)
+        .allowHardware(!resource.plan.requiresRestore)
         .crossfade(false)
         .memoryCacheKey(
-            "${page.plan.cacheKey}:reader:${page.plan.segmentCount}:" +
+            "${page.cacheKey}:reader:${resource.plan.segmentCount}:" +
                 "$READER_RESTORE_VERSION:$viewportWidthPx:$retryKey",
         )
-        .diskCacheKey(page.plan.cacheKey)
-    if (page.plan.requiresRestore) {
+        .diskCacheKey(page.cacheKey)
+    if (resource.plan.requiresRestore) {
         builder
             .size(Size(viewportWidthPx, Dimension.Undefined))
-            .decoderFactory(JmxScrambledDecoderFactory(page.plan))
+            .decoderFactory(JmxScrambledDecoderFactory(resource.plan))
     }
     return builder.build()
 }
