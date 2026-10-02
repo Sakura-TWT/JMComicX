@@ -6,6 +6,8 @@ local.properties
 local-credentials.properties
 **/local-credentials.properties
 docs/
+design/
+signing/
 *.md
 !README.md
 !CHANGELOG.md
@@ -13,3 +15,14 @@ app/signing/
 *.jks
 *.keystore
 signing.properties
+
+# Visual identity drafts and app icon exports stay local until the identity is final.
+*.svg
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+app/src/main/res/drawable/prismia_logo.xml
+app/src/main/res/drawable/prismia_splash_foreground.xml
+app/src/main/res/mipmap-anydpi-v26/prismia_icon.xml

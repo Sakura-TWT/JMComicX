@@ -19,6 +19,16 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "JMComicX"
+rootProject.name = "Prismia"
 include(":core")
+include(":core:foundation")
+include(":core:media")
+include(":core:designsystem")
+include(":core:data")
+include(":domain:comic")
+include(":domain:video")
+include(":feature:app-shell")
+include(":source:jmcomic")
+include(":source:oreno")
+include(":source:iwara")
 include(":app")

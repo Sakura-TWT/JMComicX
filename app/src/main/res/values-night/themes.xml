@@ -9,7 +9,7 @@
     </style>
     <style name="JmxTheme.Starting" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">#000000</item>
-        <item name="windowSplashScreenAnimatedIcon">@mipmap/jmx_splash_icon</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/prismia_icon</item>
         <item name="postSplashScreenTheme">@style/JmxTheme</item>
     </style>
 </resources>

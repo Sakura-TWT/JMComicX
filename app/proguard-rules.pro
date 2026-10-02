@@ -1,8 +1,8 @@
 # Gson reads these persisted models by field name through reflection.
--keep class dev.jmx.client.AccountProfile { <fields>; }
--keep class dev.jmx.client.AccountCredentials { <fields>; }
--keep class dev.jmx.client.core.session.PersistentCookieStore$PersistedCookie { <fields>; }
--keep class dev.jmx.client.core.download.PersistedChapterDownloadTask { <fields>; }
+-keep class app.prismia.plus.AccountProfile { <fields>; }
+-keep class app.prismia.plus.AccountCredentials { <fields>; }
+-keep class app.prismia.plus.core.session.PersistentCookieStore$PersistedCookie { <fields>; }
+-keep class app.prismia.plus.core.download.PersistedChapterDownloadTask { <fields>; }
 
 -keepattributes Signature,*Annotation*
 

@@ -8,13 +8,13 @@ plugins {
 val versionProperties = Properties().apply {
     rootProject.file("version.properties").inputStream().use { load(it) }
 }
-val releaseKeystoreFile = providers.environmentVariable("JMX_RELEASE_KEYSTORE_FILE")
-    .orElse("signing/jmx-release.keystore")
+val releaseKeystoreFile = providers.environmentVariable("PRISMIA_RELEASE_KEYSTORE_FILE")
+    .orElse("signing/private/prismia-plus-release.keystore")
     .get()
     .let(::file)
-val releaseStorePassword = providers.environmentVariable("JMX_RELEASE_STORE_PASSWORD").orNull
-val releaseKeyAlias = providers.environmentVariable("JMX_RELEASE_KEY_ALIAS").orNull
-val releaseKeyPassword = providers.environmentVariable("JMX_RELEASE_KEY_PASSWORD").orNull
+val releaseStorePassword = providers.environmentVariable("PRISMIA_RELEASE_STORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("PRISMIA_RELEASE_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("PRISMIA_RELEASE_KEY_PASSWORD").orNull
 val releaseSigningReady = releaseKeystoreFile.isFile &&
     !releaseStorePassword.isNullOrBlank() &&
     !releaseKeyAlias.isNullOrBlank() &&
@@ -22,7 +22,9 @@ val releaseSigningReady = releaseKeystoreFile.isFile &&
 
 @Suppress("UnstableApiUsage")
 android {
-    namespace = "dev.jmx.client"
+    // Installed Android identity is `as.prismia.plus`; source namespace stays
+    // readable as `app.prismia.plus` while remaining compatible with Kotlin.
+    namespace = "app.prismia.plus"
     buildToolsVersion = "37.0.0"
     compileSdk {
         version = release(37) {
@@ -31,7 +33,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "dev.jmx.client"
+        applicationId = "as.prismia.plus"
         minSdk = 33
         targetSdk = 37
         versionCode = versionProperties.getProperty("VERSION_CODE").toInt()
@@ -40,7 +42,7 @@ android {
 
     signingConfigs {
         if (releaseSigningReady) {
-            create("jmxRelease") {
+            create("prismiaRelease") {
                 storeFile = releaseKeystoreFile
                 storePassword = releaseStorePassword
                 keyAlias = releaseKeyAlias
@@ -51,7 +53,7 @@ android {
 
     buildTypes {
         getByName("release") {
-            signingConfig = signingConfigs.findByName("jmxRelease")
+            signingConfig = signingConfigs.findByName("prismiaRelease")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -81,8 +83,8 @@ tasks.configureEach {
     if (name == "preReleaseBuild") {
         doFirst {
             check(releaseSigningReady) {
-                "Release signing is not configured. Set JMX_RELEASE_KEYSTORE_FILE, " +
-                    "JMX_RELEASE_STORE_PASSWORD, JMX_RELEASE_KEY_ALIAS and JMX_RELEASE_KEY_PASSWORD."
+                "Release signing is not configured. Set PRISMIA_RELEASE_KEYSTORE_FILE, " +
+                    "PRISMIA_RELEASE_STORE_PASSWORD, PRISMIA_RELEASE_KEY_ALIAS and PRISMIA_RELEASE_KEY_PASSWORD."
             }
         }
     }
@@ -90,6 +92,16 @@ tasks.configureEach {
 
 dependencies {
     implementation(project(":core"))
+    implementation(project(":core:foundation"))
+    implementation(project(":core:media"))
+    implementation(project(":core:designsystem"))
+    implementation(project(":core:data"))
+    implementation(project(":domain:comic"))
+    implementation(project(":domain:video"))
+    implementation(project(":feature:app-shell"))
+    implementation(project(":source:jmcomic"))
+    implementation(project(":source:oreno"))
+    implementation(project(":source:iwara"))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core.splashscreen)
     implementation(libs.androidx.navigationevent.compose)

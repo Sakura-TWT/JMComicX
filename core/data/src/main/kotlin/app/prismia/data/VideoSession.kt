@@ -1,0 +1,180 @@
+package app.prismia.data
+
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.io.EOFException
+import java.nio.charset.StandardCharsets
+
+/**
+ * Credentials owned by the video domain. They intentionally do not share the
+ * JM cookie store: Iwara access tokens have a different lifetime and refresh
+ * policy from the comic protocol session.
+ */
+data class VideoSession(
+    val accessToken: String,
+    val refreshToken: String? = null,
+    val accessTokenExpiresAtEpochSeconds: Long? = null,
+) {
+    init {
+        require(accessToken.isNotBlank()) { "accessToken must not be blank" }
+        require(refreshToken == null || refreshToken.isNotBlank()) { "refreshToken must not be blank" }
+        require(accessTokenExpiresAtEpochSeconds == null || accessTokenExpiresAtEpochSeconds > 0L) {
+            "accessTokenExpiresAtEpochSeconds must be positive"
+        }
+    }
+
+    fun isUsable(nowEpochSeconds: Long): Boolean =
+        accessToken.isNotBlank() &&
+            (accessTokenExpiresAtEpochSeconds == null || accessTokenExpiresAtEpochSeconds > nowEpochSeconds + EXPIRY_SAFETY_WINDOW_SECONDS)
+
+    companion object {
+        private const val EXPIRY_SAFETY_WINDOW_SECONDS = 30L
+    }
+}
+
+interface VideoSessionStore {
+    suspend fun load(): VideoSession?
+    suspend fun save(session: VideoSession)
+    suspend fun clear()
+}
+
+/**
+ * Versioned, bounded binary representation used before encryption.
+ *
+ * The codec intentionally has no Android dependency so it can be tested on the
+ * JVM and reused by a database-backed store later. Encryption belongs to the
+ * platform store; this class only defines a stable payload contract.
+ */
+object VideoSessionCodec {
+    private const val MAGIC = 0x50565331 // "PVS1"
+    private const val FORMAT_VERSION = 1
+    private const val NO_EXPIRY = Long.MIN_VALUE
+    private const val MAX_TOKEN_BYTES = 16 * 1024
+    private const val MAX_PAYLOAD_BYTES = 64 * 1024
+
+    fun encode(session: VideoSession): ByteArray {
+        val output = ByteArrayOutputStream()
+        DataOutputStream(output).use { data ->
+            data.writeInt(MAGIC)
+            data.writeByte(FORMAT_VERSION)
+            writeRequired(data, session.accessToken, "accessToken")
+            writeNullable(data, session.refreshToken, "refreshToken")
+            data.writeLong(session.accessTokenExpiresAtEpochSeconds ?: NO_EXPIRY)
+        }
+        return output.toByteArray().also {
+            require(it.size <= MAX_PAYLOAD_BYTES) { "encoded session is too large" }
+        }
+    }
+
+    fun decode(payload: ByteArray): VideoSession {
+        require(payload.size <= MAX_PAYLOAD_BYTES) { "encoded session is too large" }
+        try {
+            DataInputStream(ByteArrayInputStream(payload)).use { data ->
+                if (data.readInt() != MAGIC) throw VideoSessionFormatException("invalid session payload magic")
+                if (data.readUnsignedByte() != FORMAT_VERSION) {
+                    throw VideoSessionFormatException("unsupported session payload version")
+                }
+                val access = readRequired(data, "accessToken")
+                val refresh = readNullable(data, "refreshToken")
+                val expiry = data.readLong().takeUnless { it == NO_EXPIRY }
+                if (data.available() != 0) throw VideoSessionFormatException("trailing session payload bytes")
+                return VideoSession(access, refresh, expiry)
+            }
+        } catch (failure: VideoSessionFormatException) {
+            throw failure
+        } catch (failure: EOFException) {
+            throw VideoSessionFormatException("truncated session payload", failure)
+        } catch (failure: IllegalArgumentException) {
+            throw VideoSessionFormatException("invalid session payload", failure)
+        }
+    }
+
+    private fun writeRequired(data: DataOutputStream, value: String, field: String) {
+        require(value.isNotBlank()) { "$field must not be blank" }
+        writeString(data, value, field)
+    }
+
+    private fun writeNullable(data: DataOutputStream, value: String?, field: String) {
+        if (value == null) {
+            data.writeInt(-1)
+        } else {
+            require(value.isNotBlank()) { "$field must not be blank" }
+            writeString(data, value, field)
+        }
+    }
+
+    private fun writeString(data: DataOutputStream, value: String, field: String) {
+        val bytes = value.toByteArray(StandardCharsets.UTF_8)
+        require(bytes.isNotEmpty()) { "$field must not be empty" }
+        require(bytes.size <= MAX_TOKEN_BYTES) { "$field is too large" }
+        data.writeInt(bytes.size)
+        data.write(bytes)
+    }
+
+    private fun readRequired(data: DataInputStream, field: String): String =
+        readString(data, field) ?: throw VideoSessionFormatException("missing $field")
+
+    private fun readNullable(data: DataInputStream, field: String): String? = readString(data, field)
+
+    private fun readString(data: DataInputStream, field: String): String? {
+        val length = data.readInt()
+        if (length == -1) return null
+        if (length <= 0 || length > MAX_TOKEN_BYTES || length > data.available()) {
+            throw VideoSessionFormatException("invalid $field length")
+        }
+        val bytes = ByteArray(length)
+        data.readFully(bytes)
+        return bytes.toString(StandardCharsets.UTF_8).takeIf(String::isNotBlank)
+            ?: throw VideoSessionFormatException("blank $field")
+    }
+}
+
+class VideoSessionFormatException(message: String, cause: Throwable? = null) : IllegalArgumentException(message, cause)
+
+/** In-memory coordinator used by transports; persistence stays behind [VideoSessionStore]. */
+class VideoSessionManager(
+    private val store: VideoSessionStore,
+) {
+    private val mutex = Mutex()
+    @Volatile
+    private var cached: VideoSession? = null
+
+    suspend fun load(): VideoSession? = mutex.withLock {
+        store.load().also { cached = it }
+    }
+
+    fun currentAccessToken(nowEpochSeconds: Long = System.currentTimeMillis() / 1_000): String? =
+        cached?.takeIf { it.isUsable(nowEpochSeconds) }?.accessToken
+
+    suspend fun save(session: VideoSession) {
+        mutex.withLock {
+            store.save(session)
+            cached = session
+        }
+    }
+
+    suspend fun clear() {
+        mutex.withLock {
+            store.clear()
+            cached = null
+        }
+    }
+}
+
+class InMemoryVideoSessionStore(initial: VideoSession? = null) : VideoSessionStore {
+    private var value: VideoSession? = initial
+
+    override suspend fun load(): VideoSession? = value
+
+    override suspend fun save(session: VideoSession) {
+        value = session
+    }
+
+    override suspend fun clear() {
+        value = null
+    }
+}\n
