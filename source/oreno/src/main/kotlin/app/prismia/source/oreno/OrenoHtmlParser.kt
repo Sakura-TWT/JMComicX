@@ -1,5 +1,10 @@
 package app.prismia.source.oreno
 
+import app.prismia.foundation.ContentSource
+import app.prismia.foundation.SourceErrorCategory
+import app.prismia.foundation.SourceFailure
+import app.prismia.foundation.SourceFailureCarrier
+
 /**
  * Dependency-free parser boundary. Oreno pages are server-rendered HTML and
  * have changed their card markup several times, so this parser first isolates
@@ -111,4 +116,14 @@ class OrenoHtmlParser {
     }
 }
 
-class OrenoParseException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
+class OrenoParseException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause), SourceFailureCarrier {
+    override val sourceFailure: SourceFailure
+        get() = SourceFailure(
+            source = ContentSource.ORENO3D,
+            operation = "parse",
+            category = SourceErrorCategory.PROTOCOL,
+            retryable = false,
+            message = checkNotNull(super.message),
+            cause = cause,
+        )
+}

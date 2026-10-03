@@ -51,4 +51,18 @@ class IwaraClientTest {
         assertEquals(1_700_000_123L, detail.variants.single().expiresAtEpochSeconds)
         assertEquals(2, requests.size)
     }
+
+    @Test
+    fun parsesArchivedApiShapeWithNestedFileMetadata() = runBlocking {
+        val transport = object : IwaraTransport {
+            override suspend fun get(path: String, query: Map<String, String>): String =
+                """{"count":1,"page":0,"limit":1,"results":[{"id":"lJ86OCf2wtcYeb","title":"Clip","file":{"duration":199},"user":{"name":"author"},"tags":[{"id":"koikatsu"}]}]}"""
+        }
+
+        val work = IwaraClient(transport).browse(page = 0, limit = 1).items.single()
+
+        assertEquals("lJ86OCf2wtcYeb", work.key.remoteId)
+        assertEquals(199_000L, work.durationMs)
+        assertEquals(listOf("koikatsu"), work.tags)
+    }
 }

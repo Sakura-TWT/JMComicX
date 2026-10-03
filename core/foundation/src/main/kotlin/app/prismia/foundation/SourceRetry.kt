@@ -39,4 +39,4 @@ suspend fun <T> withSourceRetry(
             delayMillis = (delayMillis * 2).coerceAtMost(policy.maxDelayMillis)
         }
     }
-}\n
+}

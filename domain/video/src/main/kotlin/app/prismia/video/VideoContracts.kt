@@ -41,6 +41,12 @@ data class StreamVariant(
     }
 }
 
+fun StreamVariant.isExpired(nowEpochSeconds: Long, safetyWindowSeconds: Long = 0): Boolean =
+    expiresAtEpochSeconds?.let { it <= nowEpochSeconds + safetyWindowSeconds } ?: false
+
+fun StreamVariant.isUsable(nowEpochSeconds: Long, safetyWindowSeconds: Long = 0): Boolean =
+    !isExpired(nowEpochSeconds, safetyWindowSeconds)
+
 data class VideoDetail(
     val work: VideoWork,
     val variants: List<StreamVariant> = emptyList(),

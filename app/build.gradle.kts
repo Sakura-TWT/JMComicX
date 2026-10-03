@@ -96,6 +96,7 @@ dependencies {
     implementation(project(":core:media"))
     implementation(project(":core:designsystem"))
     implementation(project(":core:data"))
+    implementation(project(":core:database-android"))
     implementation(project(":domain:comic"))
     implementation(project(":domain:video"))
     implementation(project(":feature:app-shell"))

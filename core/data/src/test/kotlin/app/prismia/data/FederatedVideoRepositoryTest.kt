@@ -2,6 +2,7 @@ package app.prismia.data
 
 import app.prismia.foundation.ContentKey
 import app.prismia.foundation.ContentSource
+import app.prismia.foundation.SourceErrorCategory
 import app.prismia.foundation.ContentType
 import app.prismia.video.PagedVideoCatalog
 import app.prismia.video.VideoDetail
@@ -35,6 +36,7 @@ class FederatedVideoRepositoryTest {
 
         assertEquals(listOf("w1"), result.items.map { it.key.remoteId })
         assertEquals(ContentSource.ORENO3D, result.failures.single().source)
+        assertEquals(SourceErrorCategory.UNKNOWN, result.failures.single().diagnostic.category)
         assertTrue(result.failures.single().error.message!!.contains("unavailable"))
     }
 

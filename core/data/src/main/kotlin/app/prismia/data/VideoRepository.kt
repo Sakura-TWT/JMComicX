@@ -2,6 +2,8 @@ package app.prismia.data
 
 import app.prismia.foundation.ContentKey
 import app.prismia.foundation.ContentSource
+import app.prismia.foundation.SourceFailure
+import app.prismia.foundation.toSourceFailure
 import app.prismia.video.PagedVideoCatalog
 import app.prismia.video.VideoAvailability
 import app.prismia.video.VideoPage
@@ -13,7 +15,11 @@ import kotlinx.coroutines.supervisorScope
 data class VideoSourceFailure(
     val source: ContentSource,
     val error: Exception,
-)
+) {
+    /** Stable diagnostic contract used by callers without depending on source exceptions. */
+    val diagnostic: SourceFailure
+        get() = error.toSourceFailure(source, "federated.video")
+}
 
 data class FederatedVideoPage(
     val items: List<VideoWork>,

@@ -2,7 +2,11 @@ package app.prismia.comic
 
 import app.prismia.foundation.ContentKey
 import app.prismia.foundation.ContentRef
+import app.prismia.foundation.ContentSource
 import app.prismia.foundation.ContentType
+import app.prismia.foundation.SourceErrorCategory
+import app.prismia.foundation.SourceFailure
+import app.prismia.foundation.SourceFailureCarrier
 
 data class ComicWork(
     val key: ContentKey,
@@ -69,7 +73,31 @@ class ComicCatalogException(
     val retryable: Boolean = false,
     message: String,
     cause: Throwable? = null,
-) : IllegalStateException(message, cause)
+) : IllegalStateException(message, cause), SourceFailureCarrier {
+    override val sourceFailure: SourceFailure
+        get() = SourceFailure(
+            source = ContentSource.JM_COMIC,
+            operation = operation.name.lowercase(),
+            category = when (kind) {
+                ComicCatalogErrorKind.NETWORK,
+                ComicCatalogErrorKind.DOMAIN -> SourceErrorCategory.NETWORK
+                ComicCatalogErrorKind.HTTP -> when (remoteCode) {
+                    401, 403 -> SourceErrorCategory.AUTHENTICATION
+                    429 -> SourceErrorCategory.RATE_LIMITED
+                    else -> SourceErrorCategory.HTTP
+                }
+                ComicCatalogErrorKind.REMOTE_API -> SourceErrorCategory.REMOTE
+                ComicCatalogErrorKind.DATA_FORMAT,
+                ComicCatalogErrorKind.EMPTY_DATA -> SourceErrorCategory.JSON
+                ComicCatalogErrorKind.UNKNOWN -> SourceErrorCategory.UNKNOWN
+            },
+            httpStatus = if (kind == ComicCatalogErrorKind.HTTP) remoteCode else null,
+            remoteCode = remoteCode?.toString(),
+            retryable = retryable,
+            message = checkNotNull(super.message),
+            cause = cause,
+        )
+}
 
 fun ComicWork.asRef(): ContentRef = ContentRef(
     key = key,

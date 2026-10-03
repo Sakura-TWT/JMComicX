@@ -4,6 +4,7 @@ import app.prismia.foundation.ContentKey
 import app.prismia.foundation.ContentSource
 import app.prismia.foundation.ContentType
 import app.prismia.video.VideoWork
+import app.prismia.database.InMemoryPrismiaDatabase
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.nio.file.Files
@@ -83,6 +84,23 @@ class VideoContentStoreTest {
             Unit
         } finally {
             directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun legacySnapshotMigratesIntoDatabaseBoundary() = runBlocking {
+        val source = InMemoryVideoContentStore()
+        val work = work()
+        val gone = ContentKey(ContentType.VIDEO, ContentSource.IWARA, "gone")
+        source.write(work)
+        source.tombstone(gone, "removed upstream")
+
+        val target = InMemoryPrismiaDatabase()
+        LegacyVideoContentStoreMigrator(source).migrateInto(target)
+
+        target.transaction {
+            assertEquals(work, videos.read(work.key))
+            assertTrue(videos.isTombstoned(gone))
         }
     }
 

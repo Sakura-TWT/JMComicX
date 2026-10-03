@@ -1,5 +1,9 @@
 package app.prismia.source.oreno
 
+import app.prismia.foundation.ContentSource
+import app.prismia.foundation.SourceErrorCategory
+import app.prismia.foundation.SourceFailure
+import app.prismia.foundation.SourceFailureCarrier
 import app.prismia.foundation.SourceRetryPolicy
 import app.prismia.foundation.withSourceRetry
 import kotlinx.coroutines.Dispatchers
@@ -51,7 +55,22 @@ class OkHttpOrenoTransport(
 class OrenoHttpException(
     val statusCode: Int,
     val responseBodyPreview: String,
-) : IllegalStateException("oreno3d HTTP $statusCode")
+) : IllegalStateException("oreno3d HTTP $statusCode"), SourceFailureCarrier {
+    override val sourceFailure: SourceFailure
+        get() = SourceFailure(
+            source = ContentSource.ORENO3D,
+            operation = "transport.get",
+            category = when (statusCode) {
+                401, 403 -> SourceErrorCategory.AUTHENTICATION
+                429 -> SourceErrorCategory.RATE_LIMITED
+                else -> SourceErrorCategory.HTTP
+            },
+            httpStatus = statusCode,
+            retryable = statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode in 500..599,
+            message = "oreno3d HTTP $statusCode",
+            cause = this,
+        )
+}
 
 private const val MAX_ERROR_BODY_LENGTH = 512
 

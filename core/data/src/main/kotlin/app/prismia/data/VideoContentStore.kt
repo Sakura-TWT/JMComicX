@@ -28,7 +28,13 @@ interface VideoContentStore {
     suspend fun write(work: VideoWork)
     suspend fun tombstone(key: ContentKey, reason: String? = null)
     suspend fun isTombstoned(key: ContentKey): Boolean
+    suspend fun snapshot(): VideoContentSnapshot
 }
+
+data class VideoContentSnapshot(
+    val records: Map<ContentKey, VideoWork>,
+    val tombstones: Map<ContentKey, String?>,
+)
 
 class InMemoryVideoContentStore : VideoContentStore {
     private val lock = Any()
@@ -52,6 +58,10 @@ class InMemoryVideoContentStore : VideoContentStore {
     }
 
     override suspend fun isTombstoned(key: ContentKey): Boolean = synchronized(lock) { key in tombstones }
+
+    override suspend fun snapshot(): VideoContentSnapshot = synchronized(lock) {
+        VideoContentSnapshot(records.toMap(), tombstones.toMap())
+    }
 }
 
 /**
@@ -71,20 +81,24 @@ class FileVideoContentStore(
     override suspend fun read(key: ContentKey): VideoWork? = onDisk { records[key] }
 
     override suspend fun write(work: VideoWork) = onDisk {
-        val previous = snapshot()
+        val previous = storeSnapshot()
         records[work.key] = work.normalizedForStore()
         tombstones.remove(work.key)
         commitOrRestore(previous)
     }
 
     override suspend fun tombstone(key: ContentKey, reason: String?) = onDisk {
-        val previous = snapshot()
+        val previous = storeSnapshot()
         records.remove(key)
         tombstones[key] = reason?.takeIf(String::isNotBlank)
         commitOrRestore(previous)
     }
 
     override suspend fun isTombstoned(key: ContentKey): Boolean = onDisk { key in tombstones }
+
+    override suspend fun snapshot(): VideoContentSnapshot = onDisk {
+        VideoContentSnapshot(records.toMap(), tombstones.toMap())
+    }
 
     private suspend fun <T> onDisk(action: () -> T): T = withContext(Dispatchers.IO) {
         lock.withLock {
@@ -144,7 +158,7 @@ class FileVideoContentStore(
         }
     }
 
-    private fun snapshot() = StoreSnapshot(LinkedHashMap(records), LinkedHashMap(tombstones))
+    private fun storeSnapshot() = StoreSnapshot(LinkedHashMap(records), LinkedHashMap(tombstones))
 
     private data class StoreSnapshot(
         val records: LinkedHashMap<ContentKey, VideoWork>,
@@ -328,4 +342,4 @@ private object VideoContentStoreCodec {
 
 private fun VideoWork.normalizedForStore() = copy(tags = tags.toList(), sourceLinks = sourceLinks.toMap())
 
-class VideoContentStoreException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)\n
+class VideoContentStoreException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)

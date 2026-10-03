@@ -11,4 +11,4 @@ class VideoSessionTest {
         assertTrue(session.isUsable(1_000))
         assertFalse(session.isUsable(1_011))
     }
-}\n
+}

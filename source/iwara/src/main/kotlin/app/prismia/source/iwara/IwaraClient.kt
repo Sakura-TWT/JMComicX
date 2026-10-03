@@ -3,6 +3,9 @@ package app.prismia.source.iwara
 import app.prismia.foundation.ContentKey
 import app.prismia.foundation.ContentSource
 import app.prismia.foundation.ContentType
+import app.prismia.foundation.SourceErrorCategory
+import app.prismia.foundation.SourceFailure
+import app.prismia.foundation.SourceFailureCarrier
 import app.prismia.video.PagedVideoCatalog
 import app.prismia.video.StreamVariant
 import app.prismia.video.VideoAvailability
@@ -80,7 +83,9 @@ class IwaraClient(
             title = json.string("title") ?: "",
             username = user?.string("username") ?: user?.string("name") ?: json.string("username"),
             thumbnailUrl = json.string("thumbnailUrl") ?: json.string("thumbnail") ?: json.string("thumbnail_url"),
-            durationSeconds = json.long("duration") ?: json.long("durationSeconds"),
+            durationSeconds = json.long("duration")
+                ?: json.long("durationSeconds")
+                ?: json.obj("file")?.long("duration"),
             tags = tags,
             body = json.string("body") ?: json.string("description"),
             rating = json.string("rating"),
@@ -155,7 +160,17 @@ class IwaraClient(
     private fun IwaraStream.toDomain() = StreamVariant(name, url, width, height, bitrate, expiresAtEpochSeconds)
 }
 
-class IwaraParseException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
+class IwaraParseException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause), SourceFailureCarrier {
+    override val sourceFailure: SourceFailure
+        get() = SourceFailure(
+            source = ContentSource.IWARA,
+            operation = "parse",
+            category = SourceErrorCategory.JSON,
+            retryable = false,
+            message = checkNotNull(super.message),
+            cause = cause,
+        )
+}
 
 private fun Long.toEpochSeconds(): Long = if (this >= 1_000_000_000_000L) this / 1000 else this
 

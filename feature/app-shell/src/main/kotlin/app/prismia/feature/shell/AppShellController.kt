@@ -63,4 +63,4 @@ class AppShellController(
             AppMode.VIDEO -> _state.value.copy(videoRoute = current)
         }
     }
-}\n
+}

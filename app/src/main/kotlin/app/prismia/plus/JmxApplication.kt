@@ -30,6 +30,8 @@ class JmxApplication : Application(), SingletonImageLoader.Factory {
         backendScope.launch {
             runCatching { prismiaContainer.videoSessionManager.load() }
                 .onFailure { failure -> Log.w(TAG, "video session warm-up failed", failure) }
+            runCatching { prismiaContainer.migrateLegacyVideoContentStore() }
+                .onFailure { failure -> Log.w(TAG, "video content migration deferred", failure) }
         }
     }
 

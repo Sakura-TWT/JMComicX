@@ -1,5 +1,7 @@
 package app.prismia.data
 
+import app.prismia.foundation.SourceErrorCategory
+import app.prismia.foundation.SourceFailureCarrier
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.ByteArrayInputStream
@@ -40,6 +42,10 @@ interface VideoSessionStore {
     suspend fun load(): VideoSession?
     suspend fun save(session: VideoSession)
     suspend fun clear()
+}
+
+fun interface VideoSessionRefresher {
+    suspend fun refresh(previous: VideoSession?): VideoSession
 }
 
 /**
@@ -138,6 +144,8 @@ class VideoSessionFormatException(message: String, cause: Throwable? = null) : I
 /** In-memory coordinator used by transports; persistence stays behind [VideoSessionStore]. */
 class VideoSessionManager(
     private val store: VideoSessionStore,
+    private val refresher: VideoSessionRefresher? = null,
+    private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1_000 },
 ) {
     private val mutex = Mutex()
     @Volatile
@@ -147,8 +155,38 @@ class VideoSessionManager(
         store.load().also { cached = it }
     }
 
-    fun currentAccessToken(nowEpochSeconds: Long = System.currentTimeMillis() / 1_000): String? =
+    fun currentAccessToken(nowEpochSeconds: Long = this.nowEpochSeconds()): String? =
         cached?.takeIf { it.isUsable(nowEpochSeconds) }?.accessToken
+
+    /**
+     * Single-flight access-token lookup. Expired sessions are refreshed while
+     * holding the mutex so concurrent callers cannot issue duplicate refreshes.
+     */
+    suspend fun accessTokenOrRefresh(forceRefresh: Boolean = false): String? = mutex.withLock {
+        val existing = cached ?: store.load().also { cached = it }
+        if (!forceRefresh && existing?.isUsable(nowEpochSeconds()) == true) {
+            return@withLock existing.accessToken
+        }
+        val refresh = refresher ?: return@withLock null
+        val renewed = try {
+            refresh.refresh(existing)
+        } catch (failure: Exception) {
+            val diagnostic = (failure as? SourceFailureCarrier)?.sourceFailure
+            if (diagnostic?.category == SourceErrorCategory.AUTHENTICATION ||
+                diagnostic?.httpStatus == 401
+            ) {
+                // A rejected refresh token is unrecoverable. Clear it before
+                // surfacing the structured failure so subsequent requests do
+                // not repeatedly send a known-invalid credential.
+                runCatching { store.clear() }
+                cached = null
+            }
+            throw failure
+        }
+        store.save(renewed)
+        cached = renewed
+        renewed.accessToken
+    }
 
     suspend fun save(session: VideoSession) {
         mutex.withLock {
@@ -177,4 +215,4 @@ class InMemoryVideoSessionStore(initial: VideoSession? = null) : VideoSessionSto
     override suspend fun clear() {
         value = null
     }
-}\n
+}
