@@ -4,6 +4,7 @@ import app.prismia.foundation.ContentKey
 import app.prismia.foundation.ContentSource
 import app.prismia.foundation.ContentRef
 import app.prismia.foundation.ContentType
+import app.prismia.foundation.SourceFailure
 
 data class VideoWork(
     val key: ContentKey,
@@ -39,10 +40,15 @@ data class StreamVariant(
     init {
         require(url.isNotBlank()) { "stream URL must not be blank" }
     }
+
+    override fun toString(): String = "StreamVariant(name=$name, url=redacted, expiresAt=$expiresAtEpochSeconds)"
 }
 
-fun StreamVariant.isExpired(nowEpochSeconds: Long, safetyWindowSeconds: Long = 0): Boolean =
-    expiresAtEpochSeconds?.let { it <= nowEpochSeconds + safetyWindowSeconds } ?: false
+fun StreamVariant.isExpired(nowEpochSeconds: Long, safetyWindowSeconds: Long = 0): Boolean {
+    require(nowEpochSeconds >= 0 && safetyWindowSeconds >= 0)
+    val expiry = expiresAtEpochSeconds ?: return false
+    return expiry <= nowEpochSeconds || expiry - nowEpochSeconds <= safetyWindowSeconds
+}
 
 fun StreamVariant.isUsable(nowEpochSeconds: Long, safetyWindowSeconds: Long = 0): Boolean =
     !isExpired(nowEpochSeconds, safetyWindowSeconds)
@@ -51,12 +57,14 @@ data class VideoDetail(
     val work: VideoWork,
     val variants: List<StreamVariant> = emptyList(),
     val related: List<VideoWork> = emptyList(),
+    val failures: List<SourceFailure> = emptyList(),
 )
 
 data class VideoPage(
     val items: List<VideoWork>,
     val page: Int,
     val hasMore: Boolean,
+    val failures: List<SourceFailure> = emptyList(),
 ) {
     init {
         require(page >= 0) { "page must be non-negative" }
@@ -68,10 +76,13 @@ interface VideoCatalog {
     suspend fun detail(key: ContentKey): VideoWork
 }
 
-interface PagedVideoCatalog : VideoCatalog {
+fun interface VideoDetailProvider {
+    suspend fun detailPage(key: ContentKey): VideoDetail
+}
+
+interface PagedVideoCatalog : VideoCatalog, VideoDetailProvider {
     suspend fun browse(page: Int = 0, limit: Int = 32): VideoPage
     suspend fun searchPage(query: String, page: Int = 0, limit: Int = 32): VideoPage
-    suspend fun detailPage(key: ContentKey): VideoDetail
 }
 
 fun VideoWork.asRef(): ContentRef = ContentRef(

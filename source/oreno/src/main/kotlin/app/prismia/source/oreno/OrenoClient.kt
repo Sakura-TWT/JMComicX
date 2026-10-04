@@ -26,6 +26,7 @@ class OrenoClient(
     override suspend fun detailPage(key: ContentKey): VideoDetail {
         require(key.contentType == ContentType.VIDEO) { "OrenoClient requires a VIDEO content key" }
         require(key.source == ContentSource.ORENO3D) { "OrenoClient requires an ORENO3D content key" }
+        require(ORENO_MOVIE_ID.matches(key.remoteId)) { "invalid Oreno movie ID" }
         val html = transport.get("/movies/${key.remoteId}")
         val record = parser.parseDetail(html, key.remoteId)
             ?: throw OrenoParseException("oreno3d detail did not contain movie ${key.remoteId}")
@@ -40,9 +41,28 @@ class OrenoClient(
     ): VideoPage {
         require(page >= 0) { "page must be non-negative" }
         require(limit in 1..100) { "limit must be between 1 and 100" }
-        val html = transport.get(path, query + mapOf("page" to (page + 1).toString()))
-        val items = parser.parseCards(html).take(limit).map { it.toWork() }
-        return VideoPage(items = items, page = page, hasMore = items.size >= limit)
+        // Convert a logical offset to fixed-size source pages. A 32-item
+        // consumer must not discard items 33..36 when advancing to page two.
+        val offset = page.toLong() * limit
+        val firstSourcePage = offset / ORENO_PAGE_SIZE + 1
+        require(firstSourcePage <= Int.MAX_VALUE - 4L) { "page exceeds the Oreno range" }
+        var sourcePage = firstSourcePage.toInt()
+        var skip = (offset % ORENO_PAGE_SIZE).toInt()
+        val items = ArrayList<VideoWork>(limit)
+        while (true) {
+            val html = transport.get(path, query + mapOf("page" to sourcePage.toString()))
+            val native = parser.parsePage(html, sourcePage)
+            if (native.hasMore && native.items.size != ORENO_PAGE_SIZE) {
+                throw OrenoParseException("Oreno page size changed; refusing to skip unknown items")
+            }
+            val remaining = native.items.drop(skip)
+            val consumed = minOf(limit - items.size, remaining.size)
+            items += remaining.take(consumed).map { it.toWork() }
+            val hasMore = remaining.size > consumed || native.hasMore
+            if (items.size == limit || !native.hasMore) return VideoPage(items, page, hasMore)
+            sourcePage++
+            skip = 0
+        }
     }
 
     private fun OrenoVideoRecord.toWork() = VideoWork(
@@ -50,8 +70,10 @@ class OrenoClient(
         title = title,
         author = author,
         coverUrl = thumbnailUrl,
+        description = description,
         tags = tags,
-        availability = if (iwaraVideoId?.isNotBlank() == true) VideoAvailability.PLAYABLE else VideoAvailability.UNKNOWN,
+        // A link proves identity, not that the upstream stream still exists.
+        availability = VideoAvailability.UNKNOWN,
         sourceLinks = buildMap { iwaraVideoId?.let { put(ContentSource.IWARA, it) }; put(ContentSource.ORENO3D, id) },
     )
 }

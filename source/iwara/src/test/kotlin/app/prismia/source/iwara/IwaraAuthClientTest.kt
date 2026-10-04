@@ -8,6 +8,18 @@ import java.util.Base64
 
 class IwaraAuthClientTest {
     @Test
+    fun explicitlyExpiredTokenIsRejectedInsteadOfReceivingANewLease() = runBlocking {
+        val transport = object : IwaraTransport {
+            override suspend fun get(path: String, query: Map<String, String>) = error("unexpected GET")
+            override suspend fun post(path: String, body: String, query: Map<String, String>, bearerToken: String?) =
+                "{\"accessToken\":\"" + jwt(100) + "\"}"
+        }
+        val failure = runCatching { IwaraAuthClient(transport) { 200 }.refreshAccessToken("test-refresh") }.exceptionOrNull()
+        assertTrue(failure is IwaraAuthException)
+        assertEquals("expired_access_token", (failure as IwaraAuthException).remoteCode)
+    }
+
+    @Test
     fun loginExtractsRefreshTokenWithoutLeakingCredentialsToTransportContract() = runBlocking {
         var requestedPath = ""
         var requestedBody = ""

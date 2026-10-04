@@ -4,117 +4,151 @@ import app.prismia.foundation.ContentSource
 import app.prismia.foundation.SourceErrorCategory
 import app.prismia.foundation.SourceFailure
 import app.prismia.foundation.SourceFailureCarrier
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
+import java.math.BigDecimal
+import java.net.URI
 
-/**
- * Dependency-free parser boundary. Oreno pages are server-rendered HTML and
- * have changed their card markup several times, so this parser first isolates
- * card elements with a small balanced-tag scanner. A single greedy regex would
- * stop at the first nested </div> and silently mix fields from adjacent cards.
- */
+/** DOM contracts are derived from source HTML, not from another client. */
 class OrenoHtmlParser {
-    fun parseCards(html: String): List<OrenoVideoRecord> = cardFragments(html)
-        .mapNotNull(::parseRecord)
-        .distinctBy { it.id }
+    fun parseCards(html: String): List<OrenoVideoRecord> = cards(document(html))
+
+    fun parsePage(html: String, page: Int): OrenoPage {
+        require(page >= 1)
+        val document = document(html)
+        val items = cards(document)
+        val pagination = document.selectFirst("ul.pagination")
+        val hasMore = if (pagination == null) {
+            items.size == ORENO_PAGE_SIZE
+        } else {
+            pagination.select("a[href]").any { link ->
+                val url = runCatching { URI(link.absUrl("href")) }.getOrNull()
+                url?.host == "oreno3d.com" &&
+                    (PAGE_QUERY.find(url.rawQuery.orEmpty())?.groupValues?.get(1)?.toLongOrNull() ?: 0) > page
+            }
+        }
+        return OrenoPage(items, page, items.isNotEmpty() && hasMore)
+    }
 
     fun parseDetail(html: String, id: String): OrenoVideoRecord? {
-        val wantedId = id.trim()
-        require(wantedId.isNotEmpty()) { "Oreno id must not be blank" }
-        return parseCards(html).firstOrNull { it.id == wantedId }
-            ?: DETAIL_ID_PATTERN.find(html)?.takeIf { it.groupValues[1] == wantedId }
-                ?.let { parseRecord(html, wantedId) }
-    }
-
-    private fun cardFragments(html: String): List<String> {
-        if (html.isBlank()) return emptyList()
-        val fragments = ArrayList<String>()
-        val openings = (ARTICLE_OPEN_PATTERN.findAll(html) + CARD_OPEN_PATTERN.findAll(html))
-            .sortedBy { it.range.first }
-        for (opening in openings) {
-            val tagName = opening.groupValues[1]
-            val end = matchingElementEnd(html, opening.range.last + 1, tagName)
-            fragments += html.substring(opening.range.first, end)
-        }
-        return fragments
-    }
-
-    private fun matchingElementEnd(html: String, contentStart: Int, tagName: String): Int {
-        var depth = 1
-        val wantedTag = tagName.lowercase()
-        for (token in HTML_TOKEN_PATTERN.findAll(html, contentStart)) {
-            val raw = token.value
-            if (raw.startsWith("<!--")) continue
-            val tokenTag = token.groupValues.getOrNull(2)?.lowercase() ?: continue
-            if (tokenTag != wantedTag) continue
-            if (token.groupValues.getOrNull(1) == "/") {
-                depth--
-                if (depth == 0) return token.range.last + 1
-            } else if (!raw.trimEnd().endsWith("/>") && tokenTag !in VOID_TAGS) {
-                depth++
-            }
-        }
-        // Malformed/truncated HTML is common when a proxy cuts a response.
-        // Returning the remaining fragment still lets us recover its metadata.
-        return html.length
-    }
-
-    private fun parseRecord(block: String, forcedId: String? = null): OrenoVideoRecord? {
-        val id = forcedId ?: ORENO_ID_PATTERN.find(block)?.groupValues?.getOrNull(2) ?: return null
-        val title = TITLE_PATTERN.find(block)?.groupValues?.getOrNull(1)
-            ?: HEADING_PATTERN.find(block)?.groupValues?.getOrNull(1)
-            ?: ""
-        val thumbnail = IMAGE_PATTERN.find(block)?.groupValues?.getOrNull(1)?.decodeHtml()
-        val iwaraId = IWARA_PATTERN.find(block)?.groupValues?.getOrNull(1)
-        val author = AUTHOR_PATTERN.find(block)?.groupValues?.getOrNull(1)?.decodeHtml()
+        require(ORENO_MOVIE_ID.matches(id)) { "invalid Oreno movie ID" }
+        val document = document(html)
+        val heading = document.selectFirst("h1.video-h1") ?: return null
+        val title = heading.text().trim().takeIf(String::isNotEmpty)
+            ?: throw OrenoParseException("Oreno detail has no title")
+        val canonical = document.selectFirst("link[rel=canonical]")?.absUrl("href")?.let(::movieId)
+        if (canonical != null && canonical != id) throw OrenoParseException("Oreno detail ID does not match the request")
+        val header = heading.closest("header") ?: document
+        val playLink = header.select("figure.video-figure a[href]").firstNotNullOfOrNull { iwaraId(it.absUrl("href")) }
+        val sections = document.select("section.video-section-tag")
+        val author = sections.select("a[href*='/authors/']").firstOrNull()?.cleanText()
+        val tags = sections.select("a[href*='/tags/']").map { it.cleanText() }.filter(String::isNotBlank).distinct()
         return OrenoVideoRecord(
             id = id,
-            title = title.decodeHtml().collapseWhitespace(),
-            iwaraVideoId = iwaraId,
+            title = title,
+            iwaraVideoId = playLink,
             author = author,
-            thumbnailUrl = thumbnail,
-            viewCount = DATA_VIEWS_PATTERN.find(block)?.groupValues?.getOrNull(1)?.toLongOrNull(),
-            likeCount = DATA_LIKES_PATTERN.find(block)?.groupValues?.getOrNull(1)?.toLongOrNull(),
+            thumbnailUrl = header.selectFirst("img.video-img")?.imageUrl(),
+            tags = tags,
+            viewCount = header.statistic("remove_red_eye"),
+            likeCount = header.statistic("favorite"),
+            description = document.selectFirst("blockquote.video-information-comment")?.cleanText(),
         )
     }
 
-    private fun String.decodeHtml(): String =
-        replace("&amp;", "&", ignoreCase = true)
-            .replace("&quot;", "\"", ignoreCase = true)
-            .replace("&#39;", "'", ignoreCase = true)
-            .replace("&apos;", "'", ignoreCase = true)
-            .replace("&lt;", "<", ignoreCase = true)
-            .replace("&gt;", ">", ignoreCase = true)
-            .replace(NUMERIC_ENTITY_PATTERN) { match ->
-                val digits = match.groupValues[2]
-                val radix = if (match.groupValues[1].isNotEmpty()) 16 else 10
-                digits.toIntOrNull(radix)?.let { codePoint ->
-                    runCatching { String(Character.toChars(codePoint)) }.getOrNull()
-                } ?: match.value
+    private fun document(html: String): Document {
+        if (html.isBlank()) throw OrenoParseException("Oreno returned an empty HTML document")
+        return Jsoup.parse(html, BASE_URL)
+    }
+
+    private fun cards(document: Document): List<OrenoVideoRecord> {
+        val main = document.selectFirst("div.g-main-grid") ?: document.body()
+        val articles = main.select("article").filter { it.parents().none { parent -> parent.hasClass("g-main-grid-related") } }
+        val records = articles.mapNotNull { article ->
+            val link = article.select("a[href]").firstOrNull { movieId(it.absUrl("href")) != null }
+            if (link == null) {
+                if (EMPTY_MARKERS.any { it in article.text() }) return@mapNotNull null
+                throw OrenoParseException("Oreno article has no movie link")
             }
+            val title = article.selectFirst("h2.box-h2, h2, h3")?.text()?.trim()?.takeIf(String::isNotEmpty)
+                ?: link.attr("title").takeIf(String::isNotBlank)
+                ?: article.selectFirst("img[alt]")?.attr("alt")?.takeIf(String::isNotBlank)
+                ?: throw OrenoParseException("Oreno movie card has no title")
+            val image = article.selectFirst("img.main-thumbnail") ?: article.selectFirst("img")
+            val author = article.selectFirst("div.box-text1 div.box-text-in")?.cleanText()
+                ?: article.attr("data-author").takeIf(String::isNotBlank)
+            val tags = article.selectFirst("div.box-text2 div.box-text-in")?.cleanText()
+                ?.split(WHITESPACE)?.filter(String::isNotBlank).orEmpty()
+            val stats = article.select("div.figure-text-in").map { number(it.text()) }
+            OrenoVideoRecord(
+                id = requireNotNull(movieId(link.absUrl("href"))),
+                title = title,
+                iwaraVideoId = article.select("a[href]").firstNotNullOfOrNull { iwaraId(it.absUrl("href")) },
+                author = author,
+                thumbnailUrl = image?.imageUrl(),
+                tags = tags.distinct(),
+                viewCount = number(article.attr("data-views")) ?: stats.getOrNull(0),
+                likeCount = number(article.attr("data-favorites")) ?: stats.getOrNull(1),
+            )
+        }.distinctBy(OrenoVideoRecord::id)
+        if (articles.isEmpty() && EMPTY_MARKERS.none { it in main.text() }) {
+            throw OrenoParseException("Oreno list structure is missing")
+        }
+        return records
+    }
 
-    private fun String.collapseWhitespace(): String = trim().replace(WHITESPACE_PATTERN, " ")
+    private fun Element.cleanText(): String = clone().apply { select("i, svg, script, style").remove() }.text().trim()
 
-    companion object {
-        private val CARD_OPEN_PATTERN = Regex(
-            "(?is)<(li|div)\\b(?=[^>]*(?:class|id)\\s*=\\s*[\"'][^\"']*(?:movie|video|item)[^\"']*[\"'])[^>]*>",
-        )
-        private val ARTICLE_OPEN_PATTERN = Regex("(?is)<(article)\\b[^>]*>")
-        private val HTML_TOKEN_PATTERN = Regex("(?is)<!--.*?-->|<(/?)([a-z][a-z0-9:-]*)\\b[^>]*>")
-        private val ORENO_ID_PATTERN = Regex("(?i)(?:/|[\\\"'])((?:movies?|videos?))/([A-Za-z0-9_-]+)")
-        private val DETAIL_ID_PATTERN = Regex("(?i)(?:/|[\\\"'])(?:movies?|videos?)/([A-Za-z0-9_-]+)(?:[/?#\\\"'])")
-        private val IWARA_PATTERN = Regex(
-            "(?i)(?:https?:)?//(?:www\\.)?iwara\\.tv/(?:video/|v/)?([A-Za-z0-9_-]+)",
-        )
-        private val TITLE_PATTERN = Regex("(?is)\\b(?:data-title|title|alt)\\s*=\\s*[\"']([^\"']+)[\"']")
-        private val HEADING_PATTERN = Regex("(?is)<(?:h1|h2|h3)\\b[^>]*>(.*?)</(?:h1|h2|h3)>")
-        private val IMAGE_PATTERN = Regex("(?is)<img\\b[^>]+(?:src|data-src|data-original)\\s*=\\s*[\"']([^\"']+)[\"']")
-        private val AUTHOR_PATTERN = Regex("(?is)\\b(?:data-author|author)\\s*=\\s*[\"']([^\"']+)[\"']")
-        private val DATA_VIEWS_PATTERN = Regex("(?i)data-views\\s*=\\s*[\"'](\\d+)[\"']")
-        private val DATA_LIKES_PATTERN = Regex("(?i)data-(?:favorites|likes)\\s*=\\s*[\"'](\\d+)[\"']")
-        private val NUMERIC_ENTITY_PATTERN = Regex("&#(x?)([0-9a-f]+);?", RegexOption.IGNORE_CASE)
-        private val WHITESPACE_PATTERN = Regex("\\s+")
-        private val VOID_TAGS = setOf("area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr")
+    private fun Element.statistic(icon: String): Long? = select("i.material-icons")
+        .firstOrNull { it.text().trim() == icon }?.nextElementSibling()
+        ?.takeIf { it.hasClass("video-text") }?.text()?.let(::number)
+
+    private fun Element.imageUrl(): String? {
+        for (attribute in listOf("data-src", "data-original", "src")) {
+            val absolute = absUrl(attribute).takeIf(String::isNotBlank) ?: continue
+            val uri = runCatching { URI(absolute) }.getOrNull() ?: continue
+            if (uri.scheme in setOf("https", "http") && uri.host != null && uri.userInfo == null) return absolute
+        }
+        return null
+    }
+
+    private fun movieId(url: String): String? {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return null
+        if (uri.host != "oreno3d.com") return null
+        return MOVIE_PATH.matchEntire(uri.path)?.groupValues?.get(1)
+    }
+
+    private fun iwaraId(url: String): String? {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return null
+        if (uri.host !in setOf("iwara.tv", "www.iwara.tv") || uri.scheme !in setOf("https", "http")) return null
+        return IWARA_PATH.matchEntire(uri.path)?.groupValues?.get(1)
+    }
+
+    private fun number(raw: String): Long? {
+        val match = NUMBER.matchEntire(raw.trim().replace(",", "")) ?: return null
+        val multiplier = when (match.groupValues[2].lowercase()) {
+            "k" -> BigDecimal(1000)
+            "m" -> BigDecimal(1_000_000)
+            else -> BigDecimal.ONE
+        }
+        return runCatching { match.groupValues[1].toBigDecimal().multiply(multiplier).longValueExact() }.getOrNull()
+    }
+
+    private companion object {
+        const val BASE_URL = "https://oreno3d.com/"
+        val MOVIE_PATH = Regex("/movies?/([0-9]{1,20})/?")
+        val IWARA_PATH = Regex("/(?:video|v)/([A-Za-z0-9_-]{1,128})(?:/[^/]*)?/?")
+        val PAGE_QUERY = Regex("(?:^|&)page=([0-9]+)(?:&|$)")
+        val WHITESPACE = Regex("\\s+")
+        val NUMBER = Regex("([0-9]+(?:\\.[0-9]+)?)([kKmM]?)")
+        val EMPTY_MARKERS = listOf("動画が見つかりません。", "No Movies.")
     }
 }
+
+/** The site's fixed page size, independent of the consumer's requested limit. */
+internal const val ORENO_PAGE_SIZE = 36
+internal val ORENO_MOVIE_ID = Regex("[0-9]{1,20}")
 
 class OrenoParseException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause), SourceFailureCarrier {
     override val sourceFailure: SourceFailure

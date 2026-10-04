@@ -14,13 +14,17 @@ import java.util.Base64
 /** Result of the email/password exchange. Iwara returns a refresh token here. */
 data class IwaraLoginResult(
     val refreshToken: String,
-)
+) {
+    override fun toString(): String = "IwaraLoginResult(credentials=redacted)"
+}
 
 /** Short lived access token returned by the refresh endpoint. */
 data class IwaraAccessTokenResult(
     val accessToken: String,
     val expiresAtEpochSeconds: Long?,
-)
+) {
+    override fun toString(): String = "IwaraAccessTokenResult(credentials=redacted, expiresAt=$expiresAtEpochSeconds)"
+}
 
 /**
  * Explicit authentication boundary for Iwara. Credentials are serialized only
@@ -68,14 +72,15 @@ class IwaraAuthClient(
             ?: root.valueLong("expires")?.toEpochSeconds()
         val parsedExpiry = responseExpiry ?: parseJwtExpiry(accessToken)
         val now = nowEpochSeconds()
+        if (parsedExpiry != null && parsedExpiry <= now) {
+            throw IwaraAuthException("auth.refresh", "expired_access_token", "Iwara returned an expired access token")
+        }
         return IwaraAccessTokenResult(
             accessToken = accessToken,
             // JWT parsing is informational only. The server remains the
             // authority; malformed/opaque tokens get a bounded local lease so
             // they cannot be treated as valid forever by the session manager.
-            expiresAtEpochSeconds = (parsedExpiry ?: now + DEFAULT_ACCESS_TOKEN_TTL_SECONDS)
-                .takeIf { it > now }
-                ?: now + DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+            expiresAtEpochSeconds = parsedExpiry ?: now + DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
         )
     }
 

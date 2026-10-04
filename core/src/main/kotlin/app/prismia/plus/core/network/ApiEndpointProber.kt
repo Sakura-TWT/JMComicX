@@ -1,5 +1,7 @@
 package app.prismia.plus.core.network
 
+import app.prismia.network.BufferedHttpExecutor
+import app.prismia.network.ResponseSizeLimitException
 import app.prismia.plus.core.protocol.ApiRoute
 import app.prismia.plus.core.protocol.ApiTokenProvider
 import app.prismia.plus.core.protocol.HttpMethod
@@ -8,6 +10,9 @@ import app.prismia.plus.core.result.JmxError
 import app.prismia.plus.core.result.NetworkExchange
 import app.prismia.plus.core.result.JmxResult
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -41,8 +46,10 @@ class ApiEndpointProber(
      * 内容语言，需与 [JmxHttpClient] 用的是同一个来源。探测请求要和真实请求同构，
      * 否则探测出来的"这台机器可用"说的是另一条 URL 的事。
      */
-    private val queryLanguageProvider: () -> String? = { null }
+    private val queryLanguageProvider: () -> String? = { null },
+    maxResponseBytes: Long = 8L * 1024 * 1024,
 ) {
+    private val executor = BufferedHttpExecutor(okHttpClient, maxResponseBytes)
     suspend fun probeAll(route: ApiRoute = ApiRoute.Setting): List<ApiEndpointProbeResult> {
         val endpoints = endpointManager.all().map { it.url }
         return coroutineScope {
@@ -61,26 +68,27 @@ class ApiEndpointProber(
                 queryLanguage = queryLanguageProvider()
             )
             val request = buildRequest(requestUrl, route, token.token, token.tokenParam)
-            runCatching {
-                okHttpClient.newCall(request).execute().use { response ->
-                    val body = response.body.string()
+            try {
+                executor.execute(request).let { response ->
+                    val body = response.body
                     val latencyMillis = elapsedMillisSince(startedAt)
                     val exchange = NetworkExchange(
                         route = route.path,
-                        requestUrl = response.request.url.toString(),
-                        statusCode = response.code,
-                        contentType = response.body.contentType()?.toString(),
+                        requestUrl = response.finalUrl.toString(),
+                        statusCode = response.status,
+                        contentType = response.headers["Content-Type"],
                         tokenTimestampSeconds = token.timestampSeconds,
                         bodySample = bodySampler.sample(body)
                     )
-                    val error = probeErrorOrNull(route, response.code, response.isSuccessful, body, token.timestampSeconds, exchange)
+                    val error = probeErrorOrNull(route, response.status, response.status in 200..299, body, token.timestampSeconds, exchange)
+                    currentCoroutineContext().ensureActive()
                     if (error == null) {
                         endpointManager.markSuccess(url, latencyMillis)
                         ApiEndpointProbeResult(
                             url = url.toString(),
                             route = route.path,
                             success = true,
-                            statusCode = response.code,
+                            statusCode = response.status,
                             latencyMillis = latencyMillis,
                             exchange = exchange
                         )
@@ -90,16 +98,18 @@ class ApiEndpointProber(
                             url = url.toString(),
                             route = route.path,
                             success = false,
-                            statusCode = response.code,
+                            statusCode = response.status,
                             latencyMillis = latencyMillis,
                             error = error,
                             exchange = exchange
                         )
                     }
                 }
-            }.getOrElse {
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
                 val latencyMillis = elapsedMillisSince(startedAt)
-                val error = it.toJmxNetworkError()
+                val error = failure.toJmxNetworkError()
                 endpointManager.markFailure(url, error.message)
                 ApiEndpointProbeResult(
                     url = url.toString(),
@@ -162,6 +172,7 @@ class ApiEndpointProber(
 
     private fun Throwable.toJmxNetworkError(): JmxError {
         return when (this) {
+            is ResponseSizeLimitException -> JmxError.Schema("Probe response exceeded the byte limit", field = "responseBody", cause = this)
             is SocketTimeoutException -> JmxError.Network("Network probe timeout", this)
             is UnknownHostException -> JmxError.Domain("API probe domain cannot resolve", cause = this)
             is IOException -> JmxError.Network("Network probe request failed", this)

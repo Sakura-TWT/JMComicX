@@ -19,6 +19,21 @@ import org.junit.Test
 
 class JmComicCatalogTest {
     @Test
+    fun pagedExactIdSearchResolvesTheSameRedirectAsFind() = runBlocking {
+        val gateway = FakeGateway(
+            searchResult = JmxResult.Success(SearchPage(null, "JM987", emptyList())),
+            detailResult = JmxResult.Success(albumDetail("987", "exact")),
+        )
+        for (pageIndex in listOf(1, 3)) {
+            val page = JmComicCatalog(gateway).searchPage("JM987", pageIndex)
+            assertEquals(listOf("987"), page.items.map { it.key.remoteId })
+            assertEquals(1, page.total)
+            assertEquals(pageIndex, page.page)
+            assertFalse(page.hasMore)
+        }
+    }
+
+    @Test
     fun searchPageCanonicalizesIdsAndReportsProtocolPagination() = runBlocking {
         val gateway = FakeGateway(
             searchResult = JmxResult.Success(

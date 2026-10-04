@@ -1,5 +1,7 @@
 package app.prismia.plus.core.network
 
+import app.prismia.network.BufferedHttpExecutor
+import app.prismia.network.ResponseSizeLimitException
 import app.prismia.plus.core.protocol.ApiTokenProvider
 import app.prismia.plus.core.protocol.HttpMethod
 import app.prismia.plus.core.protocol.JmxProtocolConstants
@@ -10,22 +12,18 @@ import app.prismia.plus.core.result.JmxResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import okhttp3.Call
-import okhttp3.Callback
 import okhttp3.FormBody
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.Response
+import okhttp3.Headers
 import okhttp3.CookieJar
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
-import kotlin.coroutines.resumeWithException
 
 class JmxHttpClient(
     private val endpointManager: ApiEndpointManager,
@@ -34,11 +32,14 @@ class JmxHttpClient(
     private val retryPolicy: RetryPolicy = DefaultRetryPolicy(),
     private val bodySampler: BodySampler = BodySampler(),
     private val requestMetricsRecorder: RequestMetricsRecorder? = null,
-    private val queryLanguageProvider: () -> String? = { null }
+    private val queryLanguageProvider: () -> String? = { null },
+    private val maxResponseBytes: Long = 8L * 1024 * 1024,
 ) {
     private val nonReplayClient by lazy {
         okHttpClient.newBuilder().retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).build()
     }
+    private val executor = BufferedHttpExecutor(okHttpClient, maxResponseBytes)
+    private val nonReplayExecutor by lazy { BufferedHttpExecutor(nonReplayClient, maxResponseBytes) }
 
     fun withCookieJar(cookieJar: CookieJar): JmxHttpClient {
         return JmxHttpClient(
@@ -48,13 +49,28 @@ class JmxHttpClient(
             retryPolicy = retryPolicy,
             bodySampler = bodySampler,
             requestMetricsRecorder = requestMetricsRecorder,
-            queryLanguageProvider = queryLanguageProvider
+            queryLanguageProvider = queryLanguageProvider,
+            maxResponseBytes = maxResponseBytes,
         )
     }
 
-    suspend fun execute(request: ApiRequest): JmxResult<RawNetworkResponse> {
+    suspend fun execute(request: ApiRequest): JmxResult<RawNetworkResponse> = executePrepared(snapshotRequest(request))
+
+    /** Freeze caller-owned maps and implicit language before any suspension or retry. */
+    internal fun snapshotRequest(request: ApiRequest): ApiRequest = request.copy(
+        query = buildMap {
+            putAll(request.query)
+            if (request.route.method == HttpMethod.Get && request.query["lang"] == null) {
+                queryLanguageProvider()?.takeIf(String::isNotBlank)?.let { put("lang", it) }
+            }
+        },
+        form = request.form.toMap(),
+        headers = request.headers.toMap(),
+    )
+
+    internal suspend fun executePrepared(request: ApiRequest): JmxResult<RawNetworkResponse> {
         val excludedEndpointUrl = request.excludedEndpointUrl?.toHttpUrlOrNull()
-        val startedAtMillis = System.currentTimeMillis()
+        val startedAtNanos = System.nanoTime()
         var lastError: JmxError? = null
         var attempts = 0
         repeat(retryPolicy.maxAttempts.coerceAtLeast(1)) { attempt ->
@@ -71,7 +87,7 @@ class JmxHttpClient(
                         RequestMetricRecord(
                             route = request.route.path,
                             endpointHost = baseUrl.host,
-                            durationMillis = System.currentTimeMillis() - startedAtMillis,
+                            durationMillis = elapsedMillisSince(startedAtNanos),
                             attempts = attempts,
                             success = true
                         )
@@ -91,7 +107,7 @@ class JmxHttpClient(
                             RequestMetricRecord(
                                 route = request.route.path,
                                 endpointHost = baseUrl.host,
-                                durationMillis = System.currentTimeMillis() - startedAtMillis,
+                                durationMillis = elapsedMillisSince(startedAtNanos),
                                 attempts = attempts,
                                 success = false,
                                 errorKind = result.error.javaClass.simpleName
@@ -109,7 +125,7 @@ class JmxHttpClient(
             RequestMetricRecord(
                 route = request.route.path,
                 endpointHost = "",
-                durationMillis = System.currentTimeMillis() - startedAtMillis,
+                durationMillis = elapsedMillisSince(startedAtNanos),
                 attempts = attempts,
                 success = false,
                 errorKind = lastError?.javaClass?.simpleName
@@ -122,19 +138,7 @@ class JmxHttpClient(
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos).coerceAtLeast(0L)
     }
 
-    /**
-     * 单次出网。整段搬到 IO 线程上执行。
-     *
-     * [awaitResponse] 用的是 `enqueue` + [suspendCancellableCoroutine]：OkHttp 在自己的线程里
-     * 完成传输，但协程是在**调用方的调度器**上恢复的。而调用方几乎都是 Compose 的
-     * LaunchedEffect（[Dispatchers.Main.immediate]），于是响应一到，读 socket、解 gzip
-     * （`body.string()`）、采样响应体、扫描风控页全都落在主线程上。
-     * 这正是"加载图标转着转着，快要出内容时整个界面卡一下"的来源——每次卡顿都发生在
-     * 加载即将完成的那一刻，因为那一刻主线程才刚开始干最重的活。
-     *
-     * 只包 [performRequest] 而不包整个 [execute]：重试退避的 [delay] 留在调用方调度器上，
-     * 既省一次线程切换，也让测试里的虚拟时间继续管得住退避。
-     */
+    /** Body IO belongs to BufferedHttpExecutor; protocol inspection remains off the caller's UI thread. */
     private suspend fun executeOnce(baseUrl: HttpUrl, apiRequest: ApiRequest): JmxResult<RawNetworkResponse> =
         withContext(Dispatchers.IO) { performRequest(baseUrl, apiRequest) }
 
@@ -143,49 +147,49 @@ class JmxHttpClient(
         val url = buildUrl(baseUrl, apiRequest, token.timestampSeconds).unwrapOrReturn { return it }
         val request = buildRequest(url, apiRequest, token.token, token.tokenParam)
         return try {
-            val client = if (apiRequest.route == app.prismia.plus.core.protocol.ApiRoute.FavoriteAction) nonReplayClient else okHttpClient
-            client.newCall(request).awaitResponse().use { response ->
-                val body = response.body.string()
-                val contentType = response.body.contentType()?.toString()
+            val transport = if (apiRequest.route == app.prismia.plus.core.protocol.ApiRoute.FavoriteAction) nonReplayExecutor else executor
+            transport.execute(request).let { response ->
+                val body = response.body
+                val contentType = response.headers["Content-Type"]
                 val exchange = NetworkExchange(
                     route = apiRequest.route.path,
-                    requestUrl = response.request.url.toString(),
-                    statusCode = response.code,
+                    requestUrl = response.finalUrl.toString(),
+                    statusCode = response.status,
                     contentType = contentType,
                     tokenTimestampSeconds = token.timestampSeconds,
                     bodySample = bodySampler.sample(body)
                 )
-                if (!response.isSuccessful) {
+                if (response.status !in 200..299) {
                     return JmxResult.Failure(
                         JmxError.Http(
-                            code = response.code,
-                            message = JmxServerMessages.composeHttpFailureMessage(response.code, body),
+                            code = response.status,
+                            message = JmxServerMessages.composeHttpFailureMessage(response.status, body),
                             exchange = exchange,
-                            retryable = response.code >= 500 ||
-                                response.code == 408 ||
-                                response.code == 429 ||
-                                response.code == 403,
-                            retryAfterMillis = response.retryAfterMillisOrNull()
+                            retryable = response.status >= 500 ||
+                                response.status == 408 ||
+                                response.status == 429 ||
+                                response.status == 403,
+                            retryAfterMillis = response.headers.retryAfterMillisOrNull()
                         )
                     )
                 }
-                when (val inspection = ResponseBodyInspector.inspect(apiRequest.route, response.code, body)) {
+                when (val inspection = ResponseBodyInspector.inspect(apiRequest.route, response.status, body)) {
                     is JmxResult.Failure -> return JmxResult.Failure(inspection.error.withExchange(exchange))
                     is JmxResult.Success -> Unit
                 }
                 JmxResult.Success(
                     RawNetworkResponse(
-                        statusCode = response.code,
+                        statusCode = response.status,
                         body = body,
                         contentType = contentType,
-                        requestUrl = response.request.url.toString(),
+                        requestUrl = response.finalUrl.toString(),
                         tokenTimestampSeconds = token.timestampSeconds
                     )
                 )
             }
         } catch (error: CancellationException) {
             throw error
-        } catch (error: Throwable) {
+        } catch (error: Exception) {
             JmxResult.Failure(error.toJmxNetworkError())
         }
     }
@@ -196,7 +200,7 @@ class JmxHttpClient(
         timestampSeconds: Long
     ): JmxResult<HttpUrl> {
         return runCatching {
-            buildApiUrl(baseUrl, apiRequest, timestampSeconds, queryLanguageProvider())
+            buildApiUrl(baseUrl, apiRequest, timestampSeconds, queryLanguage = null)
         }.fold(
             onSuccess = { JmxResult.Success(it) },
             onFailure = { JmxResult.Failure(JmxError.Schema("请求 URL 构建失败：${apiRequest.route.path}", cause = it)) }
@@ -237,6 +241,7 @@ class JmxHttpClient(
 
     private fun Throwable.toJmxNetworkError(): JmxError {
         return when (this) {
+            is ResponseSizeLimitException -> JmxError.Schema("API 响应超过大小限制", field = "responseBody", cause = this)
             is SocketTimeoutException -> JmxError.Network("网络连接超时", this)
             is UnknownHostException -> JmxError.Domain("API 域名无法解析", cause = this)
             is IOException -> JmxError.Network("网络请求失败", this)
@@ -245,11 +250,6 @@ class JmxHttpClient(
     }
 }
 
-/**
- * `Retry-After` 支持两种写法：秒数（`Retry-After: 5`）与 HTTP-date。
- * 这里只解析秒数形式——接口用的是秒数，HTTP-date 形式还要处理客户端时钟偏移，
- * 解析不出来就当没有，交回给客户端自己的退避。
- */
 /**
  * 按路由与参数拼出接口请求 URL。
  *
@@ -284,24 +284,13 @@ internal fun buildApiUrl(
     return builder.build()
 }
 
-private fun Response.retryAfterMillisOrNull(): Long? {
-    val raw = header("Retry-After")?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-    return raw.toLongOrNull()?.takeIf { it >= 0L }?.times(1_000L)
-}
-
-internal suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutine { continuation ->
-    continuation.invokeOnCancellation { cancel() }
-    enqueue(
-        object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                if (!continuation.isCancelled) continuation.resumeWithException(e)
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                continuation.resume(response) { _, value, _ -> value.close() }
-            }
-        }
-    )
+/**
+ * Parse the delta-seconds form of Retry-After with saturating conversion.
+ * HTTP-date and malformed values fall back to the protocol retry policy.
+ */
+internal fun Headers.retryAfterMillisOrNull(): Long? {
+    val seconds = get("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it >= 0L } ?: return null
+    return if (seconds > Long.MAX_VALUE / 1000) Long.MAX_VALUE else seconds * 1000
 }
 
 /**

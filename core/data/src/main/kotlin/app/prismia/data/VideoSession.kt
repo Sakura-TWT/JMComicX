@@ -2,6 +2,7 @@ package app.prismia.data
 
 import app.prismia.foundation.SourceErrorCategory
 import app.prismia.foundation.SourceFailureCarrier
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.ByteArrayInputStream
@@ -29,9 +30,13 @@ data class VideoSession(
         }
     }
 
-    fun isUsable(nowEpochSeconds: Long): Boolean =
-        accessToken.isNotBlank() &&
-            (accessTokenExpiresAtEpochSeconds == null || accessTokenExpiresAtEpochSeconds > nowEpochSeconds + EXPIRY_SAFETY_WINDOW_SECONDS)
+    fun isUsable(nowEpochSeconds: Long): Boolean {
+        require(nowEpochSeconds >= 0) { "current time must be non-negative" }
+        val expiry = accessTokenExpiresAtEpochSeconds ?: return true
+        return expiry > nowEpochSeconds && expiry - nowEpochSeconds > EXPIRY_SAFETY_WINDOW_SECONDS
+    }
+
+    override fun toString(): String = "VideoSession(credentials=redacted, expiresAt=$accessTokenExpiresAtEpochSeconds)"
 
     companion object {
         private const val EXPIRY_SAFETY_WINDOW_SECONDS = 30L
@@ -162,27 +167,42 @@ class VideoSessionManager(
      * Single-flight access-token lookup. Expired sessions are refreshed while
      * holding the mutex so concurrent callers cannot issue duplicate refreshes.
      */
-    suspend fun accessTokenOrRefresh(forceRefresh: Boolean = false): String? = mutex.withLock {
+    suspend fun accessTokenOrRefresh(forceRefresh: Boolean = false): String? = token(forceRefresh, null)
+
+    /** Concurrent 401s for the same token reuse an already-renewed session. */
+    suspend fun accessTokenAfterRejection(rejectedToken: String): String? = token(true, rejectedToken)
+
+    private suspend fun token(forceRefresh: Boolean, rejectedToken: String?): String? = mutex.withLock {
         val existing = cached ?: store.load().also { cached = it }
-        if (!forceRefresh && existing?.isUsable(nowEpochSeconds()) == true) {
+            ?: return@withLock null // Anonymous access must never attempt refresh.
+        val alreadyRenewed = rejectedToken != null && existing.accessToken != rejectedToken
+        if ((!forceRefresh || alreadyRenewed) && existing.isUsable(nowEpochSeconds())) {
             return@withLock existing.accessToken
         }
         val refresh = refresher ?: return@withLock null
         val renewed = try {
             refresh.refresh(existing)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (failure: Exception) {
             val diagnostic = (failure as? SourceFailureCarrier)?.sourceFailure
-            if (diagnostic?.category == SourceErrorCategory.AUTHENTICATION ||
-                diagnostic?.httpStatus == 401
-            ) {
+            if (diagnostic?.category == SourceErrorCategory.AUTHENTICATION) {
                 // A rejected refresh token is unrecoverable. Clear it before
                 // surfacing the structured failure so subsequent requests do
                 // not repeatedly send a known-invalid credential.
-                runCatching { store.clear() }
-                cached = null
+                try {
+                    store.clear()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (clearFailure: Exception) {
+                    failure.addSuppressed(clearFailure)
+                } finally {
+                    cached = null
+                }
             }
             throw failure
         }
+        check(renewed.isUsable(nowEpochSeconds())) { "refreshed video session is already expired or expiring" }
         store.save(renewed)
         cached = renewed
         renewed.accessToken

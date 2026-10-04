@@ -22,6 +22,7 @@ dependencyResolutionManagement {
 rootProject.name = "Prismia"
 include(":core")
 include(":core:foundation")
+include(":core:network")
 include(":core:media")
 include(":core:designsystem")
 include(":core:data")

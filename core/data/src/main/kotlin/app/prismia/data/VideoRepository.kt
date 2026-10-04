@@ -27,7 +27,7 @@ data class FederatedVideoPage(
     val hasMore: Boolean,
     val failures: List<VideoSourceFailure> = emptyList(),
 ) {
-    fun asVideoPage(): VideoPage = VideoPage(items = items, page = page, hasMore = hasMore)
+    fun asVideoPage(): VideoPage = VideoPage(items = items, page = page, hasMore = hasMore, failures = failures.map { it.diagnostic })
 }
 
 /**
@@ -48,7 +48,7 @@ class FederatedVideoRepository(
 
     suspend fun searchDetailed(query: String, page: Int = 0, limit: Int = 32): FederatedVideoPage {
         require(page >= 0) { "page must be non-negative" }
-        require(limit > 0) { "limit must be positive" }
+        require(limit in 1..100) { "limit must be between 1 and 100" }
         return supervisorScope {
             val orenoDeferred = async { fetch(ContentSource.ORENO3D) { oreno.searchPage(query, page, limit) } }
             val iwaraDeferred = async { fetch(ContentSource.IWARA) { iwara.searchPage(query, page, limit) } }
@@ -81,47 +81,24 @@ class FederatedVideoRepository(
     )
 
     private fun merge(orenoItems: List<VideoWork>, iwaraItems: List<VideoWork>): List<VideoWork> {
-        val iwaraById = linkedMapOf<String, VideoWork>()
-        iwaraItems.forEach { item ->
-            iwaraIdentity(item)?.let { iwaraById.putIfAbsent(it, item) }
+        // One pass, one stable identity per emitted record, including duplicate
+        // Oreno entries that link to the same Iwara video.
+        val merged = linkedMapOf<ContentKey, VideoWork>()
+        for (item in orenoItems.asSequence() + iwaraItems.asSequence()) {
+            val identity = iwaraIdentity(item)?.let {
+                ContentKey(app.prismia.foundation.ContentType.VIDEO, ContentSource.IWARA, it)
+            } ?: item.key
+            val previous = merged[identity]
+            merged[identity] = if (previous == null) item else mergeVideoMetadata(previous, item).copy(
+                availability = mergeAvailability(previous.availability, item.availability),
+            )
         }
-        val consumed = mutableSetOf<String>()
-        val emittedKeys = mutableSetOf<ContentKey>()
-        val result = mutableListOf<VideoWork>()
-        for (oreno in orenoItems) {
-            val iwaraId = iwaraIdentity(oreno)
-            val match = iwaraId?.let(iwaraById::get)
-            val merged = if (match == null) {
-                oreno
-            } else {
-                consumed += iwaraId
-                mergeWork(oreno, match)
-            }
-            if (emittedKeys.add(merged.key)) result += merged
-        }
-        iwaraItems.forEach { iwaraItem ->
-            val id = iwaraIdentity(iwaraItem)
-            if (id == null || id !in consumed) {
-                if (emittedKeys.add(iwaraItem.key)) result += iwaraItem
-            }
-        }
-        return result
+        return merged.values.toList()
     }
 
     private fun iwaraIdentity(work: VideoWork): String? =
-        work.sourceLinks[ContentSource.IWARA]?.takeIf(String::isNotBlank)
-            ?: work.key.takeIf { it.source == ContentSource.IWARA }?.remoteId
-
-    private fun mergeWork(primary: VideoWork, secondary: VideoWork): VideoWork = primary.copy(
-        title = primary.title.ifBlank { secondary.title },
-        author = primary.author ?: secondary.author,
-        coverUrl = primary.coverUrl ?: secondary.coverUrl,
-        durationMs = primary.durationMs ?: secondary.durationMs,
-        description = primary.description ?: secondary.description,
-        tags = (primary.tags + secondary.tags).distinct(),
-        sourceLinks = primary.sourceLinks + secondary.sourceLinks,
-        availability = mergeAvailability(primary.availability, secondary.availability),
-    )
+        if (work.key.source == ContentSource.IWARA) work.key.remoteId
+        else work.sourceLinks[ContentSource.IWARA]?.takeIf(String::isNotBlank)
 
     private fun mergeAvailability(
         first: VideoAvailability,

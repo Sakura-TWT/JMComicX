@@ -9,6 +9,7 @@ data class OrenoVideoRecord(
     val tags: List<String> = emptyList(),
     val viewCount: Long? = null,
     val likeCount: Long? = null,
+    val description: String? = null,
 )
 
 data class OrenoPage(

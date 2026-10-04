@@ -9,6 +9,7 @@ kotlin {
 }
 
 dependencies {
+    implementation(project(":core:network"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.okhttp)
     implementation(libs.gson)

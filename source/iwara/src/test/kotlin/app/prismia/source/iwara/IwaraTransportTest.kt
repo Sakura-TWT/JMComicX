@@ -12,6 +12,42 @@ import org.junit.Test
 
 class IwaraTransportTest {
     @Test
+    fun redirectedCdnUnauthorizedDoesNotRefreshTheApiSession() = runBlocking {
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(MockResponse().setResponseCode(302).addHeader("Location", "/cdn/file"))
+            server.enqueue(MockResponse().setResponseCode(401))
+            val transport = OkHttpIwaraTransport(
+                OkHttpClient(), server.url("/api/").toString(),
+                accessTokenProvider = { "access" },
+                rejectedTokenRefresher = { error("CDN must not refresh API credentials") },
+            )
+            val failure = runCatching { transport.get("video/id") }.exceptionOrNull()
+            org.junit.Assert.assertTrue(failure is IwaraHttpException)
+            assertEquals(2, server.requestCount)
+            assertEquals("Bearer access", server.takeRequest().getHeader("Authorization"))
+            assertEquals(null, server.takeRequest().getHeader("Authorization"))
+        }
+    }
+
+    @Test
+    fun challengeHeaderPreventsRefreshEvenWithUnauthorizedStatus() = runBlocking {
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(MockResponse().setResponseCode(401).addHeader("cf-mitigated", "challenge"))
+            val transport = OkHttpIwaraTransport(
+                OkHttpClient(), server.url("/").toString(),
+                accessTokenProvider = { "access" },
+                rejectedTokenRefresher = { error("challenge is not token rejection") },
+            )
+            val failure = runCatching { transport.get("video/id") }.exceptionOrNull()
+            org.junit.Assert.assertTrue(failure is IwaraHttpException)
+            assertEquals(SourceErrorCategory.CLOUDFLARE, (failure as IwaraHttpException).sourceFailure.category)
+            assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test
     fun retriesTransientHttpFailureWithBoundedPolicy() = runBlocking {
         val server = MockWebServer()
         server.enqueue(MockResponse().setResponseCode(503).setBody("busy"))
@@ -48,7 +84,7 @@ class IwaraTransportTest {
             val transport = OkHttpIwaraTransport(
                 client = OkHttpClient(),
                 baseUrl = server.url("/api/").toString(),
-                accessTokenProvider = suspend { "secret-token" },
+                accessTokenProvider = suspend { error("CDN must not read API credentials") },
             )
 
             transport.get(server.url("/cdn/file").toString())
@@ -108,7 +144,7 @@ class IwaraTransportTest {
     }
 
     @Test
-    fun postDoesNotForwardBearerToAbsoluteCdnUrl() = runBlocking {
+    fun postRejectsNonApiTargetsBeforeSendingCredentials() = runBlocking {
         val server = MockWebServer()
         server.enqueue(MockResponse().setBody("{}"))
         server.start()
@@ -117,8 +153,9 @@ class IwaraTransportTest {
                 client = OkHttpClient(),
                 baseUrl = server.url("/api/").toString(),
             )
-            transport.post(server.url("/cdn/file").toString(), "{}", bearerToken = "refresh")
-            assertEquals(null, server.takeRequest().getHeader("Authorization"))
+            val failure = runCatching { transport.post(server.url("/cdn/file").toString(), "{}", bearerToken = "refresh") }.exceptionOrNull()
+            org.junit.Assert.assertTrue(failure is IllegalArgumentException)
+            assertEquals(0, server.requestCount)
         } finally {
             server.shutdown()
         }

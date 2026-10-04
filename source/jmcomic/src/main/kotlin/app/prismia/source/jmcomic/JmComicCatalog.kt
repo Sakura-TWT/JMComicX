@@ -55,13 +55,7 @@ class JmComicCatalog(
     override suspend fun find(query: String): List<ComicWork> =
         searchResolved(query = query, page = 1).items
 
-    override suspend fun searchPage(query: String, page: Int): ComicPage {
-        require(page >= 1) { "JM comic pages are one-based" }
-        return when (val result = albums.search(query, page)) {
-            is JmxResult.Success -> result.value.toPage(page, ComicCatalogOperation.SEARCH)
-            is JmxResult.Failure -> throw result.error.toException(ComicCatalogOperation.SEARCH)
-        }
-    }
+    override suspend fun searchPage(query: String, page: Int): ComicPage = searchResolved(query, page)
 
     private suspend fun searchResolved(query: String, page: Int): ComicPage {
         require(page >= 1) { "JM comic pages are one-based" }
@@ -81,11 +75,12 @@ class JmComicCatalog(
         }
         if (redirectId == null) return searchPage.toPage(page, ComicCatalogOperation.SEARCH)
         return when (val detail = albums.detailFull(redirectId)) {
-            is JmxResult.Success -> SearchPage(
+            is JmxResult.Success -> ComicPage(
                 total = 1,
-                redirectAlbumId = redirectId,
-                content = listOf(detail.value.summary)
-            ).toPage(page, ComicCatalogOperation.SEARCH)
+                page = page,
+                hasMore = false,
+                items = listOf(detail.value.summary.toWork(ComicCatalogOperation.SEARCH)),
+            )
             is JmxResult.Failure -> throw detail.error.toException(ComicCatalogOperation.SEARCH)
         }
     }

@@ -12,6 +12,8 @@ import app.prismia.data.VideoSessionManager
 import app.prismia.data.VideoSession
 import app.prismia.data.VideoSessionStore
 import app.prismia.data.VideoSessionRefresher
+import app.prismia.data.VideoDetailRepository
+import app.prismia.data.VideoPlaybackCoordinator
 import app.prismia.database.android.PrismiaSqliteDatabase
 import app.prismia.source.iwara.IwaraAuthClient
 import app.prismia.source.iwara.IwaraAuthException
@@ -54,6 +56,7 @@ class PrismiaAppContainer(context: Context) {
         OkHttpIwaraTransport(
             client = videoClient,
             accessTokenProvider = { videoSessionManager.accessTokenOrRefresh() },
+            rejectedTokenRefresher = { rejected -> videoSessionManager.accessTokenAfterRejection(rejected) },
         )
     }
 
@@ -65,6 +68,14 @@ class PrismiaAppContainer(context: Context) {
 
     val videoRepository: FederatedVideoRepository by lazy {
         FederatedVideoRepository(orenoCatalog, iwaraCatalog)
+    }
+
+    val videoDetails: VideoDetailRepository by lazy {
+        VideoDetailRepository(orenoCatalog, iwaraCatalog)
+    }
+
+    val videoPlayback: VideoPlaybackCoordinator by lazy {
+        VideoPlaybackCoordinator(videoDetails, nowEpochSeconds = { System.currentTimeMillis() / 1_000 })
     }
 
     val videoSessionStore: VideoSessionStore by lazy {

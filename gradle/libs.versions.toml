@@ -10,6 +10,8 @@ okhttp = "5.3.2"
 gson = "2.13.2"
 junit = "4.13.2"
 json = "20240303"
+jsoup = "1.23.2"
+jspecify = "1.0.0"
 miuix = "0.9.4"
 miuix-nav = "0.9.4"
 opencc4j = "1.14.0"
@@ -20,6 +22,7 @@ androidx-activity-compose = { group = "androidx.activity", name = "activity-comp
 androidx-core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "core-splashscreen" }
 androidx-navigationevent-compose = { group = "androidx.navigationevent", name = "navigationevent-compose-android", version.ref = "androidx-navigationevent" }
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref = "coil" }
 # Coil 3 不再内置网络加载器，取图必须显式装一个 fetcher；用 okhttp 版是为了与 core 复用同一套连接池与拦截器。
 coil-network-okhttp = { group = "io.coil-kt.coil3", name = "coil-network-okhttp", version.ref = "coil" }
@@ -30,6 +33,8 @@ junit = { group = "junit", name = "junit", version.ref = "junit" }
 # 单元测试用的真 org.json：android.jar 里那套是抛 "Stub!" 的空壳，
 # 分组顺序/热度的编解码正是走 JSONArray，不装这个就只能整段跳过不测。
 json = { group = "org.json", name = "json", version.ref = "json" }
+jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
+jspecify = { group = "org.jspecify", name = "jspecify", version.ref = "jspecify" }
 miuix-icons-android = { group = "top.yukonga.miuix.kmp", name = "miuix-icons-android", version.ref = "miuix" }
 miuix-nav-android = { group = "top.yukonga.miuix.kmp", name = "miuix-nav-android", version.ref = "miuix-nav" }
 miuix-blur-android = { group = "top.yukonga.miuix.kmp", name = "miuix-blur-android", version.ref = "miuix" }

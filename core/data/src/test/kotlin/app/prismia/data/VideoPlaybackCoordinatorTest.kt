@@ -8,6 +8,8 @@ import app.prismia.video.StreamVariant
 import app.prismia.video.VideoDetail
 import app.prismia.video.VideoPage
 import app.prismia.video.VideoWork
+import app.prismia.video.VideoDetailProvider
+import app.prismia.video.isExpired
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,6 +18,41 @@ import org.junit.Test
 
 class VideoPlaybackCoordinatorTest {
     private val key = ContentKey(ContentType.VIDEO, ContentSource.IWARA, "v1")
+
+    @Test fun tombstoneCannotPlayEvenIfAnAdapterReturnsAStream() = runBlocking {
+        val provider = VideoDetailProvider {
+            VideoDetail(VideoWork(key, "removed", availability = app.prismia.video.VideoAvailability.TOMBSTONED),
+                listOf(StreamVariant("720", "https://cdn/file", expiresAtEpochSeconds = 2000)))
+        }
+        assertTrue(runCatching { VideoPlaybackCoordinator(provider, { 1000 }).resolve(key) }.exceptionOrNull()
+            is VideoPlaybackUnavailableException)
+    }
+
+    @Test fun refreshedExpiredUrlsAreNeverReturnedAndLatencyCounts() = runBlocking {
+        var now = 900L
+        val provider = VideoDetailProvider {
+            now = 995L
+            VideoDetail(VideoWork(key, "work"), listOf(StreamVariant("720", "https://cdn/file", expiresAtEpochSeconds = 1000)))
+        }
+        val failure = runCatching { VideoPlaybackCoordinator(provider, { now }).resolve(key) }.exceptionOrNull()
+        assertTrue(failure is VideoPlaybackUnavailableException)
+    }
+
+    @Test fun qualityFallbackPrefersFullPlaybackOverPreview() = runBlocking {
+        val catalog = CountingCatalog(StreamVariant("preview", "https://cdn/preview"), StreamVariant("720", "https://cdn/720"))
+        assertEquals("720", VideoPlaybackCoordinator(catalog, { 1000 }).resolve(key).variant.name)
+    }
+
+    @Test fun unknownExpiryCannotBeReusedIndefinitely() = runBlocking {
+        val catalog = CountingCatalog(StreamVariant("720", "https://cdn/720"))
+        assertTrue(VideoPlaybackCoordinator(catalog, { 1000 }).resolve(key, cachedVariant = catalog.variant).refreshed)
+        assertEquals(1, catalog.detailCalls)
+    }
+
+    @Test fun expiryComparisonCannotOverflow() {
+        assertTrue(StreamVariant("720", "https://cdn/720", expiresAtEpochSeconds = Long.MAX_VALUE)
+            .isExpired(Long.MAX_VALUE - 10, 15))
+    }
 
     @Test
     fun usableCachedVariantAvoidsNetworkRefresh() = runBlocking {

@@ -1,6 +1,7 @@
 package app.prismia.plus.core.network
 
 import app.prismia.plus.core.protocol.ApiRoute
+import okio.ByteString.Companion.encodeUtf8
 
 data class ApiRequest(
     val route: ApiRoute,
@@ -74,18 +75,31 @@ fun apiRequest(route: ApiRoute, configure: ApiRequestBuilder.() -> Unit = {}): A
     return ApiRequestBuilder(route).apply(configure).build()
 }
 
-/**
- * 请求去重键：同一方法+路径+参数的并发请求视为同一请求。
- * 不含 headers，避免登录态恢复重放时把不同会话的请求错误合并。
- */
+/** Stable identity of request semantics, without storing credentials in the key. */
 fun ApiRequest.dedupKey(): String {
-    val queryPart = query.entries
-        .filter { it.value != null }
-        .sortedBy { it.key }
-        .joinToString("&") { "${it.key}=${it.value}" }
-    val formPart = form.entries
-        .filter { it.value != null }
-        .sortedBy { it.key }
-        .joinToString("&") { "${it.key}=${it.value}" }
-    return "${route.method.name} ${route.path}?$queryPart#$formPart"
+    val effectiveHeaders = linkedMapOf<String, String>()
+    headers.forEach { (name, value) ->
+        // JmxHttpClient delegates Accept-Encoding to OkHttp for transparent gzip.
+        if (!name.equals("Accept-Encoding", ignoreCase = true)) effectiveHeaders[name.lowercase()] = value
+    }
+    val canonical = buildString {
+        field("jm-request-v2")
+        field(route.name)
+        fields(query)
+        fields(form)
+        fields(effectiveHeaders)
+        field(requireSuccessCode.toString())
+        field(excludedEndpointUrl)
+    }
+    return canonical.encodeUtf8().sha256().hex()
+}
+
+private fun StringBuilder.field(value: String?) {
+    if (value == null) append("-1:") else append(value.length).append(':').append(value)
+}
+
+private fun StringBuilder.fields(values: Map<String, String?>) {
+    val entries = values.entries.filter { it.value != null }.sortedBy { it.key }
+    field(entries.size.toString())
+    entries.forEach { (key, value) -> field(key); field(value) }
 }

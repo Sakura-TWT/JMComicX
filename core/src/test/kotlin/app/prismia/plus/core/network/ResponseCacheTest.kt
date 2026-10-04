@@ -9,6 +9,8 @@ import app.prismia.plus.core.protocol.ApiTokenProvider
 import app.prismia.plus.core.protocol.JmxProtocolConstants
 import app.prismia.plus.core.result.JmxResult
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.job
@@ -25,6 +27,23 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 class ResponseCacheTest {
+    @Test
+    fun responseStartedBeforeGenerationChangeCannotPopulateTheNewGeneration() = runBlocking {
+        val generation = java.util.concurrent.atomic.AtomicReference("old")
+        val client = createClient(language = "CN", generation = generation::get)
+        server.enqueue(encryptedResponse("""{"value":"old"}""").setHeadersDelay(300, java.util.concurrent.TimeUnit.MILLISECONDS))
+        val pending = async(start = CoroutineStart.UNDISPATCHED) { client.requestJson(apiRequest(ApiRoute.Promote)) }
+        assertTrue(kotlinx.coroutines.withContext(Dispatchers.IO) {
+            server.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS)
+        } != null)
+        generation.set("new")
+        pending.await()
+        server.enqueue(encryptedResponse("""{"value":"new"}"""))
+        val fresh = client.requestJson(apiRequest(ApiRoute.Promote))
+        assertEquals("new", fresh.valueOrFail().asJsonObject["value"].asString)
+        assertEquals(2, server.requestCount)
+    }
+
     private lateinit var server: MockWebServer
     private lateinit var cacheDirectory: Path
     private val revalidationJob = SupervisorJob()
@@ -105,8 +124,8 @@ class ResponseCacheTest {
     }
 
     /**
-     * lang 不在 dedupKey 里（由 JmxHttpClient 出网前才追加），因此必须靠 cacheNamespace 区分。
-     * 少了这一层，切到繁體的用户会读到简体用户留下的缓存。
+     * 隐式语言会在请求快照中固化，缓存命名空间仍隔离各自的语言偏好。
+     * 切到繁體的用户不能读到简体请求留下的缓存。
      */
     @Test
     fun differentContentLanguagesDoNotShareCacheEntries() = runBlocking {

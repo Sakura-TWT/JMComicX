@@ -57,7 +57,11 @@ jobs:
         run: chmod +x gradlew
 
       - name: Test and build release APK
-        run: ./gradlew :core:test :app:testDebugUnitTest :app:lintRelease :app:assembleRelease --no-daemon
+        run: >-
+          ./gradlew :core:test :core:foundation:test :core:network:test
+          :core:database:test :core:data:test :domain:comic:test :domain:video:test
+          :source:jmcomic:test :source:oreno:test :source:iwara:test
+          :app:testDebugUnitTest :app:lintRelease :app:assembleRelease --no-daemon
 
       - name: Verify and name release APK
         shell: bash

@@ -6,6 +6,9 @@ import app.prismia.plus.core.cache.JsonResponseCache
 import app.prismia.plus.core.result.NetworkExchange
 import app.prismia.plus.core.result.JmxError
 import app.prismia.plus.core.result.JmxResult
+import app.prismia.plus.core.protocol.HttpMethod
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -25,14 +28,14 @@ class JmxApiClient(
     private val cachePolicy: ResponseCachePolicy? = null,
     private val revalidationScope: CoroutineScope? = null,
     /**
-     * 缓存键前缀。内容语言由 [JmxHttpClient] 在出网前追加为 lang 查询参数，
-     * 因此不在 [dedupKey] 里，必须靠这里区分，否则简繁两种内容会互相串缓存。
+     * Additional cache/request namespace. The effective language is also frozen
+     * into the request itself before its identity is computed.
      */
     private val cacheNamespace: () -> String = { "" },
     private val cacheGeneration: () -> String = { "" },
     private val nowMillis: () -> Long = { System.currentTimeMillis() },
 ) {
-    private val inFlightRequests = ConcurrentHashMap<String, CompletableDeferred<JmxResult<JsonElement>>>()
+    private val inFlightRequests = ConcurrentHashMap<FlightKey, CompletableDeferred<JmxResult<JsonElement>>>()
     private val deduplicatedRequests = AtomicInteger(0)
     private val cacheHits = AtomicInteger(0)
     private val staleServedRequests = AtomicInteger(0)
@@ -61,13 +64,20 @@ class JmxApiClient(
         )
     }
 
-    suspend fun requestJson(request: ApiRequest): JmxResult<JsonElement> {
-        val cache = responseCache
-        val rule = cachePolicy?.ruleFor(request)
-        if (cache == null || rule == null) return requestJsonDeduplicated(request)
+    private data class FlightKey(val request: String, val namespace: String, val generation: String)
 
-        val key = cacheKey(request)
-        val cached = readCache(cache, key)
+    private data class RequestContext(val request: ApiRequest, val namespace: String, val generation: String) {
+        val key = FlightKey(request.dedupKey(), namespace, generation)
+        val cacheKey = "jm-json-v2:${namespace.length}:$namespace:${key.request}"
+    }
+
+    suspend fun requestJson(request: ApiRequest): JmxResult<JsonElement> {
+        val context = RequestContext(httpClient.snapshotRequest(request), cacheNamespace(), cacheGeneration())
+        val cache = responseCache
+        val rule = if (context.request.route.method == HttpMethod.Get) cachePolicy?.ruleFor(context.request) else null
+        if (cache == null || rule == null) return requestJsonDeduplicated(context)
+
+        val cached = readCache(cache, context)
         if (cached != null) {
             val (age, parsed) = cached
             if (age < rule.freshMillis) {
@@ -77,87 +87,93 @@ class JmxApiClient(
             if (age < rule.staleMillis) {
                 cacheHits.incrementAndGet()
                 staleServedRequests.incrementAndGet()
-                // 先出旧内容再后台校验：去重表保证同一请求不会因此发出两份。
-                revalidationScope?.launch { revalidate(request, key) }
+                revalidationScope?.launch { revalidate(context) }
                 return JmxResult.Success(parsed)
             }
         }
-
-        val result = requestJsonDeduplicated(request)
-        if (result is JmxResult.Success) writeCache(cache, key, result.value)
+        val result = requestJsonDeduplicated(context)
+        if (result is JmxResult.Success) writeCache(cache, context, result.value)
         return result
     }
 
-    /**
-     * 读缓存并解析，一次线程切换里做完。
-     *
-     * 读要碰磁盘、解析要走一遍 Gson，调用方却是 Compose 的 LaunchedEffect（主线程）。
-     * 返回 age 而不是 Entry，是为了让 [nowMillis] 与解析结果在同一次快照里取齐。
-     */
-    private suspend fun readCache(cache: JsonResponseCache, key: String): Pair<Long, JsonElement>? =
+    private suspend fun readCache(cache: JsonResponseCache, context: RequestContext): Pair<Long, JsonElement>? =
         withContext(Dispatchers.IO) {
-            val entry = cache.read(key) ?: return@withContext null
-            if (entry.generation != cacheGeneration()) return@withContext null
+            val entry = cache.read(context.cacheKey) ?: return@withContext null
+            if (entry.generation != context.generation) return@withContext null
             val parsed = entry.json.parseJsonOrNull() ?: return@withContext null
             entry.ageMillis(nowMillis()) to parsed
         }
 
-    /** 写缓存：`toString()` 要把整棵树重新序列化（首页一次几十上百 KB），加上落盘，同样不能留在主线程。 */
-    private suspend fun writeCache(cache: JsonResponseCache, key: String, value: JsonElement) {
-        withContext(Dispatchers.IO) { cache.write(key, value.toString(), cacheGeneration()) }
+    private suspend fun writeCache(cache: JsonResponseCache, context: RequestContext, value: JsonElement) {
+        withContext(Dispatchers.IO) {
+            // An older request must never be relabeled with a newer generation.
+            if (context.generation != cacheGeneration() || context.namespace != cacheNamespace()) return@withContext
+            cache.write(context.cacheKey, value.toString(), context.generation)
+        }
     }
 
-    private suspend fun revalidate(request: ApiRequest, key: String) {
+    private suspend fun revalidate(context: RequestContext) {
         val cache = responseCache ?: return
-        when (val result = requestJsonDeduplicated(request)) {
-            is JmxResult.Success -> writeCache(cache, key, result.value)
-            // 后台校验失败不做任何事：旧内容继续可用，下次前台请求再决定要不要报错。
+        when (val result = requestJsonDeduplicated(context)) {
+            is JmxResult.Success -> writeCache(cache, context, result.value)
             is JmxResult.Failure -> Unit
         }
     }
 
-    private fun cacheKey(request: ApiRequest): String = "${cacheNamespace()}|${request.dedupKey()}"
-
-    private suspend fun requestJsonDeduplicated(request: ApiRequest): JmxResult<JsonElement> {
-        if (!deduplicateInFlightRequests) return requestJsonDirect(request)
-        val key = request.dedupKey()
+    private suspend fun requestJsonDeduplicated(context: RequestContext): JmxResult<JsonElement> {
+        // Repeated mutations represent distinct intents, even when their form bodies match.
+        if (!deduplicateInFlightRequests || context.request.route.method != HttpMethod.Get) {
+            return requestJsonDirect(context.request)
+        }
+        val key = context.key
         while (true) {
-            inFlightRequests[key]?.let {
-                deduplicatedRequests.incrementAndGet()
-                return it.await()
-            }
+            currentCoroutineContext().ensureActive()
             val mine = CompletableDeferred<JmxResult<JsonElement>>()
             val existing = inFlightRequests.putIfAbsent(key, mine)
             if (existing != null) {
                 deduplicatedRequests.incrementAndGet()
-                return existing.await()
+                try {
+                    return existing.await().ownedCopy()
+                } catch (_: SharedRequestAborted) {
+                    // The leader cancelled its socket. A live reader can start or join a new GET.
+                    continue
+                }
             }
             try {
-                val result = requestJsonDirect(request)
+                val result = requestJsonDirect(context.request)
                 mine.complete(result)
-                return result
+                return result.ownedCopy()
             } catch (cancelled: CancellationException) {
-                // 发起方取消不应传染给共享同一请求的等待方
-                mine.complete(JmxResult.Failure(JmxError.Network("共享请求被发起方取消")))
+                inFlightRequests.remove(key, mine)
+                mine.completeExceptionally(SharedRequestAborted())
                 throw cancelled
-            } catch (t: Throwable) {
-                mine.completeExceptionally(t)
-                throw t
+            } catch (failure: Throwable) {
+                mine.completeExceptionally(failure)
+                throw failure
             } finally {
                 inFlightRequests.remove(key, mine)
             }
         }
     }
 
-    private suspend fun requestJsonDirect(request: ApiRequest): JmxResult<JsonElement> {
-        return when (val response = requestJsonResponse(request)) {
+    private class SharedRequestAborted : Exception()
+
+    private suspend fun JmxResult<JsonElement>.ownedCopy(): JmxResult<JsonElement> = when (this) {
+        is JmxResult.Success -> withContext(Dispatchers.Default) { JmxResult.Success(value.deepCopy()) }
+        is JmxResult.Failure -> this
+    }
+
+    private suspend fun requestJsonDirect(request: ApiRequest): JmxResult<JsonElement> =
+        when (val response = requestJsonResponsePrepared(request)) {
             is JmxResult.Success -> JmxResult.Success(response.value.data)
             is JmxResult.Failure -> response
         }
-    }
 
-    suspend fun requestJsonResponse(request: ApiRequest): JmxResult<JsonNetworkResponse> {
-        val raw = when (val result = httpClient.execute(request)) {
+    suspend fun requestJsonResponse(request: ApiRequest): JmxResult<JsonNetworkResponse> =
+        requestJsonResponsePrepared(httpClient.snapshotRequest(request))
+
+    private suspend fun requestJsonResponsePrepared(request: ApiRequest): JmxResult<JsonNetworkResponse> {
+        val raw = when (val result = httpClient.executePrepared(request)) {
             is JmxResult.Success -> result.value
             is JmxResult.Failure -> return result
         }

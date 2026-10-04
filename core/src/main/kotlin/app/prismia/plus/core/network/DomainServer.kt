@@ -1,5 +1,7 @@
 package app.prismia.plus.core.network
 
+import app.prismia.network.BufferedHttpExecutor
+import app.prismia.network.ResponseSizeLimitException
 import com.google.gson.JsonParser
 import app.prismia.plus.core.crypto.AesEcbPkcs7
 import app.prismia.plus.core.crypto.JmxHash
@@ -70,8 +72,10 @@ class DomainRefresher(
     private val okHttpClient: OkHttpClient = defaultOkHttpClient(),
     private val decoder: DomainServerDecoder = DomainServerDecoder(),
     private val serverUrls: List<String> = JmxProtocolConstants.DomainServerUrls,
-    private val sessionManager: SessionManager? = null
+    private val sessionManager: SessionManager? = null,
+    maxResponseBytes: Long = 1024 * 1024,
 ) {
+    private val executor = BufferedHttpExecutor(okHttpClient, maxResponseBytes)
     /**
      * 刷新 API 域名列表。
      *
@@ -132,8 +136,7 @@ class DomainRefresher(
             }
             JmxResult.Failure(lastError ?: JmxError.Domain("全部域名服务器刷新失败"))
         } finally {
-            // 有赢家后不再等其余分支：requestAndDecode 走可取消的 awaitResponse，
-            // 取消会真正中断底层调用（原先的阻塞 execute() 是打不断的）。
+            // Cancellation owns the losing call through body reads as well as headers.
             racers.forEach { it.cancel() }
         }
     }
@@ -147,21 +150,21 @@ class DomainRefresher(
             .get()
             .build()
         return try {
-            okHttpClient.newCall(request).awaitResponse().use { response ->
-                val body = response.body.string()
-                if (!response.isSuccessful) {
-                    return JmxResult.Failure(JmxError.Http(response.code, "域名服务器请求失败：${response.code}"))
+            executor.execute(request).let { response ->
+                val body = response.body
+                if (response.status !in 200..299) {
+                    return JmxResult.Failure(JmxError.Http(response.status, "域名服务器请求失败：${response.status}"))
                 }
                 decoder.decode(body)
             }
         } catch (cancelled: CancellationException) {
             // 竞速失败方会被取消，这不是"域名服务器坏了"，不能降级成普通失败往上报。
             throw cancelled
-        } catch (failure: Throwable) {
-            val error = if (failure is IOException) {
-                JmxError.Network("域名服务器网络请求失败", failure)
-            } else {
-                JmxError.Unknown(failure.message ?: "域名服务器未知错误", failure)
+        } catch (failure: Exception) {
+            val error = when (failure) {
+                is ResponseSizeLimitException -> JmxError.Schema("域名服务器响应超过大小限制", field = "responseBody", cause = failure)
+                is IOException -> JmxError.Network("域名服务器网络请求失败", failure)
+                else -> JmxError.Unknown(failure.message ?: "域名服务器未知错误", failure)
             }
             JmxResult.Failure(error)
         }

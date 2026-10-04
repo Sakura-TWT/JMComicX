@@ -9,13 +9,9 @@ kotlin {
 }
 
 dependencies {
-    api(project(":domain:video"))
-    implementation(project(":core:foundation"))
-    implementation(project(":core:network"))
+    api(project(":core:foundation"))
+    api(libs.okhttp)
     implementation(libs.kotlinx.coroutines.core)
-    implementation(libs.gson)
-    implementation(libs.okhttp)
     testImplementation(libs.junit)
     testImplementation(libs.mockwebserver)
-    testImplementation(project(":core:data"))
 }

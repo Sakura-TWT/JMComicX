@@ -36,7 +36,11 @@ suspend fun <T> withSourceRetry(
             if (attempt >= policy.maxAttempts || !isRetryable(failure)) throw failure
             if (delayMillis > 0) delay(delayMillis)
             attempt++
-            delayMillis = (delayMillis * 2).coerceAtMost(policy.maxDelayMillis)
+            delayMillis = if (delayMillis > policy.maxDelayMillis / 2) {
+                policy.maxDelayMillis
+            } else {
+                delayMillis * 2
+            }
         }
     }
 }

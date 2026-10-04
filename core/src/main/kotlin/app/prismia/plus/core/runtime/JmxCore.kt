@@ -200,7 +200,7 @@ class JmxCore private constructor(
                 responseCache = responseCache,
                 cachePolicy = responseCache?.let { config.responseCachePolicy },
                 revalidationScope = backgroundScope,
-                // 语言不在 dedupKey 里（由 JmxHttpClient 出网前追加），必须进缓存键；
+                // 语言已固化到请求身份；保留命名空间，隔离语言偏好对应的缓存。
                 // API 版本一变说明协议换代，旧缓存内容一并作废。
                 cacheNamespace = { config.contentLanguageProvider().orEmpty() },
                 cacheGeneration = { apiVersionProvider.current() }

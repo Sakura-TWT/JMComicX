@@ -6,22 +6,21 @@ import app.prismia.foundation.SourceFailure
 import app.prismia.foundation.SourceFailureCarrier
 import app.prismia.foundation.SourceRetryPolicy
 import app.prismia.foundation.withSourceRetry
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import app.prismia.network.SourceHttpClient
+import app.prismia.network.SourceHttpResponse
+import app.prismia.network.isWithin
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
+import javax.net.ssl.SSLException
 
 interface IwaraTransport {
     suspend fun get(path: String, query: Map<String, String> = emptyMap()): String
 
-    /**
-     * Sends a JSON request to the Iwara API. The bearer argument is explicit
-     * so refresh tokens never have to be exposed through a generic token
-     * provider (and can never accidentally be sent to a CDN URL).
-     */
     suspend fun post(
         path: String,
         body: String,
@@ -31,21 +30,32 @@ interface IwaraTransport {
 }
 
 class OkHttpIwaraTransport(
-    private val client: OkHttpClient,
-    private val baseUrl: String = "https://api.iwara.tv",
+    client: OkHttpClient,
+    baseUrl: String = "https://api.iwara.tv",
     private val userAgent: String = "Prismia/0.x (Android)",
     private val accessTokenProvider: suspend () -> String? = { null },
     private val retryPolicy: SourceRetryPolicy = SourceRetryPolicy(),
+    private val rejectedTokenRefresher: (suspend (String) -> String?)? = null,
 ) : IwaraTransport {
-    override suspend fun get(path: String, query: Map<String, String>): String = withContext(Dispatchers.IO) {
-        val token = accessTokenProvider()?.takeIf(String::isNotBlank)
-        execute(
-            path = path,
-            query = query,
-            method = "GET",
-            body = null,
-            bearerToken = token,
-        )
+    private val apiBase = (baseUrl.trimEnd('/') + "/").toHttpUrl()
+    private val http = SourceHttpClient(client, ContentSource.IWARA)
+
+    override suspend fun get(path: String, query: Map<String, String>): String {
+        val target = resolve(path, query)
+        val isApi = target.isWithin(apiBase)
+        // CDN resolution cannot load credentials or trigger a refresh.
+        val token = if (isApi) accessTokenProvider()?.takeIf(String::isNotBlank) else null
+        val first = getResponse(target, token)
+        if (first.status == 401 && isApi && first.finalUrl.isWithin(apiBase) &&
+            first.headers["cf-mitigated"] != "challenge" && !isCloudflareChallenge(first.body.take(512)) &&
+            token != null && rejectedTokenRefresher != null
+        ) {
+            val renewed = rejectedTokenRefresher.invoke(token)?.takeIf(String::isNotBlank)
+            if (renewed != null && renewed != token) {
+                return getResponse(target, renewed).requireSuccess("transport.GET")
+            }
+        }
+        return first.requireSuccess("transport.GET")
     }
 
     override suspend fun post(
@@ -53,99 +63,86 @@ class OkHttpIwaraTransport(
         body: String,
         query: Map<String, String>,
         bearerToken: String?,
-    ): String = withContext(Dispatchers.IO) {
+    ): String {
         require(body.isNotBlank()) { "POST body must not be blank" }
-        execute(
-            path = path,
-            query = query,
-            method = "POST",
-            body = body,
-            bearerToken = bearerToken?.takeIf(String::isNotBlank),
-        )
+        val target = resolve(path, query)
+        require(target.isWithin(apiBase)) { "Iwara POST must target the API" }
+        val request = request(target, bearerToken)
+            .post(body.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        // A POST is not retried or redirected implicitly.
+        return http.execute(request, apiBase).requireSuccess("transport.POST")
     }
 
-    private suspend fun execute(
-        path: String,
-        query: Map<String, String>,
-        method: String,
-        body: String?,
-        bearerToken: String?,
-    ): String {
-        val queryString = query.entries.joinToString("&") { "${urlEncode(it.key)}=${urlEncode(it.value)}" }
-        val isAbsoluteUrl = path.startsWith("https://") || path.startsWith("http://")
-        val base = if (isAbsoluteUrl) path else baseUrl.trimEnd('/') + "/" + path.trimStart('/')
-        val url = base + queryString.takeIf(String::isNotEmpty)?.let {
-            if (base.contains('?')) "&$it" else "?$it"
-        }.orEmpty()
-        val apiRequest = !isAbsoluteUrl || path.startsWith(baseUrl.trimEnd('/'))
-        val requestBuilder = Request.Builder()
-            .url(url)
-            .header("Accept", "application/json")
-            .header("User-Agent", userAgent)
-            .header("Referer", "https://www.iwara.tv/")
-        if (body != null) {
-            requestBuilder
-                .header("Content-Type", JSON_MEDIA_TYPE.toString())
-                .post(body.toRequestBody(JSON_MEDIA_TYPE))
-        } else {
-            requestBuilder.get()
-        }
-        if (apiRequest) {
-            requestBuilder.header("X-Site", "www.iwara.tv")
-            bearerToken?.let { requestBuilder.header("Authorization", "Bearer $it") }
-        }
-        val request = requestBuilder.build()
-        return withSourceRetry(
-            policy = retryPolicy,
-            isRetryable = { failure ->
-                failure is IOException || failure is IwaraHttpException && failure.statusCode.isTransient()
-            },
-        ) {
-            client.newCall(request).execute().use { response ->
-                val responseBody = response.body.string()
-                if (!response.isSuccessful) {
-                    throw IwaraHttpException(
-                        statusCode = response.code,
-                        responseBodyPreview = responseBody.take(MAX_ERROR_BODY_LENGTH),
-                        operation = "transport.$method",
-                    )
-                }
-                responseBody
+    private suspend fun getResponse(target: HttpUrl, token: String?): SourceHttpResponse = withSourceRetry(
+        policy = retryPolicy,
+        isRetryable = { failure ->
+            (failure is IOException && failure !is SSLException) ||
+                (failure is IwaraHttpException && failure.sourceFailure.retryable)
+        },
+    ) {
+        val response = http.execute(request(target, token).get().build(), apiBase)
+        if (response.status.isTransient()) response.requireSuccess("transport.GET")
+        response
+    }
+
+    private fun request(url: HttpUrl, token: String?): Request.Builder = Request.Builder()
+        .url(url)
+        .header("Accept", "application/json")
+        .header("User-Agent", userAgent)
+        .header("Referer", "https://www.iwara.tv/")
+        .apply {
+            if (url.isWithin(apiBase)) {
+                header("X-Site", "www.iwara.tv")
+                token?.takeIf(String::isNotBlank)?.let { header("Authorization", "Bearer $it") }
             }
         }
+
+    private fun resolve(path: String, query: Map<String, String>): HttpUrl {
+        val target = if (path.startsWith("https://") || path.startsWith("http://")) {
+            path.toHttpUrl()
+        } else {
+            require(!path.contains("://") && !path.startsWith("//")) { "unsupported Iwara URL" }
+            requireNotNull(apiBase.resolve(path.trimStart('/'))) { "invalid Iwara path" }
+        }
+        return target.newBuilder().apply {
+            query.forEach { (key, value) -> addQueryParameter(key, value) }
+        }.build()
     }
 
-    private fun urlEncode(value: String): String =
-        java.net.URLEncoder.encode(value, Charsets.UTF_8).replace("+", "%20")
+    private fun SourceHttpResponse.requireSuccess(operation: String): String {
+        if (status !in 200..299) {
+            throw IwaraHttpException(status, body.take(512), operation, headers["cf-mitigated"] == "challenge")
+        }
+        return body
+    }
 }
 
 class IwaraHttpException(
     val statusCode: Int,
     val responseBodyPreview: String,
     val operation: String = "transport.get",
+    private val cloudflareChallenge: Boolean = false,
 ) : IllegalStateException("iwara HTTP $statusCode"), SourceFailureCarrier {
     override val sourceFailure: SourceFailure
         get() = SourceFailure(
             source = ContentSource.IWARA,
             operation = operation,
             category = when {
-                isCloudflareChallenge(responseBodyPreview) -> SourceErrorCategory.CLOUDFLARE
+                cloudflareChallenge || isCloudflareChallenge(responseBodyPreview) -> SourceErrorCategory.CLOUDFLARE
                 statusCode == 401 || statusCode == 403 -> SourceErrorCategory.AUTHENTICATION
                 statusCode == 429 -> SourceErrorCategory.RATE_LIMITED
                 else -> SourceErrorCategory.HTTP
             },
             httpStatus = statusCode,
-            retryable = statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode in 500..599,
+            retryable = !cloudflareChallenge && !isCloudflareChallenge(responseBodyPreview) && statusCode.isTransient(),
             message = "iwara HTTP $statusCode",
             cause = this,
         )
 }
 
-private const val MAX_ERROR_BODY_LENGTH = 512
 private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
-
 private fun Int.isTransient(): Boolean = this == 408 || this == 425 || this == 429 || this in 500..599
-
 private fun isCloudflareChallenge(body: String): Boolean {
     val preview = body.lowercase()
     return "cf-mitigated" in preview || "just a moment" in preview || "challenge-platform" in preview

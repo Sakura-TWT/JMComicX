@@ -15,6 +15,31 @@ import org.junit.Test
 
 class FederatedVideoRepositoryTest {
     @Test
+    fun convenienceSearchRetainsPartialFailureDiagnostics() = runBlocking {
+        val result = FederatedVideoRepository(
+            FailingCatalog(IllegalStateException("unavailable")),
+            FakeCatalog(work(ContentSource.IWARA, "w1", "title", emptyMap())),
+        ).search("title")
+        assertEquals(1, result.items.size)
+        assertEquals(ContentSource.ORENO3D, result.failures.single().source)
+        assertEquals(SourceErrorCategory.UNKNOWN, result.failures.single().category)
+    }
+
+    @Test
+    fun repeatedOrenoIdentitiesProduceOneFederatedRecord() = runBlocking {
+        val first = work(ContentSource.ORENO3D, "o1", "first", mapOf(ContentSource.IWARA to "w1"))
+        val second = first.copy(key = ContentKey(ContentType.VIDEO, ContentSource.ORENO3D, "o2"))
+        val original = FakeCatalog(first)
+        val oreno = object : PagedVideoCatalog by original {
+            override suspend fun searchPage(query: String, page: Int, limit: Int) = VideoPage(listOf(first, second), page, false)
+        }
+        val result = FederatedVideoRepository(oreno, FakeCatalog(work(ContentSource.IWARA, "w1", "source", emptyMap())))
+            .searchDetailed("query")
+        assertEquals(1, result.items.size)
+        assertEquals("first", result.items.single().title)
+    }
+
+    @Test
     fun mergesRecordsWhenOrenoCarriesStableIwaraId() = runBlocking {
         val orenoWork = work(ContentSource.ORENO3D, "o1", "Oreno title", mapOf(ContentSource.ORENO3D to "o1", ContentSource.IWARA to "w1"))
         val iwaraWork = work(ContentSource.IWARA, "w1", "Iwara title", mapOf(ContentSource.IWARA to "w1"))

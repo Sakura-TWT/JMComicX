@@ -17,6 +17,8 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import java.time.Instant
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 class IwaraClient(
     private val transport: IwaraTransport,
@@ -29,7 +31,6 @@ class IwaraClient(
     }
 
     override suspend fun searchPage(query: String, page: Int, limit: Int): VideoPage {
-        require(query.isNotBlank()) { "query must not be blank" }
         validatePage(page, limit)
         val json = transport.get(
             "search",
@@ -45,16 +46,26 @@ class IwaraClient(
     override suspend fun detailPage(key: ContentKey): VideoDetail {
         require(key.contentType == ContentType.VIDEO) { "IwaraClient requires a VIDEO content key" }
         require(key.source == ContentSource.IWARA) { "IwaraClient requires an IWARA content key" }
+        require(REMOTE_ID.matches(key.remoteId)) { "invalid Iwara video ID" }
         val json = transport.get("video/${key.remoteId}")
         val detail = parseObject(json)
         val record = parseVideo(detail)
+        if (record.id != key.remoteId) throw IwaraParseException("Iwara detail ID does not match the request")
+        val work = record.toWork(VideoAvailability.UNKNOWN)
+        if (work.availability == VideoAvailability.TOMBSTONED) return VideoDetail(work)
         val streams = parseStreams(detail).ifEmpty {
             detail.string("fileUrl")?.let { fileUrl ->
-                parseStreams(JsonParser.parseString(transport.get(fileUrl.normalizeUrl())))
+                val fileResponse = transport.get(validUrl(fileUrl))
+                val payload = try { JsonParser.parseString(fileResponse) } catch (failure: RuntimeException) {
+                    throw IwaraParseException("invalid Iwara file JSON", failure)
+                }
+                parseStreams(payload, required = true)
             }.orEmpty()
         }
         return VideoDetail(
-            work = record.toWork(if (streams.isNotEmpty()) VideoAvailability.PLAYABLE else VideoAvailability.UNKNOWN),
+            work = record.toWork(if (streams.any { it.expiresAtEpochSeconds?.let { expiry -> expiry > nowEpochSeconds() } != false }) {
+                VideoAvailability.PLAYABLE
+            } else VideoAvailability.UNKNOWN),
             variants = streams.map { it.toDomain() },
         )
     }
@@ -64,8 +75,12 @@ class IwaraClient(
 
     private fun parsePage(raw: String, page: Int, limit: Int): VideoPage {
         val root = parseObject(raw)
-        val results = root.array("results") ?: root.array("data") ?: JsonArray()
-        val items = results.mapNotNull { it.takeIf { value -> value.isJsonObject }?.asJsonObject?.let(::parseVideo) }
+        val results = root.array("results") ?: root.array("data")
+            ?: throw IwaraParseException("Iwara page has no results array")
+        val items = results.map {
+            if (!it.isJsonObject) throw IwaraParseException("Iwara page contains a non-object record")
+            parseVideo(it.asJsonObject)
+        }
         return VideoPage(items.map { it.toWork(VideoAvailability.UNKNOWN) }, page, items.size >= limit)
     }
 
@@ -79,10 +94,11 @@ class IwaraClient(
             }
         }
         return IwaraVideoRecord(
-            id = json.string("id") ?: json.string("_id") ?: throw IwaraParseException("iwara video has no id"),
+            id = (json.string("id") ?: json.string("_id"))?.takeIf(REMOTE_ID::matches)
+                ?: throw IwaraParseException("Iwara video has no valid ID"),
             title = json.string("title") ?: "",
             username = user?.string("username") ?: user?.string("name") ?: json.string("username"),
-            thumbnailUrl = json.string("thumbnailUrl") ?: json.string("thumbnail") ?: json.string("thumbnail_url"),
+            thumbnailUrl = thumbnail(json),
             durationSeconds = json.long("duration")
                 ?: json.long("durationSeconds")
                 ?: json.obj("file")?.long("duration"),
@@ -93,7 +109,7 @@ class IwaraClient(
         )
     }
 
-    private fun parseStreams(root: JsonElement): List<IwaraStream> {
+    private fun parseStreams(root: JsonElement, required: Boolean = false): List<IwaraStream> {
         val renditions = when {
             root.isJsonArray -> root.asJsonArray
             root.isJsonObject -> {
@@ -101,18 +117,18 @@ class IwaraClient(
                 json.array("renditions")
                     ?: json.array("results")
                     ?: json.obj("file")?.array("renditions")
-                    ?: JsonArray()
+                    ?: if (required) throw IwaraParseException("Iwara file response has no renditions array") else JsonArray()
             }
-            else -> JsonArray()
+            else -> throw IwaraParseException("invalid Iwara renditions structure")
         }
-        return renditions.mapNotNull { element ->
-            if (!element.isJsonObject) return@mapNotNull null
+        return renditions.map { element ->
+            if (!element.isJsonObject) throw IwaraParseException("Iwara rendition is not an object")
             val item = element.asJsonObject
             val src = item.string("src")
                 ?: item.obj("src")?.string("view")
                 ?: item.string("url")
-                ?: return@mapNotNull null
-            val normalizedUrl = src.normalizeUrl()
+                ?: throw IwaraParseException("Iwara rendition has no playback URL")
+            val normalizedUrl = validUrl(src)
             IwaraStream(
                 name = item.string("name") ?: item.string("quality") ?: "auto",
                 url = normalizedUrl,
@@ -122,8 +138,7 @@ class IwaraClient(
                 expiresAtEpochSeconds = item.long("expires")
                     ?.toEpochSeconds()
                     ?: item.long("expiresAt")?.toEpochSeconds()
-                    ?: normalizedUrl.extractExpiresEpochSeconds()
-                    ?: (nowEpochSeconds() + 3600),
+                    ?: normalizedUrl.extractExpiresEpochSeconds(),
             )
         }.distinctBy { it.url }
     }
@@ -137,6 +152,28 @@ class IwaraClient(
         throw IwaraParseException("invalid Iwara JSON", failure)
     }
 
+    private fun thumbnail(json: JsonObject): String? {
+        for (field in listOf("thumbnailUrl", "thumbnail_url", "thumbnail")) {
+            val value = json.string(field) ?: continue
+            value.normalizeUrl().toHttpUrlOrNull()?.takeIf { it.username.isEmpty() && it.password.isEmpty() }
+                ?.let { return it.toString() }
+        }
+        val file = json.obj("file") ?: return null
+        val id = file.string("id")?.takeIf(REMOTE_ID::matches) ?: return null
+        val count = file.int("numThumbnails")?.takeIf { it > 0 }
+        val index = (json.int("thumbnail") ?: 0).coerceAtLeast(0)
+            .let { if (count != null) it.coerceAtMost(count - 1) else it }
+        return "https://i.iwara.tv/".toHttpUrl().newBuilder()
+            .addPathSegments("image/thumbnail")
+            .addPathSegment(id)
+            .addPathSegment("thumbnail-" + index.toString().padStart(2, '0') + ".jpg")
+            .build().toString()
+    }
+
+    private fun validUrl(raw: String): String = raw.normalizeUrl().toHttpUrlOrNull()
+        ?.takeIf { it.username.isEmpty() && it.password.isEmpty() }?.toString()
+        ?: throw IwaraParseException("Iwara returned an invalid media URL")
+
     private fun validatePage(page: Int, limit: Int) {
         require(page >= 0) { "page must be non-negative" }
         require(limit in 1..100) { "limit must be between 1 and 100" }
@@ -147,7 +184,7 @@ class IwaraClient(
         title = title,
         author = username,
         coverUrl = thumbnailUrl,
-        durationMs = durationSeconds?.times(1000),
+        durationMs = durationSeconds?.takeIf { it in 0..Long.MAX_VALUE / 1000 }?.times(1000),
         description = body,
         tags = tags,
         availability = when (status?.lowercase()) {
@@ -158,6 +195,10 @@ class IwaraClient(
     )
 
     private fun IwaraStream.toDomain() = StreamVariant(name, url, width, height, bitrate, expiresAtEpochSeconds)
+
+    private companion object {
+        val REMOTE_ID = Regex("[A-Za-z0-9_-]{1,128}")
+    }
 }
 
 class IwaraParseException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause), SourceFailureCarrier {
@@ -181,12 +222,11 @@ private val EXPIRY_QUERY = Regex("(?:[?&])(?:expires|expire|exp)=(\\d+)")
 private fun String.extractExpiresEpochSeconds(): Long? =
     EXPIRY_QUERY.find(this)?.groupValues?.getOrNull(1)?.toLongOrNull()?.toEpochSeconds()
 
-private fun JsonObject.string(name: String): String? = get(name)?.takeIf { it.isJsonPrimitive && !it.asJsonPrimitive.isBoolean }?.asString
+private fun JsonObject.string(name: String): String? = get(name)
+    ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString?.takeIf(String::isNotBlank)
 private fun JsonObject.long(name: String): Long? = get(name)
     ?.takeIf { it.isJsonPrimitive && !it.asJsonPrimitive.isBoolean }
-    ?.let { runCatching { it.asLong }.getOrNull() }
-private fun JsonObject.int(name: String): Int? = get(name)
-    ?.takeIf { it.isJsonPrimitive && !it.asJsonPrimitive.isBoolean }
-    ?.let { runCatching { it.asInt }.getOrNull() }
+    ?.let { runCatching { it.asString.toBigDecimal().longValueExact() }.getOrNull() }
+private fun JsonObject.int(name: String): Int? = long(name)?.takeIf { it in Int.MIN_VALUE..Int.MAX_VALUE }?.toInt()
 private fun JsonObject.obj(name: String): JsonObject? = get(name)?.takeIf { it.isJsonObject }?.asJsonObject
 private fun JsonObject.array(name: String): JsonArray? = get(name)?.takeIf { it.isJsonArray }?.asJsonArray

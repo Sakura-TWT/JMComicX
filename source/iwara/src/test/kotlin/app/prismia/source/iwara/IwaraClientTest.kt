@@ -10,6 +10,60 @@ import org.junit.Test
 
 class IwaraClientTest {
     @Test
+    fun removedVideoNeverResolvesItsFileUrl() = runBlocking {
+        var requests = 0
+        val transport = object : IwaraTransport {
+            override suspend fun get(path: String, query: Map<String, String>): String {
+                requests++
+                assertEquals("video/v1", path)
+                return """{"id":"v1","status":"deleted","fileUrl":"https://cdn.example.test/file"}"""
+            }
+        }
+        val detail = IwaraClient(transport).detailPage(ContentKey(ContentType.VIDEO, ContentSource.IWARA, "v1"))
+        assertEquals(app.prismia.video.VideoAvailability.TOMBSTONED, detail.work.availability)
+        assertTrue(detail.variants.isEmpty())
+        assertEquals(1, requests)
+    }
+
+    @Test
+    fun oversizedDurationCannotWrapIntoASmallValidValue() = runBlocking {
+        val client = IwaraClient(jsonTransport("""{"results":[{"id":"v1","duration":18446744073709551617}]}"""))
+        assertEquals(null, client.browse(0, 1).items.single().durationMs)
+    }
+
+    @Test
+    fun integerThumbnailIsAnIndexAndNeverAnImageUrl() = runBlocking {
+        val client = IwaraClient(jsonTransport("""{"results":[{"id":"v1","thumbnail":3,"file":{"id":"file-id","numThumbnails":8}}]}"""))
+        assertEquals("https://i.iwara.tv/image/thumbnail/file-id/thumbnail-03.jpg", client.browse(0, 1).items.single().coverUrl)
+    }
+
+    @Test
+    fun missingResultsOrBrokenRecordsAreNotSuccessfulEmptyPages() = runBlocking {
+        for (body in listOf("{}", "{\"results\":[null]}", "{\"results\":[{\"id\":\"../bad\"}]}")) {
+            assertTrue(runCatching { IwaraClient(jsonTransport(body)).browse(0, 1) }.exceptionOrNull() is IwaraParseException)
+        }
+        assertTrue(IwaraClient(jsonTransport("{\"results\":[]}")).browse(0, 1).items.isEmpty())
+    }
+
+    @Test
+    fun detailIdMustMatchTheRequestedContent() = runBlocking {
+        val key = ContentKey(ContentType.VIDEO, ContentSource.IWARA, "v1")
+        val failure = runCatching { IwaraClient(jsonTransport("{\"id\":\"v2\"}")).detailPage(key) }.exceptionOrNull()
+        assertTrue(failure is IwaraParseException)
+    }
+
+    @Test
+    fun missingExpiryDoesNotInventALongLivedSignedUrlLease() = runBlocking {
+        val body = """{"id":"v1","renditions":[{"name":"720","src":{"view":"https://cdn.example.test/file"}}]}"""
+        val detail = IwaraClient(jsonTransport(body)).detailPage(ContentKey(ContentType.VIDEO, ContentSource.IWARA, "v1"))
+        assertEquals(null, detail.variants.single().expiresAtEpochSeconds)
+    }
+
+    private fun jsonTransport(body: String) = object : IwaraTransport {
+        override suspend fun get(path: String, query: Map<String, String>) = body
+    }
+
+    @Test
     fun parsesPagedResultsAndUsesVideoSearchType() = runBlocking {
         var requestedPath = ""
         val transport = object : IwaraTransport {
