@@ -17,7 +17,16 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.Composable
@@ -38,7 +47,10 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -59,6 +71,10 @@ import top.yukonga.miuix.kmp.basic.FloatingNavigationBarItem
 import top.yukonga.miuix.kmp.basic.NavigationBar
 import top.yukonga.miuix.kmp.basic.NavigationBarItem
 import top.yukonga.miuix.kmp.basic.NavigationItem
+import top.yukonga.miuix.kmp.basic.NavigationRail
+import top.yukonga.miuix.kmp.basic.NavigationRailItem
+import top.yukonga.miuix.kmp.basic.NavigationRailValue
+import top.yukonga.miuix.kmp.basic.rememberNavigationRailState
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -210,6 +226,7 @@ internal fun JmxApp(
     var accountProfile by remember(accountRepository) { mutableStateOf(accountRepository.restore()) }
     var accountSessionRevision by rememberSaveable { mutableIntStateOf(0) }
     val favoriteSelection = remember(accountSessionRevision, accountProfile?.id) { FavoriteCollectionSelection() }
+    val historyRemoval = remember(accountSessionRevision, accountProfile?.id) { HistoryRemovalController() }
     var showLogin by rememberSaveable { mutableStateOf(false) }
     var loginSubmitting by remember { mutableStateOf(false) }
     var loginFailure by remember { mutableStateOf<LoginUiFailure?>(null) }
@@ -428,10 +445,42 @@ internal fun JmxApp(
                     when (route) {
                         JmxRoute.MAIN -> {
                             val navigationBackdrop = rememberBarBackdrop()
+                            val showNavigationRail = useNavigationRail()
+                            val railState = rememberNavigationRailState(NavigationRailValue.Collapsed)
+                            Row(Modifier.fillMaxSize()) {
+                            if (showNavigationRail) {
+                                NavigationRail(
+                                    state = railState,
+                                    expandContentDescription = "展开侧边栏",
+                                    collapseContentDescription = "收起侧边栏",
+                                ) {
+                                    tabs.forEachIndexed { index, tab ->
+                                        NavigationRailItem(
+                                            selected = mainPagerState.selectedPage == index,
+                                            onClick = {
+                                                searchExpanded = false
+                                                mainPagerState.animateToPage(index)
+                                            },
+                                            icon = tab.icon,
+                                            label = tab.label,
+                                        )
+                                    }
+                                }
+                            }
                             Scaffold(
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .then(
+                                    if (showNavigationRail) {
+                                        Modifier.consumeWindowInsets(navigationRailStartInsets())
+                                    } else {
+                                        Modifier
+                                    },
+                                ),
                             containerColor = Color.Transparent,
                             bottomBar = {
+                                if (!showNavigationRail) {
                                 if (liquidGlassNavBar) {
                                     if (floatingNavBarStyle == FloatingNavBarStyle.IOS_LIKE) {
                                         IosLiquidGlassNavigationBar(
@@ -491,6 +540,7 @@ internal fun JmxApp(
                                             }
                                         }
                                     }
+                                }
                                 }
                             },
                         ) { outerPadding ->
@@ -729,6 +779,7 @@ internal fun JmxApp(
                                 }
                                     }
                                 }
+                            }
                         }
                         JmxRoute.DOWNLOADS -> OfflineDownloadsScreen(
                             state = OfflineDownloadsUiState(
@@ -792,16 +843,31 @@ internal fun JmxApp(
                                     style = topBarBlurStyle,
                                 ) {
                                     SmallTopAppBar(
-                                        title = route.title,
+                                        title = if (route == JmxRoute.HISTORY && historyRemoval.selecting) {
+                                            "已选择 ${historyRemoval.selectedIds.size} 部"
+                                        } else {
+                                            route.title
+                                        },
                                         color = if (pageBackdrop != null) Color.Transparent else MiuixTheme.colorScheme.surface,
                                         navigationIcon = {
-                                            IconButton(onClick = ::navigateAccountBack) {
+                                            IconButton(
+                                                onClick = {
+                                                    if (route == JmxRoute.HISTORY && historyRemoval.selecting) {
+                                                        historyRemoval.cancel()
+                                                    } else {
+                                                        navigateAccountBack()
+                                                    }
+                                                },
+                                            ) {
                                                 Icon(
                                                     imageVector = MiuixIcons.Back,
                                                     contentDescription = "返回",
                                                     tint = MiuixTheme.colorScheme.onBackground,
                                                 )
                                             }
+                                        },
+                                        actions = {
+                                            if (route == JmxRoute.HISTORY) HistoryRemovalActions(historyRemoval)
                                         },
                                     )
                                 }
@@ -820,7 +886,8 @@ internal fun JmxApp(
                                         AccountCollectionKind.HISTORY
                                     },
                                     repository = accountDataRepository,
-                                    selection = favoriteSelection,
+                                    selection = favoriteSelection.takeIf { route == JmxRoute.FAVORITES },
+                                    historyRemoval = historyRemoval.takeIf { route == JmxRoute.HISTORY },
                                     topBarBlurStyle = topBarBlurStyle,
                                     sessionRevision = accountSessionRevision,
                                     favoriteOrder = favoriteSortOrder,
@@ -1153,6 +1220,22 @@ internal fun JmxApp(
         )
     }
 }
+
+@Composable
+private fun useNavigationRail(): Boolean {
+    val size = LocalWindowInfo.current.containerSize
+    return with(LocalDensity.current) {
+        val width = size.width.toDp()
+        val height = size.height.toDp()
+        width > 0.dp && height > 0.dp && width > height
+    }
+}
+
+/** 侧边栏已经占住窗口起始侧的挖孔和导航条，内容区不要再垫一次。 */
+@Composable
+private fun navigationRailStartInsets(): WindowInsets =
+    WindowInsets.displayCutout.only(WindowInsetsSides.Start)
+        .union(WindowInsets.navigationBars.only(WindowInsetsSides.Start))
 
 private data class JmxTab(
     val label: String,

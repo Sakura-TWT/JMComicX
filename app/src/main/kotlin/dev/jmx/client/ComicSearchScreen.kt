@@ -130,6 +130,7 @@ internal fun ComicSearchScreen(
     var state by remember { mutableStateOf<ComicSearchUiState>(ComicSearchUiState.Idle) }
     var history by remember(historyStore) { mutableStateOf(historyStore.load()) }
     var deletingHistory by rememberSaveable { mutableStateOf(false) }
+    var confirmClearHistory by rememberSaveable { mutableStateOf(false) }
     var initialQueryConsumed by rememberSaveable(initialQuery) { mutableStateOf(false) }
     var inputEnabled by rememberSaveable(initialQuery) { mutableStateOf(initialQuery.isNullOrBlank()) }
     var inputMode by rememberSaveable(initialQuery) { mutableStateOf(initialQuery.isNullOrBlank()) }
@@ -474,6 +475,7 @@ internal fun ComicSearchScreen(
                             history = historyStore.remove(history, historyQuery)
                             if (history.isEmpty()) deletingHistory = false
                         },
+                        onClearAll = { confirmClearHistory = true },
                     )
                 } else {
                     when (val current = state) {
@@ -500,6 +502,24 @@ internal fun ComicSearchScreen(
                 }
             }
         }
+    }
+
+    WindowDialog(
+        show = confirmClearHistory,
+        title = "清空搜索历史",
+        summary = "清空全部搜索历史？此操作只影响这台设备。",
+        onDismissRequest = { confirmClearHistory = false },
+    ) {
+        TextButton(
+            text = "全部清空",
+            onClick = {
+                history = historyStore.clear()
+                deletingHistory = false
+                confirmClearHistory = false
+            },
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.textButtonColorsPrimary(),
+        )
     }
 
     if (SEARCH_TAG_FILTER_UI_ENABLED && showTagFilter) {
@@ -911,6 +931,7 @@ private fun SearchHistory(
     onDeletingChange: (Boolean) -> Unit,
     onSelected: (String) -> Unit,
     onDelete: (String) -> Unit,
+    onClearAll: () -> Unit,
 ) {
     if (history.isEmpty()) return
     Column(
@@ -931,6 +952,9 @@ private fun SearchHistory(
                 style = MiuixTheme.textStyles.title3,
             )
             Spacer(modifier = Modifier.weight(1f))
+            if (deleting) {
+                TextButton(text = "全部清空", onClick = onClearAll)
+            }
             IconButton(onClick = { onDeletingChange(!deleting) }) {
                 Icon(
                     imageVector = if (deleting) MiuixIcons.Basic.Check else MiuixIcons.Delete,

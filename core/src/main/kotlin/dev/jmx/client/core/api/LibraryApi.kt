@@ -169,6 +169,38 @@ class LibraryApi(
         }
     }
 
+    /** 删除一条观看记录。移动端 POST `/watch_list`，表单 `id` 为漫画编号。 */
+    suspend fun deleteWatchHistory(albumId: String): JmxResult<Unit> {
+        val id = watchHistoryDeleteIdOrNull(albumId)
+            ?: return JmxResult.Failure(JmxError.Schema("漫画编号无效", field = "id"))
+        return postWatchHistoryRemoval(id)
+    }
+
+    private suspend fun postWatchHistoryRemoval(id: String): JmxResult<Unit> {
+        return when (
+            val result = apiClient.requestJson(
+                apiRequest(ApiRoute.WatchListAction) {
+                    form("id", id)
+                }
+            )
+        ) {
+            is JmxResult.Success -> {
+                val action = result.value.asObjectOrNull()?.toActionResult()
+                if (action == null || action.acceptsHistoryRemoval()) {
+                    JmxResult.Success(Unit)
+                } else {
+                    JmxResult.Failure(
+                        JmxError.Schema(action.message ?: "观看记录未删除", field = "status")
+                    )
+                }
+            }
+            is JmxResult.Failure -> when {
+                result.error is JmxError.Schema && result.error.field == "data" -> JmxResult.Success(Unit)
+                else -> result
+            }
+        }
+    }
+
     suspend fun userComments(page: Int, userId: String): JmxResult<CommentPage> {
         if (userId.isBlank()) return JmxResult.Failure(JmxError.Schema("userId is blank", field = "userId"))
         val data = when (
@@ -307,3 +339,16 @@ class LibraryApi(
             ?: emptyList()
     }
 }
+
+/** 观看记录删除接口经常不带 status；带了则只接受明确成功。 */
+internal fun ActionResult.acceptsHistoryRemoval(): Boolean {
+    val normalized = status?.trim()?.lowercase()
+    return normalized.isNullOrEmpty() || normalized in HISTORY_REMOVAL_SUCCESS
+}
+
+/** 只接受纯数字漫画编号，避免把清空哨兵或其他字段误当成单条删除。 */
+internal fun watchHistoryDeleteIdOrNull(albumId: String): String? =
+    albumId.trim().takeIf { it.matches(WATCH_HISTORY_ID) }
+
+private val HISTORY_REMOVAL_SUCCESS = setOf("ok", "success", "1", "true")
+private val WATCH_HISTORY_ID = Regex("[0-9]+")

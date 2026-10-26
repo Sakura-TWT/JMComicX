@@ -12,6 +12,14 @@ import java.util.Calendar
 
 class AccountLogicTest {
     @Test
+    fun historyClearStopsWhenTheSamePageRemains() {
+        assertEquals(listOf("12", "34"), nextHistoryClearBatch(emptySet(), listOf(" 12 ", "34", "12")))
+        assertEquals(emptyList<String>(), nextHistoryClearBatch(setOf("12"), listOf(" ", "")))
+        assertEquals(null, nextHistoryClearBatch(setOf("12"), listOf("12", "12")))
+        assertEquals(listOf("56"), nextHistoryClearBatch(setOf("12"), listOf("12", "56")))
+    }
+
+    @Test
     fun dailyCalendarUsesMondayFirstAndCleansEventPrefix() {
         val now = Calendar.getInstance().apply { set(2026, Calendar.JULY, 16) }
         val month = currentMonthCalendar(
