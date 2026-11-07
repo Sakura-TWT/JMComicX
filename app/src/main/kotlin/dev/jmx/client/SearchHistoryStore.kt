@@ -44,6 +44,8 @@ internal class SearchHistoryStore(context: Context) {
     fun remove(current: List<String>, query: String): List<String> =
         persist(current.filterNot { it == query })
 
+    fun clear(): List<String> = persist(emptyList())
+
     private fun persist(history: List<String>): List<String> {
         preferences.edit {
             putString(SEARCH_HISTORY_KEY, JSONArray(history).toString())

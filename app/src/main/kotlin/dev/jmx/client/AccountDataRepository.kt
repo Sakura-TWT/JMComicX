@@ -1,5 +1,6 @@
 package dev.jmx.client
 
+import dev.jmx.client.core.api.AlbumPage
 import dev.jmx.client.core.api.ActionResult
 import dev.jmx.client.core.api.DailyCheckInfo
 import dev.jmx.client.core.api.FavoriteFolder
@@ -123,6 +124,7 @@ internal class AccountDataRepository(
      * JSON 重新串成字符串），留在调用方线程上就会在"内容即将出现"的那一刻卡住界面。
      */
     private val favoriteMutationMutex = Mutex()
+    private val historyMutationMutex = Mutex()
 
     /** 本地身份快照，不读凭据也不发网络请求；调用链每次 suspend 后检查，避免串账号。 */
     fun accountIdentity(): String? = accountRepository.restore()?.let { "${it.id}:${it.username}" }
@@ -212,6 +214,76 @@ internal class AccountDataRepository(
             })
         }
 
+    suspend fun deleteWatchHistory(albumIds: Set<String>): FavoriteBatchResult =
+        historyMutationMutex.withLock {
+            val identity = accountIdentity()
+            val succeeded = linkedSetOf<String>()
+            val failures = linkedMapOf<String, JmxError>()
+            for (albumId in albumIds) {
+                currentCoroutineContext().ensureActive()
+                val result = if (identity == null || accountIdentity() != identity) {
+                    accountChanged()
+                } else {
+                    accountRepository.withSessionRecovery {
+                        currentCoroutineContext().ensureActive()
+                        if (accountIdentity() != identity) return@withSessionRecovery accountChanged()
+                        core.libraryApi.deleteWatchHistory(albumId)
+                    }
+                }
+                when (result) {
+                    is JmxResult.Success -> succeeded += albumId
+                    is JmxResult.Failure -> failures[albumId] = result.error
+                }
+            }
+            FavoriteBatchResult(succeeded, failures)
+        }
+
+    /**
+     * 服务端没有“一次清空”的参数。空 `id` 会被忽略并仍返回成功，记录还在。
+     * 这里反复读取第一页，按漫画编号逐条删除，直到第一页为空。
+     * 如果删完同一批编号还在，就停止并报错，避免假装已经清空。
+     */
+    suspend fun clearWatchHistory(): JmxResult<Unit> = historyMutationMutex.withLock {
+        val identity = accountIdentity() ?: return@withLock accountChanged()
+        val attempted = linkedSetOf<String>()
+        repeat(WATCH_HISTORY_CLEAR_PAGE_LIMIT) {
+            currentCoroutineContext().ensureActive()
+            val page = watchHistoryPage(identity)
+            when (page) {
+                is JmxResult.Failure -> return@withLock page
+                is JmxResult.Success -> {
+                    val batch = nextHistoryClearBatch(attempted, page.value.content.map { it.id })
+                        ?: return@withLock JmxResult.Failure(
+                            JmxError.Schema("服务端没有删除这些观看记录，请稍后重试"),
+                        )
+                    if (batch.isEmpty()) return@withLock JmxResult.Success(Unit)
+                    for (albumId in batch) {
+                        currentCoroutineContext().ensureActive()
+                        when (val deleted = deleteOneWatchHistory(identity, albumId)) {
+                            is JmxResult.Failure -> return@withLock deleted
+                            is JmxResult.Success -> attempted += albumId
+                        }
+                    }
+                }
+            }
+        }
+        JmxResult.Failure(JmxError.Schema("观看记录太多，请再清空一次"))
+    }
+
+    private suspend fun watchHistoryPage(identity: String): JmxResult<AlbumPage> =
+        accountRepository.withSessionRecovery {
+            currentCoroutineContext().ensureActive()
+            if (accountIdentity() != identity) return@withSessionRecovery accountChanged()
+            core.libraryApi.watchList(page = 1)
+        }
+
+    private suspend fun deleteOneWatchHistory(identity: String, albumId: String): JmxResult<Unit> =
+        accountRepository.withSessionRecovery {
+            currentCoroutineContext().ensureActive()
+            if (accountIdentity() != identity) return@withSessionRecovery accountChanged()
+            core.libraryApi.deleteWatchHistory(albumId)
+        }
+
     suspend fun moveFavoritesToFolder(albumIds: Set<String>, folderId: Int): FavoriteBatchResult =
         favoriteMutationMutex.withLock {
             val identity = accountIdentity()
@@ -297,6 +369,19 @@ internal class AccountDataRepository(
 }
 
 private fun accountChanged() = JmxResult.Failure(JmxError.Api(401, "账号已变化，请重新打开此页面"))
+
+private const val WATCH_HISTORY_CLEAR_PAGE_LIMIT = 40
+
+/**
+ * 返回这一页还要删除的编号。空列表表示已经清空。
+ * 这一页的编号全都删过却还在时返回 null，调用方应停止并报告失败。
+ */
+internal fun nextHistoryClearBatch(alreadyDeleted: Set<String>, pageIds: List<String>): List<String>? {
+    val ids = pageIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+    if (ids.isEmpty()) return emptyList()
+    val pending = ids.filter { it !in alreadyDeleted }
+    return pending.ifEmpty { null }
+}
 
 internal data class FavoriteLogicalPage(
     val albums: List<HomeAlbum>,

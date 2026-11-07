@@ -34,6 +34,8 @@ enum class ApiRoute(
     Daily("/daily"),
     DailyCheck("/daily_chk", method = HttpMethod.Post),
     WatchList("/watch_list"),
+    /** 删除单条或清空观看记录。与 GET 列表同一路径，方法为 POST。 */
+    WatchListAction("/watch_list", method = HttpMethod.Post),
     ChapterViewTemplate(
         path = "/chapter_view_template",
         encryptedJson = false,
