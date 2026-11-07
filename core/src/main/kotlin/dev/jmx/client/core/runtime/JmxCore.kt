@@ -203,8 +203,10 @@ class JmxCore private constructor(
                 // 语言不在 dedupKey 里（由 JmxHttpClient 出网前追加），必须进缓存键；
                 // API 版本一变说明协议换代，旧缓存内容一并作废。
                 cacheNamespace = { config.contentLanguageProvider().orEmpty() },
-                cacheGeneration = { apiVersionProvider.current() }
-            )
+                cacheGeneration = { apiVersionProvider.current() },
+                sharedScope = backgroundScope,
+                workGeneration = { sessionManager.generation },
+                metrics = requestMetricsRecorder,            )
             val downloader = BinaryDownloader(
                 okHttpClient = okHttpClient,
                 // 与取图路径共用同一张线路表：下载踩过的坑，阅读器与封面预热不用再踩一遍。
@@ -218,7 +220,8 @@ class JmxCore private constructor(
                 onApiVersionChanged = { version ->
                     // 目录遍历 + 删除，放后台执行，不占初始化这条关键路径。
                     responseCache?.let { cache -> backgroundScope.launch { cache.invalidateOtherGenerations(version) } }
-                }
+                },
+                onSettingFetched = { setting -> imageHostRegistry.rememberRemoteHost(setting.imageHost) },
             )
             val userApi = UserApi(
                 apiClient = apiClient,

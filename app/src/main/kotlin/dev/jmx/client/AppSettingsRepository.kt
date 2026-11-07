@@ -115,12 +115,12 @@ internal class AppSettingsRepository(
         preferences.edit { putBoolean(AUTO_CHECK_IN_KEY, enabled) }
     }
 
-    fun autoCheckInCompletedToday(): Boolean {
-        return preferences.getString(AUTO_CHECK_IN_DATE_KEY, null) == todayDate()
+    fun autoCheckInCompletedToday(accountId: String): Boolean {
+        return preferences.getString("$AUTO_CHECK_IN_DATE_KEY:$accountId", null) == todayDate()
     }
 
-    fun markAutoCheckInCompleted() {
-        preferences.edit { putString(AUTO_CHECK_IN_DATE_KEY, todayDate()) }
+    fun markAutoCheckInCompleted(accountId: String) {
+        preferences.edit { putString("$AUTO_CHECK_IN_DATE_KEY:$accountId", todayDate()) }
     }
 
     suspend fun clearImageCache() = withContext(Dispatchers.IO) {

@@ -5,6 +5,8 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
+val visualMockitoAgent = configurations.create("visualMockitoAgent").apply { isTransitive = false }
+
 val versionProperties = Properties().apply {
     rootProject.file("version.properties").inputStream().use { load(it) }
 }
@@ -75,6 +77,31 @@ android {
     buildFeatures {
         buildConfig = true
     }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            it.jvmArgs(
+                "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                "--add-opens=java.base/java.util=ALL-UNNAMED",
+                "--add-opens=java.base/java.io=ALL-UNNAMED",
+                "--add-opens=java.base/java.net=ALL-UNNAMED",
+                "--add-opens=java.base/java.security=ALL-UNNAMED",
+                "--add-opens=java.base/java.text=ALL-UNNAMED",
+                "--add-opens=java.base/jdk.internal.access=ALL-UNNAMED",
+                "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED",
+                "--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+            )
+            it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+            it.systemProperty("robolectric.useRealDrawTraversals", "true")
+            it.jvmArgumentProviders.add(CommandLineArgumentProvider {
+                listOf("-javaagent:${visualMockitoAgent.singleFile.absolutePath}")
+            })
+            it.systemProperty("jmx.visual.root", layout.buildDirectory.dir("qa-v2-search-r4/visual").get().asFile.absolutePath)
+            it.systemProperty("jmx.visual.phase", providers.gradleProperty("jmxVisualPhase").getOrElse("disabled"))
+            it.systemProperty("jmx.visual.run", providers.gradleProperty("jmxVisualRun").getOrElse(""))
+        }
+    }
 }
 
 tasks.configureEach {
@@ -106,4 +133,8 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.json)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.compose.ui.test)
+    testImplementation(libs.mockito)
+    add(visualMockitoAgent.name, libs.mockito)
 }

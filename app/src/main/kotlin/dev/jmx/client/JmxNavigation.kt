@@ -41,6 +41,8 @@ internal data class JmxRoute private constructor(
         THIRD_PARTY("第三方开源库"),
         SETTINGS("设置"),
         GROUP_ORDER("分组序列"),
+        WEEKLY("每周必看"),
+        RANKING("排行榜"),
     }
 
     companion object {
@@ -49,6 +51,8 @@ internal data class JmxRoute private constructor(
         val HISTORY = JmxRoute(Destination.HISTORY)
         val DOWNLOADS = JmxRoute(Destination.DOWNLOADS)
         val DAILY = JmxRoute(Destination.DAILY)
+        val WEEKLY = JmxRoute(Destination.WEEKLY)
+        val RANKING = JmxRoute(Destination.RANKING)
         val ABOUT = JmxRoute(Destination.ABOUT)
         val THIRD_PARTY = JmxRoute(Destination.THIRD_PARTY)
         val SETTINGS = JmxRoute(Destination.SETTINGS)

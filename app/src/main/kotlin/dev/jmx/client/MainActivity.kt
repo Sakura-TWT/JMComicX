@@ -7,13 +7,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.graphics.drawable.toDrawable
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -42,21 +43,18 @@ class MainActivity : ComponentActivity() {
             val context = LocalContext.current
             val themeStore = remember(context) { AppThemeModeStore(context) }
             var themeMode by remember(themeStore) { mutableStateOf(themeStore.load()) }
-            val darkMode = themeMode.isDark(isSystemInDarkTheme())
-            DisposableEffect(darkMode) {
-                val systemBarColor = if (darkMode) Color.BLACK else LIGHT_WINDOW_BACKGROUND
-                window.setBackgroundDrawable(systemBarColor.toDrawable())
-                @Suppress("DEPRECATION")
-                window.statusBarColor = systemBarColor
-                enableEdgeToEdge(
-                    statusBarStyle = SystemBarStyle.auto(systemBarColor, systemBarColor) { darkMode },
-                    navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { darkMode },
-                )
-                window.isNavigationBarContrastEnforced = false
-                onDispose {}
-            }
-
             JmxAppTheme(themeMode) {
+                val surface = MiuixTheme.colorScheme.surface
+                val useDarkIcons = surface.luminance() > 0.5f
+                DisposableEffect(surface, useDarkIcons) {
+                    enableEdgeToEdge(
+                        statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { !useDarkIcons },
+                        navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { !useDarkIcons },
+                    )
+                    window.setBackgroundDrawable(surface.toArgb().toDrawable())
+                    window.isNavigationBarContrastEnforced = false
+                    onDispose {}
+                }
                 JmxApp(
                     themeMode = themeMode,
                     onThemeModeChanged = { updated ->
@@ -68,8 +66,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
-
-private val LIGHT_WINDOW_BACKGROUND = Color.rgb(250, 250, 250)
 
 @Composable
 private fun JmxAppTheme(

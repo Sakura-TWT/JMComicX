@@ -1,13 +1,16 @@
 package dev.jmx.client
 
 import android.content.Context
+import dev.jmx.client.core.network.backgroundNetwork
 import dev.jmx.client.core.result.JmxResult
 import dev.jmx.client.core.runtime.JmxCore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * 是否显示设置页里的「漫画更新提示」测试区块（立即检查 / 模拟一次 / 清除全部）。
@@ -33,20 +36,32 @@ internal class AlbumUpdateCenter(
     core: JmxCore,
     private val bookshelfRepository: BookshelfRepository,
     private val accountDataRepository: AccountDataRepository,
+    private val scope: CoroutineScope,
 ) {
     private val store = AlbumUpdateStore(context)
     private val scanner = AlbumUpdateScanner(core, store)
-    private val scanLock = Mutex()
+    private val publishLock = Any()
+    private var publishedAt = 0L
+    private var lastAttemptAt = 0L
+    private var lastAttemptScope: String? = null
 
-    private val _records = MutableStateFlow(store.records())
+    private val _records = MutableStateFlow<Map<String, AlbumUpdateRecord>>(emptyMap())
     val records: StateFlow<Map<String, AlbumUpdateRecord>> = _records.asStateFlow()
 
     private val _scanning = MutableStateFlow(false)
     val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
 
     /** 上一次成功枚举到的收藏成员。角标只数这里面的更新，书架独有漫画不算。 */
-    private val _favoriteAlbumIds = MutableStateFlow(store.favoriteAlbumIds())
+    private val _favoriteAlbumIds = MutableStateFlow<Set<String>>(emptySet())
     val favoriteAlbumIds: StateFlow<Set<String>> = _favoriteAlbumIds.asStateFlow()
+
+    private val queue = AlbumUpdateScanQueue(scope, { _scanning.value = it }) { includeFavorites -> backgroundNetwork { scanRound(includeFavorites) } }
+
+    suspend fun loadSnapshot() = withContext(Dispatchers.IO) {
+        publish()
+        val identity = accountDataRepository.accountIdentity()
+        _favoriteAlbumIds.value = if (identity != null && store.favoriteOwner() == identity) store.favoriteAlbumIds() else emptySet()
+    }
 
     fun pendingAlbumCount(): Int = _records.value.values.count(AlbumUpdateRecord::hasUpdate)
 
@@ -57,8 +72,14 @@ internal class AlbumUpdateCenter(
         _records.value[albumId.trim()]?.pendingChapters ?: 0
 
     /** 距上次扫描够久了吗。用来把"进页面就扫"压成"隔一段时间才扫"。 */
-    fun isStale(now: Long = System.currentTimeMillis()): Boolean =
-        now - store.lastScanAt() >= MIN_SCAN_INTERVAL_MILLIS
+    fun isStale(now: Long = System.currentTimeMillis(), includeFavorites: Boolean = false): Boolean {
+        val requestedScope = scanScope(includeFavorites)
+        val retryAllowed = requestedScope != lastAttemptScope || now - lastAttemptAt >= 30_000L
+        return retryAllowed && (store.lastScanScope() != requestedScope || now - store.lastScanAt() >= MIN_SCAN_INTERVAL_MILLIS)
+    }
+
+    private fun scanScope(includeFavorites: Boolean): String =
+        if (includeFavorites) accountDataRepository.accountIdentity()?.let { "favorites:$it" } ?: "bookshelf" else "bookshelf"
 
     /**
      * 用户点开了某部漫画：提示立即消失。
@@ -83,36 +104,49 @@ internal class AlbumUpdateCenter(
      * 而"我的 → 漫画收藏"的角标说的就是收藏。
      */
     suspend fun scan(includeFavorites: Boolean, force: Boolean): AlbumUpdateScanResult? {
-        if (!force && !isStale()) return null
-        if (!scanLock.tryLock()) return null
-        _scanning.value = true
-        try {
-            val targets = LinkedHashSet<String>()
-            bookshelfRepository.entries().forEach { targets += it.albumId }
-            // 收藏枚举失败（未登录、网络挂了）与"收藏真的是空"必须区分：前者不能拿来
-            // 覆盖已落盘的收藏成员，也不能据此裁剪记录，否则一次抖动就会把收藏角标的
-            // 依据抹掉。只有真正拿到收藏列表时，才刷新落盘的收藏成员。
-            if (includeFavorites) {
-                val favorites = collectFavoriteAlbumIds()
-                if (favorites != null) {
-                    targets += favorites
-                    store.setFavoriteAlbumIds(favorites)
-                    _favoriteAlbumIds.value = favorites
-                }
-            }
-            // 裁剪范围必须涵盖"收藏成员"——哪怕这次没枚举收藏（未登录）。否则未登录时
-            // 一轮扫描就会把收藏漫画的基线删掉，等登录回来只能重新以当前话数打底，
-            // 期间发生的更新就永久漏报了。
-            val keep = LinkedHashSet(targets).apply { addAll(store.favoriteAlbumIds()) }
-            if (keep.isNotEmpty()) store.retainOnly(keep)
-            return scanner.scan(targets)
-        } finally {
-            _scanning.value = false
-            scanLock.unlock()
-            publish()
-        }
+        if (!force && !isStale(includeFavorites = includeFavorites)) return null
+        return queue.request(includeFavorites)
     }
 
+    private suspend fun scanRound(includeFavorites: Boolean): AlbumUpdateScanResult = withContext(Dispatchers.IO) {
+        val identity = if (includeFavorites) accountDataRepository.accountIdentity() else null
+        val requestedScope = scanScope(includeFavorites)
+        lastAttemptAt = System.currentTimeMillis()
+        lastAttemptScope = requestedScope
+        val targets = bookshelfRepository.entries().mapTo(LinkedHashSet()) { it.albumId }
+        if (identity == null || store.favoriteOwner() != identity) _favoriteAlbumIds.value = emptySet()
+        var partial: AlbumUpdateScanResult? = null
+        val round = withTimeoutOrNull(90_000L) {
+            val favorites = if (identity != null) collectFavoriteAlbumIds() else null
+            val membershipComplete = identity == null || (favorites != null && accountDataRepository.accountIdentity() == identity)
+            if (favorites != null && accountDataRepository.accountIdentity() == identity) {
+                store.setFavoriteAlbumIds(favorites)
+                store.setFavoriteOwner(identity!!)
+                _favoriteAlbumIds.value = favorites
+                targets += favorites
+            } else if (identity != null && accountDataRepository.accountIdentity() == identity && store.favoriteOwner() == identity) {
+                targets += store.favoriteAlbumIds()
+            }
+            if (membershipComplete) {
+                val retainedFavorites = store.favoriteAlbumIds()
+                store.retainOnly(targets + retainedFavorites)
+            }
+            val scanned = scanner.scan(targets) { publish(force = false) }
+            partial = scanned
+            if (scanned.failed == 0 && membershipComplete && scanScope(includeFavorites) == requestedScope) {
+                store.setLastScanAt(System.currentTimeMillis())
+                store.setLastScanScope(requestedScope)
+            }
+            scanned.copy(completed = scanned.completed && membershipComplete)
+        }
+        publish()
+        round ?: (partial ?: AlbumUpdateScanResult(0, targets.size, store.pendingAlbumCount())).copy(completed = false)
+    }
+
+    suspend fun acknowledgeBookshelf(snapshot: Map<String, AlbumUpdateRecord>) = withContext(Dispatchers.IO) {
+        store.acknowledge(snapshot)
+        publish()
+    }
     /**
      * 调试用：伪造更新。
      *
@@ -136,8 +170,14 @@ internal class AlbumUpdateCenter(
         publish()
     }
 
-    private fun publish() {
-        _records.value = store.records()
+    private fun publish(force: Boolean = true) {
+        synchronized(publishLock) {
+            val now = System.nanoTime()
+            if (force || now - publishedAt >= 200_000_000L) {
+                _records.value = store.records()
+                publishedAt = now
+            }
+        }
     }
 
     /**
@@ -148,6 +188,7 @@ internal class AlbumUpdateCenter(
      * 半份收藏列表比没有更危险。
      */
     private suspend fun collectFavoriteAlbumIds(): Set<String>? {
+        val identity = accountDataRepository.accountIdentity() ?: return null
         val ids = LinkedHashSet<String>()
         var page = 1
         while (page <= MAX_FAVORITE_PAGES) {
@@ -156,13 +197,16 @@ internal class AlbumUpdateCenter(
                 page = page,
             )
             val value = (result as? JmxResult.Success)?.value ?: return null
-            if (value.albums.isEmpty()) break
+            if (accountDataRepository.accountIdentity() != identity) return null
+            if (value.albums.isEmpty()) return ids
+            val before = ids.size
             value.albums.forEach { ids += it.id }
+            if (ids.size == before) return null
             val total = value.total
-            if (total != null && ids.size >= total) break
+            if (total != null && ids.size >= total) return ids
             page++
         }
-        return ids
+        return null
     }
 }
 

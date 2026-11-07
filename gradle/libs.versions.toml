@@ -14,6 +14,9 @@ miuix = "0.9.4"
 miuix-nav = "0.9.4"
 opencc4j = "1.14.0"
 webp-imageio = "0.9.0"
+robolectric = "4.17"
+compose-ui-test = "1.12.0"
+mockito = "5.24.0"
 
 [libraries]
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activity-compose" }
@@ -37,6 +40,10 @@ miuix-ui-android = { group = "top.yukonga.miuix.kmp", name = "miuix-ui-android",
 miuix-preference-android = { group = "top.yukonga.miuix.kmp", name = "miuix-preference-android", version.ref = "miuix" }
 opencc4j = { group = "com.github.houbb", name = "opencc4j", version.ref = "opencc4j" }
 webp-imageio = { group = "com.github.usefulness", name = "webp-imageio", version.ref = "webp-imageio" }
+
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+compose-ui-test = { group = "androidx.compose.ui", name = "ui-test-junit4-android", version.ref = "compose-ui-test" }
+mockito = { group = "org.mockito", name = "mockito-core", version.ref = "mockito" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

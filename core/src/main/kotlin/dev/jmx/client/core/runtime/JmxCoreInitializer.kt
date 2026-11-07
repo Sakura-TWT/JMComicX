@@ -6,6 +6,10 @@ import dev.jmx.client.core.network.ApiEndpoint
 import dev.jmx.client.core.network.DomainRefresher
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
+import dev.jmx.client.core.network.backgroundNetwork
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -66,6 +70,31 @@ class JmxCoreInitializer(
     @Volatile
     private var cachedAtMillis: Long = 0L
 
+    private val launchLock = Any()
+    private var backgroundFlight: Deferred<JmxCoreInitResult>? = null
+    private var backgroundDomainJob: Job? = null
+
+    /** Maintenance does not sit on the critical path of public content reads. */
+    fun refreshInBackground(): Deferred<JmxCoreInitResult>? {
+        val scope = backgroundScope ?: return null
+        val flight = synchronized(launchLock) {
+            backgroundFlight?.takeIf { !it.isCompleted } ?: scope.async(start = CoroutineStart.LAZY) {
+                backgroundNetwork {
+                    val result = initialize()
+                    if (result.domainRefresh is InitStepResult.Deferred) {
+                        // Public success never awaits this flight. Failed reads may wait (bounded)
+                        // for actual warm domain discovery, not merely the setting response.
+                        val domainJob = synchronized(launchLock) { backgroundDomainJob }
+                        domainJob?.join()
+                    }
+                    cachedResult ?: result
+                }
+            }.also { backgroundFlight = it }
+        }
+        flight.start()
+        return flight
+    }
+
     suspend fun initialize(forceRefresh: Boolean = false): JmxCoreInitResult = mutex.withLock {
         val now = nowMillis()
         val cached = cachedResult
@@ -86,7 +115,12 @@ class JmxCoreInitializer(
     }
 
     private suspend fun warmStart(scope: CoroutineScope): JmxCoreInitResult {
-        scope.launch { refreshDomainsInBackground() }
+        val domainJob = synchronized(launchLock) {
+            backgroundDomainJob?.takeIf { !it.isCompleted } ?: scope.launch(start = CoroutineStart.LAZY) {
+                backgroundNetwork { refreshDomainsInBackground() }
+            }.also { backgroundDomainJob = it }
+        }
+        domainJob.start()
         return JmxCoreInitResult(
             domainRefresh = InitStepResult.Deferred,
             settingFetch = settingApi.fetchSetting().toStepResult()

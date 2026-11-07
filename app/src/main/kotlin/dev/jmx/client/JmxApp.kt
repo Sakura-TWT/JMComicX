@@ -6,18 +6,27 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import android.view.WindowManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.Composable
@@ -31,20 +40,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.core.graphics.drawable.toDrawable
-import androidx.core.view.WindowCompat
 import dev.jmx.client.core.result.JmxResult
 import dev.jmx.client.core.result.toUserMessage
 import dev.jmx.client.effect.BlurredBar
@@ -59,6 +68,10 @@ import top.yukonga.miuix.kmp.basic.FloatingNavigationBarItem
 import top.yukonga.miuix.kmp.basic.NavigationBar
 import top.yukonga.miuix.kmp.basic.NavigationBarItem
 import top.yukonga.miuix.kmp.basic.NavigationItem
+import top.yukonga.miuix.kmp.basic.NavigationRail
+import top.yukonga.miuix.kmp.basic.NavigationRailItem
+import top.yukonga.miuix.kmp.basic.NavigationRailValue
+import top.yukonga.miuix.kmp.basic.rememberNavigationRailState
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -100,6 +113,7 @@ internal fun JmxApp(
     val uriHandler = LocalUriHandler.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val homeRepository = remember(applicationContext) { HomeRepository(applicationContext) }
+    val discoveryRepository = remember(homeRepository) { DiscoveryRepository(homeRepository) }
     val updateManager = remember(applicationContext) { AppUpdateManager(applicationContext) }
     val updateState by updateManager.state.collectAsState()
     val accountRepository = remember(homeRepository, applicationContext) {
@@ -135,6 +149,7 @@ internal fun JmxApp(
     val bookshelfRepository = remember(applicationContext) {
         BookshelfRepository(applicationContext)
     }
+    val coroutineScope = rememberCoroutineScope()
     val albumUpdateCenter = remember(
         applicationContext,
         homeRepository,
@@ -146,9 +161,11 @@ internal fun JmxApp(
             core = homeRepository.core,
             bookshelfRepository = bookshelfRepository,
             accountDataRepository = accountDataRepository,
+            scope = coroutineScope,
         )
     }
     val albumUpdateRecords by albumUpdateCenter.records.collectAsState()
+
     // 收藏成员单独订阅：角标只数收藏里的更新，得在收藏集合变化时重算。
     val albumFavoriteIds by albumUpdateCenter.favoriteAlbumIds.collectAsState()
     val scanningAlbumUpdates by albumUpdateCenter.scanning.collectAsState()
@@ -161,7 +178,7 @@ internal fun JmxApp(
             else -> "已跟踪 ${albumUpdateRecords.size} 部漫画，暂无更新"
         }
     }
-    val coroutineScope = rememberCoroutineScope()
+
     val offlineManager = remember(applicationContext) { OfflineDownloadManager.get(applicationContext) }
     val offlineAlbums by offlineManager.albums.collectAsState()
     val offlineReady by offlineManager.ready.collectAsState()
@@ -208,8 +225,10 @@ internal fun JmxApp(
         catch (_: Exception) { Toast.makeText(context, "下载任务恢复失败，可在离线下载页重试", Toast.LENGTH_LONG).show() }
     }
     var accountProfile by remember(accountRepository) { mutableStateOf(accountRepository.restore()) }
+    LaunchedEffect(albumUpdateCenter, accountProfile?.id, accountProfile?.username) { albumUpdateCenter.loadSnapshot() }
     var accountSessionRevision by rememberSaveable { mutableIntStateOf(0) }
     val favoriteSelection = remember(accountSessionRevision, accountProfile?.id) { FavoriteCollectionSelection() }
+    val historyRemoval = remember(accountSessionRevision, accountProfile?.id) { HistoryRemovalController() }
     var showLogin by rememberSaveable { mutableStateOf(false) }
     var loginSubmitting by remember { mutableStateOf(false) }
     var loginFailure by remember { mutableStateOf<LoginUiFailure?>(null) }
@@ -233,23 +252,12 @@ internal fun JmxApp(
     var pendingBookshelfGroupId by remember { mutableStateOf<String?>(null) }
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
     var pendingSearchQuery by rememberSaveable { mutableStateOf<String?>(null) }
-    val searchTransitionProgress by animateFloatAsState(
-        targetValue = if (searchExpanded) 1f else 0f,
-        label = "HomeSearchTopBarProgress",
-    )
     val activeTab = mainPagerState.selectedPage.coerceIn(0, tabs.lastIndex)
-    val searchSurfaceColor = MiuixTheme.colorScheme.surface
-
-    fun prepareSearchSystemBar() {
-        val window = context.findActivity()?.window ?: return
-        val color = searchSurfaceColor.toArgb()
-        window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
-        window.setBackgroundDrawable(color.toDrawable())
-        @Suppress("DEPRECATION")
-        window.statusBarColor = color
-        WindowCompat.getInsetsController(window, window.decorView)
-            .isAppearanceLightStatusBars = searchSurfaceColor.luminance() > 0.5f
-    }
+    val searchTransition = updateTransition(searchExpanded && activeTab == 0, label = "HomeSearchTransition")
+    val searchTransitionProgress by searchTransition.animateFloat(
+        transitionSpec = { tween(240, easing = FastOutSlowInEasing) },
+        label = "HomeSearchProgress",
+    ) { visible -> if (visible) 1f else 0f }
 
     fun requestLogin() {
         loginFailure = null
@@ -326,22 +334,15 @@ internal fun JmxApp(
     ) {
         val profile = accountProfile
         if (profile == null || !autoCheckIn || !accountSessionRestored) return@LaunchedEffect
-        if (settingsRepository.autoCheckInCompletedToday()) return@LaunchedEffect
-
-        for (delayMillis in AUTO_CHECK_IN_RETRY_DELAYS_MILLIS) {
-            if (delayMillis > 0L) delay(delayMillis)
-            if (settingsRepository.autoCheckInCompletedToday()) return@LaunchedEffect
-            when (accountDataRepository.autoCheckIn(profile)) {
-                AutoCheckInResult.COMPLETED,
-                AutoCheckInResult.ALREADY_SIGNED,
-                -> {
-                    settingsRepository.markAutoCheckInCompleted()
-                    return@LaunchedEffect
+        val checkInAccountId = "${profile.id}:${profile.username}"
+        if (settingsRepository.autoCheckInCompletedToday(checkInAccountId)) return@LaunchedEffect
+        when (accountDataRepository.autoCheckIn(profile)) {
+            AutoCheckInResult.COMPLETED, AutoCheckInResult.ALREADY_SIGNED -> {
+                if (accountProfile?.id == profile.id && accountProfile?.username == profile.username) {
+                    settingsRepository.markAutoCheckInCompleted(checkInAccountId)
                 }
-                // 服务端暂时没有活动时不写完成标记；前台重入和下次冷启动仍会重新探测。
-                AutoCheckInResult.NO_ACTIVE_EVENT -> return@LaunchedEffect
-                AutoCheckInResult.FAILED -> Unit
             }
+            AutoCheckInResult.NO_ACTIVE_EVENT, AutoCheckInResult.FAILED -> Unit
         }
     }
 
@@ -428,10 +429,42 @@ internal fun JmxApp(
                     when (route) {
                         JmxRoute.MAIN -> {
                             val navigationBackdrop = rememberBarBackdrop()
+                            val showNavigationRail = useNavigationRail()
+                            val railState = rememberNavigationRailState(NavigationRailValue.Collapsed)
+                            Row(Modifier.fillMaxSize()) {
+                            if (showNavigationRail) {
+                                NavigationRail(
+                                    state = railState,
+                                    expandContentDescription = "展开侧边栏",
+                                    collapseContentDescription = "收起侧边栏",
+                                ) {
+                                    tabs.forEachIndexed { index, tab ->
+                                        NavigationRailItem(
+                                            selected = mainPagerState.selectedPage == index,
+                                            onClick = {
+                                                searchExpanded = false
+                                                mainPagerState.animateToPage(index)
+                                            },
+                                            icon = tab.icon,
+                                            label = tab.label,
+                                        )
+                                    }
+                                }
+                            }
                             Scaffold(
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .then(
+                                    if (showNavigationRail) {
+                                        Modifier.consumeWindowInsets(navigationRailStartInsets())
+                                    } else {
+                                        Modifier
+                                    },
+                                ),
                             containerColor = Color.Transparent,
                             bottomBar = {
+                                if (!showNavigationRail) {
                                 if (liquidGlassNavBar) {
                                     if (floatingNavBarStyle == FloatingNavBarStyle.IOS_LIKE) {
                                         IosLiquidGlassNavigationBar(
@@ -492,6 +525,7 @@ internal fun JmxApp(
                                         }
                                     }
                                 }
+                                }
                             },
                         ) { outerPadding ->
                             Box(
@@ -526,12 +560,10 @@ internal fun JmxApp(
                                                     title = "JMComicX",
                                                     color = if (pageBackdrop != null) Color.Transparent else MiuixTheme.colorScheme.surface,
                                                     modifier = Modifier.graphicsLayer {
-                                                        translationY = size.height * searchTransitionProgress * 0.72f
                                                         alpha = 1f - searchTransitionProgress
                                                     },
                                                     actions = {
-                                                        IconButton(onClick = {
-                                                            prepareSearchSystemBar()
+                                                        IconButton(enabled = !searchExpanded && searchTransitionProgress == 0f && detailRequest == null && readerRequest == null, onClick = {
                                                             pendingSearchQuery = null
                                                             searchExpanded = true
                                                         }) {
@@ -541,6 +573,11 @@ internal fun JmxApp(
                                                                 tint = MiuixTheme.colorScheme.onBackground,
                                                             )
                                                         }
+                                                        HomeDiscoveryMenu(
+                                                            onWeekly = { navigateAccount(JmxRoute.WEEKLY) },
+                                                            onRanking = { navigateAccount(JmxRoute.RANKING) },
+                                                            enabled = !searchExpanded && searchTransitionProgress == 0f,
+                                                        )
                                                     },
                                                 )
                                                 val homeCategoryTitles = (homeState as? HomeUiState.Content)
@@ -664,13 +701,16 @@ internal fun JmxApp(
                                         onPendingGroupConsumed = { pendingBookshelfGroupId = null },
                                         topBarBlurStyle = topBarBlurStyle,
                                         updateRecords = albumUpdateRecords,
+                                        scanningUpdates = scanningAlbumUpdates,
+                                        onConfirmUpdates = albumUpdateCenter::acknowledgeBookshelf,
                                         onRefresh = {
                                             // 下拉刷新走强制扫描：用户明确要求"现在就看"，
                                             // 不能被最小扫描间隔挡住。
-                                            albumUpdateCenter.scan(
+                                            val result = albumUpdateCenter.scan(
                                                 includeFavorites = accountProfile != null,
                                                 force = true,
                                             )
+                                            if (result != null && !result.completed) error("更新检查部分完成，请稍后重试")
                                         },
                                     )
                                     else -> {
@@ -729,6 +769,7 @@ internal fun JmxApp(
                                 }
                                     }
                                 }
+                            }
                         }
                         JmxRoute.DOWNLOADS -> OfflineDownloadsScreen(
                             state = OfflineDownloadsUiState(
@@ -756,6 +797,16 @@ internal fun JmxApp(
                             onRetryDownloads = { ids -> downloadOperation { offlineManager.resume(ids) } },
                             topBarBlurStyle = topBarBlurStyle,
                             liftedAlbumId = detailRequest?.takeIf { it.origin == AlbumDetailOrigin.DOWNLOADS && it.sourceBounds != null }?.album?.id,
+                        )
+                        JmxRoute.WEEKLY, JmxRoute.RANKING -> DiscoveryScreen(
+                            kind = if (route == JmxRoute.WEEKLY) DiscoveryKind.WEEKLY else DiscoveryKind.RANKING,
+                            repository = discoveryRepository,
+                            onBack = ::navigateAccountBack,
+                            onAlbumSelected = { album, bounds ->
+                                if (detailRequest == null) detailRequest = AlbumDetailTransitionRequest(album, bounds, AlbumDetailOrigin.DISCOVERY)
+                            },
+                            liftedAlbumId = detailRequest?.takeIf { it.origin == AlbumDetailOrigin.DISCOVERY && it.sourceBounds != null }?.album?.id,
+                            topBarBlurStyle = topBarBlurStyle,
                         )
                         JmxRoute.ABOUT -> AboutScreen(
                             innerPadding = PaddingValues(),
@@ -792,16 +843,31 @@ internal fun JmxApp(
                                     style = topBarBlurStyle,
                                 ) {
                                     SmallTopAppBar(
-                                        title = route.title,
+                                        title = if (route == JmxRoute.HISTORY && historyRemoval.selecting) {
+                                            "已选择 ${historyRemoval.selectedIds.size} 部"
+                                        } else {
+                                            route.title
+                                        },
                                         color = if (pageBackdrop != null) Color.Transparent else MiuixTheme.colorScheme.surface,
                                         navigationIcon = {
-                                            IconButton(onClick = ::navigateAccountBack) {
+                                            IconButton(
+                                                onClick = {
+                                                    if (route == JmxRoute.HISTORY && historyRemoval.selecting) {
+                                                        historyRemoval.cancel()
+                                                    } else {
+                                                        navigateAccountBack()
+                                                    }
+                                                },
+                                            ) {
                                                 Icon(
                                                     imageVector = MiuixIcons.Back,
                                                     contentDescription = "返回",
                                                     tint = MiuixTheme.colorScheme.onBackground,
                                                 )
                                             }
+                                        },
+                                        actions = {
+                                            if (route == JmxRoute.HISTORY) HistoryRemovalActions(historyRemoval)
                                         },
                                     )
                                 }
@@ -820,7 +886,8 @@ internal fun JmxApp(
                                         AccountCollectionKind.HISTORY
                                     },
                                     repository = accountDataRepository,
-                                    selection = favoriteSelection,
+                                    selection = favoriteSelection.takeIf { route == JmxRoute.FAVORITES },
+                                    historyRemoval = historyRemoval.takeIf { route == JmxRoute.HISTORY },
                                     topBarBlurStyle = topBarBlurStyle,
                                     sessionRevision = accountSessionRevision,
                                     favoriteOrder = favoriteSortOrder,
@@ -923,10 +990,11 @@ internal fun JmxApp(
                                     scanningComicUpdates = scanningAlbumUpdates,
                                     onScanComicUpdates = {
                                         coroutineScope.launch {
-                                            albumUpdateCenter.scan(
+                                            val result = albumUpdateCenter.scan(
                                                 includeFavorites = accountProfile != null,
                                                 force = true,
                                             )
+                                            if (result != null && !result.completed) error("更新检查部分完成，请稍后重试")
                                         }
                                     },
                                     onSimulateComicUpdates = {
@@ -938,6 +1006,8 @@ internal fun JmxApp(
                                     onClearComicUpdates = albumUpdateCenter::clearAllPending,
                                 )
                                 JmxRoute.MAIN,
+                                JmxRoute.WEEKLY,
+                                JmxRoute.RANKING,
                                 JmxRoute.ABOUT,
                                 JmxRoute.GROUP_ORDER,
                                 JmxRoute.DOWNLOADS,
@@ -950,10 +1020,10 @@ internal fun JmxApp(
                 }
             }
 
-        AnimatedVisibility(
-            visible = searchExpanded && activeTab == 0,
-            enter = fadeIn() + slideInVertically(initialOffsetY = { -it / 5 }),
-            exit = fadeOut() + slideOutVertically(targetOffsetY = { -it / 5 }),
+        searchTransition.AnimatedVisibility(
+            visible = { it },
+            enter = fadeIn(tween(240)),
+            exit = fadeOut(tween(240)),
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(5f),
@@ -961,11 +1031,17 @@ internal fun JmxApp(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(MiuixTheme.colorScheme.surface),
+                    .background(MiuixTheme.colorScheme.surface)
+                    .pointerInput(Unit) {
+                        // Participate in hit testing over empty search space; do not consume
+                        // child gestures, but never let taps reach the fading home controls.
+                        awaitPointerEventScope { while (true) awaitPointerEvent() }
+                    },
             ) {
                 ComicSearchScreen(
                     homeRepository = homeRepository,
                     initialQuery = pendingSearchQuery,
+                    transitionProgress = { searchTransitionProgress },
                     manageSystemBar = detailRequest == null && readerRequest == null,
                     liftedAlbumId = detailRequest
                         ?.takeIf {
@@ -1038,7 +1114,6 @@ internal fun JmxApp(
                         }
                     },
                     onSearchRequested = { query ->
-                        prepareSearchSystemBar()
                         pendingSearchQuery = query
                         while (routeStack.size > 1) routeStack.removeAt(routeStack.lastIndex)
                         mainPagerState.animateToPage(0)
@@ -1153,6 +1228,22 @@ internal fun JmxApp(
         )
     }
 }
+
+@Composable
+private fun useNavigationRail(): Boolean {
+    val size = LocalWindowInfo.current.containerSize
+    return with(LocalDensity.current) {
+        val width = size.width.toDp()
+        val height = size.height.toDp()
+        shouldUseNavigationRail(width.value, height.value)
+    }
+}
+
+/** 侧边栏已经占住窗口起始侧的挖孔和导航条，内容区不要再垫一次。 */
+@Composable
+private fun navigationRailStartInsets(): WindowInsets =
+    WindowInsets.displayCutout.only(WindowInsetsSides.Start)
+        .union(WindowInsets.navigationBars.only(WindowInsetsSides.Start))
 
 private data class JmxTab(
     val label: String,

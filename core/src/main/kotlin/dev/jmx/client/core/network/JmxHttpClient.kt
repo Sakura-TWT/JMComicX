@@ -19,6 +19,7 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.Response
 import okhttp3.CookieJar
 import java.io.IOException
@@ -34,7 +35,8 @@ class JmxHttpClient(
     private val retryPolicy: RetryPolicy = DefaultRetryPolicy(),
     private val bodySampler: BodySampler = BodySampler(),
     private val requestMetricsRecorder: RequestMetricsRecorder? = null,
-    private val queryLanguageProvider: () -> String? = { null }
+    private val queryLanguageProvider: () -> String? = { null },
+    val admissionGate: NetworkAdmissionGate = NetworkAdmissionGate(),
 ) {
     private val nonReplayClient by lazy {
         okHttpClient.newBuilder().retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).build()
@@ -48,11 +50,17 @@ class JmxHttpClient(
             retryPolicy = retryPolicy,
             bodySampler = bodySampler,
             requestMetricsRecorder = requestMetricsRecorder,
-            queryLanguageProvider = queryLanguageProvider
+            queryLanguageProvider = queryLanguageProvider,
+            admissionGate = admissionGate,
         )
     }
 
-    suspend fun execute(request: ApiRequest): JmxResult<RawNetworkResponse> {
+    internal fun snapshot(request: ApiRequest): ApiRequest = if (request.contentLanguageSnapshot != null) request else
+        request.copy(contentLanguageSnapshot = queryLanguageProvider().orEmpty())
+
+    suspend fun execute(request: ApiRequest): JmxResult<RawNetworkResponse> = executeSnapshot(snapshot(request))
+
+    private suspend fun executeSnapshot(request: ApiRequest): JmxResult<RawNetworkResponse> {
         val excludedEndpointUrl = request.excludedEndpointUrl?.toHttpUrlOrNull()
         val startedAtMillis = System.currentTimeMillis()
         var lastError: JmxError? = null
@@ -63,10 +71,9 @@ class JmxHttpClient(
                 is JmxResult.Failure -> return current
             }
             attempts = attempt + 1
-            val startedAt = System.nanoTime()
             when (val result = executeOnce(baseUrl, request)) {
                 is JmxResult.Success -> {
-                    endpointManager.markSuccess(baseUrl, elapsedMillisSince(startedAt))
+                    endpointManager.markSuccess(baseUrl, result.value.networkDurationMillis)
                     requestMetricsRecorder?.record(
                         RequestMetricRecord(
                             route = request.route.path,
@@ -135,8 +142,15 @@ class JmxHttpClient(
      * 只包 [performRequest] 而不包整个 [execute]：重试退避的 [delay] 留在调用方调度器上，
      * 既省一次线程切换，也让测试里的虚拟时间继续管得住退避。
      */
-    private suspend fun executeOnce(baseUrl: HttpUrl, apiRequest: ApiRequest): JmxResult<RawNetworkResponse> =
-        withContext(Dispatchers.IO) { performRequest(baseUrl, apiRequest) }
+    private suspend fun executeOnce(baseUrl: HttpUrl, apiRequest: ApiRequest): JmxResult<RawNetworkResponse> {
+        val lease = try { admissionGate.acquire() } catch (_: java.util.concurrent.RejectedExecutionException) {
+            return JmxResult.Failure(JmxError.Schema("本机请求队列已满，请稍后重试"))
+        }
+        return lease.use {
+            requestMetricsRecorder?.stage(apiRequest.route.path, LoadStage.ADMISSION, lease.queueNanos)
+            withContext(Dispatchers.IO) { performRequest(baseUrl, apiRequest) }
+        }
+    }
 
     private suspend fun performRequest(baseUrl: HttpUrl, apiRequest: ApiRequest): JmxResult<RawNetworkResponse> {
         val token = tokenProvider.create(apiRequest.route)
@@ -144,8 +158,12 @@ class JmxHttpClient(
         val request = buildRequest(url, apiRequest, token.token, token.tokenParam)
         return try {
             val client = if (apiRequest.route == dev.jmx.client.core.protocol.ApiRoute.FavoriteAction) nonReplayClient else okHttpClient
-            client.newCall(request).awaitResponse().use { response ->
-                val body = response.body.string()
+            val transportStarted = System.nanoTime()
+            client.newCall(request).awaitConsumedResponse { response ->
+                requestMetricsRecorder?.stage(apiRequest.route.path, LoadStage.TRANSPORT_HEADERS, System.nanoTime() - transportStarted)
+                val bodyStarted = System.nanoTime()
+                val body = response.body.readBoundedText()
+                requestMetricsRecorder?.stage(apiRequest.route.path, LoadStage.BODY_READ, System.nanoTime() - bodyStarted)
                 val contentType = response.body.contentType()?.toString()
                 val exchange = NetworkExchange(
                     route = apiRequest.route.path,
@@ -156,7 +174,7 @@ class JmxHttpClient(
                     bodySample = bodySampler.sample(body)
                 )
                 if (!response.isSuccessful) {
-                    return JmxResult.Failure(
+                    return@awaitConsumedResponse JmxResult.Failure(
                         JmxError.Http(
                             code = response.code,
                             message = JmxServerMessages.composeHttpFailureMessage(response.code, body),
@@ -170,7 +188,7 @@ class JmxHttpClient(
                     )
                 }
                 when (val inspection = ResponseBodyInspector.inspect(apiRequest.route, response.code, body)) {
-                    is JmxResult.Failure -> return JmxResult.Failure(inspection.error.withExchange(exchange))
+                    is JmxResult.Failure -> return@awaitConsumedResponse JmxResult.Failure(inspection.error.withExchange(exchange))
                     is JmxResult.Success -> Unit
                 }
                 JmxResult.Success(
@@ -179,7 +197,8 @@ class JmxHttpClient(
                         body = body,
                         contentType = contentType,
                         requestUrl = response.request.url.toString(),
-                        tokenTimestampSeconds = token.timestampSeconds
+                        tokenTimestampSeconds = token.timestampSeconds,
+                        networkDurationMillis = elapsedMillisSince(transportStarted),
                     )
                 )
             }
@@ -196,7 +215,7 @@ class JmxHttpClient(
         timestampSeconds: Long
     ): JmxResult<HttpUrl> {
         return runCatching {
-            buildApiUrl(baseUrl, apiRequest, timestampSeconds, queryLanguageProvider())
+            buildApiUrl(baseUrl, apiRequest, timestampSeconds, apiRequest.contentLanguageSnapshot ?: queryLanguageProvider())
         }.fold(
             onSuccess = { JmxResult.Success(it) },
             onFailure = { JmxResult.Failure(JmxError.Schema("请求 URL 构建失败：${apiRequest.route.path}", cause = it)) }
@@ -237,6 +256,7 @@ class JmxHttpClient(
 
     private fun Throwable.toJmxNetworkError(): JmxError {
         return when (this) {
+            is ApiBodyLimitException -> JmxError.Schema("接口响应超过本机大小预算", cause = this)
             is SocketTimeoutException -> JmxError.Network("网络连接超时", this)
             is UnknownHostException -> JmxError.Domain("API 域名无法解析", cause = this)
             is IOException -> JmxError.Network("网络请求失败", this)
@@ -332,4 +352,33 @@ fun apiOkHttpClient(base: OkHttpClient): OkHttpClient {
     return base.newBuilder()
         .callTimeout(20, TimeUnit.SECONDS)
         .build()
+}
+
+/** Keep cancellation ownership until the response body has been completely consumed/closed. */
+internal suspend fun <T> Call.awaitConsumedResponse(consume: (Response) -> T): T = suspendCancellableCoroutine { c ->
+    c.invokeOnCancellation { cancel() }
+    enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) { if (c.isActive) c.resumeWithException(e) }
+        override fun onResponse(call: Call, response: Response) {
+            try {
+                val value = response.use(consume)
+                c.resume(value) { _, _, _ -> }
+            } catch (failure: Throwable) {
+                if (c.isActive) c.resumeWithException(failure)
+            }
+        }
+    })
+}
+
+private class ApiBodyLimitException : IOException("API body exceeds its byte budget")
+internal fun okhttp3.ResponseBody.readBoundedText(maxBytes: Long = 8L * 1024 * 1024): String {
+    if (contentLength() > maxBytes) throw ApiBodyLimitException()
+    val source = source()
+    val buffer = okio.Buffer()
+    while (true) {
+        val read = source.read(buffer, minOf(8192L, maxBytes + 1 - buffer.size))
+        if (read < 0) break
+        if (buffer.size > maxBytes) throw ApiBodyLimitException()
+    }
+    return buffer.readByteArray().toResponseBody(contentType()).string()
 }

@@ -1,6 +1,7 @@
 package dev.jmx.client
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -9,10 +10,9 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -26,9 +26,16 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.jmx.client.effect.FloatingNavBarStyle
 import dev.jmx.client.effect.TopBarBlurStyle
@@ -38,7 +45,9 @@ import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
+import top.yukonga.miuix.kmp.basic.DropdownDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.SmallTitle
@@ -83,6 +92,7 @@ internal fun SettingsScreen(
     var clearing by remember { mutableStateOf(false) }
     var clearMessage by remember { mutableStateOf<String?>(null) }
     var showEndpoints by remember { mutableStateOf(false) }
+    var endpointSettings by remember(repository) { mutableStateOf(repository.endpointSnapshot()) }
     var cacheSize by remember { mutableStateOf<Long?>(null) }
     var cacheRefreshKey by remember { mutableIntStateOf(0) }
     var contentLanguage by remember(repository) { mutableStateOf(repository.contentLanguage()) }
@@ -182,7 +192,7 @@ internal fun SettingsScreen(
         }
         item(key = "settings-service") {
             Column {
-                SmallTitle(text = "账户与服务")
+                SmallTitle(text = "账户与网络")
                 Card(modifier = Modifier.padding(horizontal = 12.dp)) {
                     SwitchPreference(
                         title = "自动签到",
@@ -192,7 +202,7 @@ internal fun SettingsScreen(
                     )
                     ArrowPreference(
                         title = "线路与图源",
-                        summary = "查看测速结果并选择 API 线路和图片源",
+                        summary = endpointSettings.entrySummary(),
                         onClick = { showEndpoints = true },
                     )
                 }
@@ -327,6 +337,7 @@ internal fun SettingsScreen(
         repository = repository,
         onDismiss = { showEndpoints = false },
         onImageHostChanged = onImageHostChanged,
+        onEndpointSelectionChanged = { endpointSettings = repository.endpointSnapshot() },
     )
 }
 
@@ -336,6 +347,7 @@ private fun EndpointSelectionDialog(
     repository: AppSettingsRepository,
     onDismiss: () -> Unit,
     onImageHostChanged: () -> Unit,
+    onEndpointSelectionChanged: () -> Unit,
 ) {
     var state by remember(repository) {
         mutableStateOf(
@@ -350,32 +362,21 @@ private fun EndpointSelectionDialog(
     fun refreshSelection() {
         val snapshot = repository.endpointSnapshot()
         state = state.copy(
-            endpoints = snapshot.copy(
-                apiEndpoints = state.endpoints.apiEndpoints,
-                imageEndpoints = state.endpoints.imageEndpoints,
-            ),
+            endpoints = state.endpoints.withSelectionSnapshot(snapshot),
         )
+        onEndpointSelectionChanged()
     }
 
     fun updateApiProbe(probe: EndpointProbeUi) {
         val activeApiUrl = repository.endpointSnapshot().activeApiUrl
         state = state.copy(
-            endpoints = state.endpoints.copy(
-                activeApiUrl = activeApiUrl,
-                apiEndpoints = state.endpoints.apiEndpoints.map {
-                    if (it.url == probe.url) probe else it
-                },
-            ),
+            endpoints = state.endpoints.withApiProbe(probe, activeApiUrl),
         )
     }
 
     fun updateImageProbe(probe: EndpointProbeUi) {
         state = state.copy(
-            endpoints = state.endpoints.copy(
-                imageEndpoints = state.endpoints.imageEndpoints.map {
-                    if (it.url == probe.url) probe else it
-                },
-            ),
+            endpoints = state.endpoints.withImageProbe(probe),
         )
     }
 
@@ -457,16 +458,18 @@ internal fun EndpointOptions(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        EndpointSectionTitle("API 线路", "${endpoints.apiEndpoints.size} 条")
         Text(
-            text = "API 线路",
-            style = MiuixTheme.textStyles.title3,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            text = "API 测速是独立 /setting 探测，不能代表漫画接口、业务排队、图片下载及还原速度。",
+            style = MiuixTheme.textStyles.footnote1,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
         EndpointOption(
             title = "自动选择",
-            summary = endpoints.activeApiUrl?.let { "当前使用 ${it.endpointDisplayName()}" }
-                ?: "根据线路健康状态自动切换",
+            summary = endpoints.automaticApiSummary(),
             selected = endpoints.automatic,
             probe = null,
             onProbe = null,
@@ -479,7 +482,7 @@ internal fun EndpointOptions(
             EndpointOption(
                 title = endpoint.url.endpointDisplayName(),
                 summary = null,
-                selected = !endpoints.automatic && endpoints.selectedApiUrl == endpoint.url,
+                selected = endpoints.isApiSelected(endpoint.url),
                 probe = endpoint,
                 onProbe = { onProbeApi(endpoint.url) },
                 onClick = {
@@ -489,10 +492,12 @@ internal fun EndpointOptions(
                 },
             )
         }
+        EndpointSectionTitle("图片源", "${endpoints.imageEndpoints.size} 个")
         Text(
-            text = "图片源",
-            style = MiuixTheme.textStyles.title3,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            text = "图片源独立于 API 线路，探测仅反映连接耗时。",
+            style = MiuixTheme.textStyles.footnote1,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
         EndpointOption(
             title = "跟随服务配置",
@@ -510,7 +515,7 @@ internal fun EndpointOptions(
             EndpointOption(
                 title = endpoint.url.endpointDisplayName(),
                 summary = null,
-                selected = endpoints.selectedImageUrl == endpoint.url,
+                selected = endpoints.isImageSelected(endpoint.url),
                 probe = endpoint,
                 onProbe = { onProbeImage(endpoint.url) },
                 onClick = {
@@ -523,7 +528,23 @@ internal fun EndpointOptions(
         TextButton(
             text = "全部重新测速",
             onClick = onRefresh,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+        )
+    }
+}
+
+@Composable
+private fun EndpointSectionTitle(title: String, count: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = title, style = MiuixTheme.textStyles.title3)
+        Text(
+            text = count,
+            style = MiuixTheme.textStyles.footnote1,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
         )
     }
 }
@@ -537,96 +558,163 @@ private fun EndpointOption(
     onProbe: (() -> Unit)?,
     onClick: () -> Unit,
 ) {
-    BasicComponent(
-        title = title,
-        summary = summary,
-        onClick = onClick,
-        endActions = {
-            if (probe != null) {
-                if (probe.success == null) {
-                    CircularProgressIndicator(
-                        size = 20.dp,
-                        strokeWidth = 3.dp,
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                    )
-                } else {
+    val presentation = probe?.presentation()
+    val selectionColors = DropdownDefaults.dialogDropdownColors()
+    val titleColor = if (selected) selectionColors.selectedContentColor else selectionColors.contentColor
+    val summaryColor = if (selected) selectionColors.selectedSummaryColor else selectionColors.summaryColor
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        // Clip the selection fill to the same native rounded surface as the option card.
+        cornerRadius = CardDefaults.CornerRadius,
+        colors = CardDefaults.defaultColors(
+            color = if (selected) selectionColors.selectedContainerColor else selectionColors.containerColor,
+        ),
+    ) {
+        BasicComponent(
+            onClick = onClick,
+            modifier = Modifier.semantics {
+                this.selected = selected
+                contentDescription = probe?.url ?: title
+                stateDescription = listOfNotNull(
+                    if (selected) "已选择" else "未选择",
+                    presentation?.statusLabel,
+                    presentation?.latencyLabel,
+                    presentation?.signalDescription,
+                ).joinToString(" · ")
+            },
+            insideMargin = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+        ) {
+            if (probe == null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Text(
-                        text = probe.latencyLabel().orEmpty(),
-                        style = MiuixTheme.textStyles.footnote1,
-                        color = probe.signalColor(),
+                        text = title,
+                        style = MiuixTheme.textStyles.headline1,
+                        fontWeight = FontWeight.Medium,
+                        color = titleColor,
+                        modifier = Modifier.weight(1f),
                     )
+                    EndpointSelectionMark(selected)
+                }
+            } else {
+                Text(
+                    text = title,
+                    style = MiuixTheme.textStyles.body2,
+                    fontWeight = FontWeight.Medium,
+                    color = titleColor,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            if (summary != null) {
+                Text(
+                    text = summary,
+                    style = MiuixTheme.textStyles.body2,
+                    color = summaryColor,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            if (presentation != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    EndpointLatencyIndicator(presentation, Modifier.weight(1f))
+                    EndpointSelectionMark(selected)
                     IconButton(
                         onClick = { onProbe?.invoke() },
-                        enabled = onProbe != null,
-                        modifier = Modifier.semantics {
+                        enabled = onProbe != null && presentation.status != EndpointProbeStatus.Pending,
+                        modifier = Modifier.size(44.dp).semantics {
                             contentDescription = "重新测速 $title"
                         },
                     ) {
-                        EndpointSignal(probe)
+                        Text(
+                            text = "重测",
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = if (presentation.status == EndpointProbeStatus.Pending) {
+                                MiuixTheme.colorScheme.onSurfaceVariantActions
+                            } else MiuixTheme.colorScheme.primary,
+                        )
                     }
                 }
             }
-            if (selected) {
-                Icon(
-                    imageVector = MiuixIcons.Basic.Check,
-                    contentDescription = "已选择",
-                    tint = MiuixTheme.colorScheme.primary,
-                    modifier = Modifier.padding(start = 10.dp),
-                )
-            }
-        },
-    )
+        }
+    }
 }
 
 @Composable
-private fun EndpointSignal(probe: EndpointProbeUi) {
-    val activeBars = probe.signalBars()
-    val color = probe.signalColor()
-    Row(
-        modifier = Modifier
-            .width(24.dp)
-            .height(18.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        repeat(4) { index ->
-            Box(
-                modifier = Modifier
-                    .width(4.dp)
-                    .height((5 + index * 4).dp)
-                    .background(
-                        if (index < activeBars) color
-                        else MiuixTheme.colorScheme.onSurface.copy(alpha = 0.14f),
-                    ),
+private fun EndpointSelectionMark(selected: Boolean) {
+    Box(modifier = Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+        if (selected) {
+            Icon(
+                imageVector = MiuixIcons.Basic.Check,
+                contentDescription = "已选择",
+                tint = DropdownDefaults.dialogDropdownColors().selectedIndicatorColor,
+                modifier = Modifier.size(20.dp),
             )
         }
     }
 }
 
-private fun EndpointProbeUi.latencyLabel(): String? = when (success) {
-    true -> latencyMillis?.let { "$it ms" }
-    false -> "不可用"
-    null -> null
+@Composable
+private fun EndpointLatencyIndicator(
+    presentation: EndpointProbePresentation,
+    modifier: Modifier = Modifier,
+) {
+    val color = endpointSignalColor(presentation.signalTone)
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(modifier = Modifier.size(18.dp), contentAlignment = Alignment.Center) {
+            if (presentation.status == EndpointProbeStatus.Pending) {
+                CircularProgressIndicator(size = 14.dp, strokeWidth = 2.dp)
+            } else {
+                EndpointSignalBars(presentation, color)
+            }
+        }
+        Text(text = presentation.statusLabel, style = MiuixTheme.textStyles.footnote1, color = color)
+        Text(
+            text = presentation.latencyLabel,
+            style = MiuixTheme.textStyles.footnote1,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+    }
 }
 
-private fun EndpointProbeUi.signalBars(): Int = when {
-    success != true -> 0
-    latencyMillis == null -> 0
-    latencyMillis <= 300L -> 4
-    latencyMillis <= 800L -> 3
-    latencyMillis <= 1_500L -> 2
-    else -> 1
+@Composable
+private fun endpointSignalColor(tone: EndpointSignalTone): Color {
+    val dark = MiuixTheme.colorScheme.surface.luminance() < 0.5f
+    return when (tone) {
+        EndpointSignalTone.Good -> if (dark) Color(0xFF6ECF91) else Color(0xFF237A42)
+        EndpointSignalTone.Caution -> if (dark) Color(0xFFFFC46B) else Color(0xFF996500)
+        EndpointSignalTone.Poor -> MiuixTheme.colorScheme.error
+        EndpointSignalTone.Neutral -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+    }
 }
 
-private fun EndpointProbeUi.signalColor(): Color = when {
-    success != true -> UnavailableSignalColor
-    signalBars() >= 3 -> AvailableSignalColor
-    else -> SlowSignalColor
+@Composable
+private fun EndpointSignalBars(presentation: EndpointProbePresentation, color: Color) {
+    // Decorative only: the selectable row exposes the latency grade in its stateDescription.
+    Canvas(Modifier.size(width = 18.dp, height = 16.dp)) {
+        val gap = 1.5.dp.toPx()
+        val width = (size.width - gap * 3) / 4
+        repeat(4) { index ->
+            val height = size.height * (index + 1) / 4
+            drawRoundRect(
+                color = if (index < presentation.signalBars) color else color.copy(alpha = 0.22f),
+                topLeft = Offset(index * (width + gap), size.height - height),
+                size = Size(width, height),
+                cornerRadius = CornerRadius(0.7.dp.toPx()),
+            )
+        }
+        if (presentation.status == EndpointProbeStatus.Failed) {
+            drawLine(color, Offset(0f, size.height), Offset(size.width, 0f), strokeWidth = 1.5.dp.toPx())
+        }
+    }
 }
-
-internal fun String.endpointDisplayName(): String = removePrefix("https://")
-    .removePrefix("http://")
-    .trimEnd('/')
 
 internal fun formatByteCount(bytes: Long): String {
     if (bytes < 1_024L) return "$bytes B"
@@ -647,10 +735,6 @@ internal fun formatByteCount(bytes: Long): String {
 internal data class EndpointDialogState(
     val endpoints: EndpointSettingsState,
 )
-
-private val AvailableSignalColor = Color(0xFF168A50)
-private val SlowSignalColor = Color(0xFFB06B00)
-private val UnavailableSignalColor = Color(0xFFCB3A31)
 
 /** 模拟更新时改动的漫画部数：够验证"我的"页的计数角标，又不至于把整屏都标红。 */
 internal const val SIMULATED_UPDATE_ALBUMS = 3

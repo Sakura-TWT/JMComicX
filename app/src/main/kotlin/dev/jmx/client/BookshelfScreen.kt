@@ -130,16 +130,26 @@ internal fun BookshelfScreen(
     topBarBlurStyle: dev.jmx.client.effect.TopBarBlurStyle = dev.jmx.client.effect.TopBarBlurStyle.GAUSSIAN,
     updateRecords: Map<String, AlbumUpdateRecord> = emptyMap(),
     onRefresh: suspend () -> Unit = {},
+    scanningUpdates: Boolean = false,
+    onConfirmUpdates: suspend (Map<String, AlbumUpdateRecord>) -> Unit = {},
 ) {
     val activeBarBackdrop = barBackdrop ?: dev.jmx.client.effect.rememberBarBackdrop()
-    var groups by remember(repository) { mutableStateOf(repository.groups()) }
+    var groups by remember(repository) { mutableStateOf(emptyList<BookshelfGroup>()) }
     var selectedGroupId by rememberSaveable(repository) {
         mutableStateOf(ALL_BOOKSHELF_GROUP_ID)
     }
     var sortOrder by remember(repository) { mutableStateOf(repository.sortOrder()) }
     var sortDirection by remember(repository) { mutableStateOf(repository.sortDirection()) }
-    var entries by remember(repository, selectedGroupId, sortOrder, sortDirection) {
-        mutableStateOf(repository.entries(selectedGroupId, sortOrder, sortDirection))
+    var allEntries by remember(repository) { mutableStateOf(emptyList<BookshelfEntry>()) }
+    var snapshotLoaded by remember(repository) { mutableStateOf(false) }
+    var loadGeneration by remember(repository) { mutableIntStateOf(0) }
+    var confirmUpdates by remember { mutableStateOf<Map<String, AlbumUpdateRecord>?>(null) }
+    val pendingIds = remember(updateRecords) { updateRecords.values.filter(AlbumUpdateRecord::hasUpdate).mapTo(hashSetOf(), AlbumUpdateRecord::albumId) }
+    val orderedEntries = remember(allEntries, sortOrder, sortDirection, pendingIds) {
+        projectBookshelf(allEntries, ALL_BOOKSHELF_GROUP_ID, sortOrder, sortDirection, updateRecords)
+    }
+    val entries = remember(orderedEntries, selectedGroupId) {
+        orderedEntries.filter { selectedGroupId == ALL_BOOKSHELF_GROUP_ID || selectedGroupId in it.groupIds }
     }
     var showGroupEditor by remember { mutableStateOf(false) }
     var menuExpanded by remember { mutableStateOf(false) }
@@ -171,35 +181,42 @@ internal fun BookshelfScreen(
     val hapticFeedback = LocalHapticFeedback.current
     val context = LocalContext.current
 
-    fun reload() {
-        groups = repository.groups()
+    suspend fun loadSnapshot() {
+        val generation = ++loadGeneration
+        val snapshot = withContext(Dispatchers.IO) {
+            repository.uiSnapshot()
+        }
+        if (generation != loadGeneration) return
+        groups = snapshot.groups
+        allEntries = snapshot.entries
         if (selectedGroupId != ALL_BOOKSHELF_GROUP_ID && groups.none { it.id == selectedGroupId }) {
             selectedGroupId = ALL_BOOKSHELF_GROUP_ID
         }
-        entries = repository.entries(selectedGroupId, sortOrder, sortDirection)
+        snapshotLoaded = true
         contentRevision++
     }
 
-    /**
-     * 下拉刷新。
-     *
-     * 不是"只为更新检测"服务的：它同时重读本地书架（分组规则、阅读进度可能在别处改过）
-     * 并让外部触发一次强制更新扫描。用户的极端场景——正好在下拉时某部漫画更新了——
-     * 靠 [onRefresh] 里的强制扫描兜住，不受最小扫描间隔限制。
-     */
+    fun reload() { coroutineScope.launch { loadSnapshot() } }
+
     fun refreshBookshelf() {
         if (refreshing) return
         refreshing = true
         coroutineScope.launch {
             try {
-                reload()
-                onRefresh()
+                loadSnapshot()
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                operationMessage = "书架加载失败，请重试"
             } finally {
                 refreshing = false
             }
+            // The official refresh indicator consumes scroll: never bind it to the network scan.
+            try { onRefresh() }
+            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) { operationMessage = "更新检查暂时失败，请稍后重试" }
         }
     }
-
     fun applyImport(snapshot: BookshelfSnapshot, replace: Boolean) {
         transferRunning = true
         coroutineScope.launch {
@@ -233,12 +250,12 @@ internal fun BookshelfScreen(
     }
 
     LaunchedEffect(repository, revision, selectedGroupId, sortOrder, sortDirection) {
-        reload()
+        loadSnapshot()
     }
     // Repository reads are synchronous: prune only against the freshly read active group,
     // never against an adjacent pager page or an intermediate loading/empty placeholder.
     LaunchedEffect(entries, selectionMode) {
-        if (selectionMode) selectedIds = selectedIds.intersect(entries.mapTo(hashSetOf(), BookshelfEntry::albumId))
+        if (selectionMode && snapshotLoaded) selectedIds = selectedIds.intersect(entries.mapTo(hashSetOf(), BookshelfEntry::albumId))
     }
     BackHandler(enabled = selectionMode && !showSelectionGroupPicker && pendingRemoval.isEmpty() && operationMessage == null) {
         selectionMode = false
@@ -344,7 +361,7 @@ internal fun BookshelfScreen(
     val groupTabs = listOf("全部") + groups.map(BookshelfGroup::name)
     // 红点按"这一组里有没有漫画在更新"算，而不是各标签各记一份已读。
     // 同一部漫画同时在"全部"和自建分组里，点开它之后两个标签的红点自然一起消失。
-    val badgedTabs = remember(groups, updateRecords, revision, contentRevision, repository) {
+    val badgedTabs = remember(groups, updateRecords, allEntries) {
         if (updateRecords.values.none(AlbumUpdateRecord::hasUpdate)) {
             emptySet()
         } else {
@@ -352,7 +369,7 @@ internal fun BookshelfScreen(
                 val pendingIds = updateRecords.values
                     .filter(AlbumUpdateRecord::hasUpdate)
                     .mapTo(mutableSetOf(), AlbumUpdateRecord::albumId)
-                val all = repository.entries()
+                val all = allEntries
                 if (all.any { it.albumId in pendingIds }) add(0)
                 groups.forEachIndexed { index, group ->
                     if (all.any { group.id in it.groupIds && it.albumId in pendingIds }) add(index + 1)
@@ -445,10 +462,19 @@ internal fun BookshelfScreen(
             add(
                 DropdownItem(
                     text = "排序方式",
-                    summary = "${sortOrder.label} · ${sortDirection.label}",
+                    summary = "${sortOrder.label} · ${sortDirection.label}" + if (sortOrder == BookshelfSortOrder.UPDATED) " · 未确认更新优先" else "",
                     children = sortChildren,
                 ),
             )
+            add(DropdownItem(
+                text = "确认全部书架更新",
+                summary = "仅确认当前已发现的更新，新发现的章节仍会提醒",
+                enabled = allEntries.any { updateRecords[it.albumId]?.hasUpdate == true },
+                onClick = {
+                    val ids = allEntries.mapTo(hashSetOf(), BookshelfEntry::albumId)
+                    confirmUpdates = updateRecords.filterKeys { it in ids }.toMap()
+                },
+            ))
             selectedGroup?.let { group ->
                 add(
                     DropdownItem(
@@ -486,7 +512,7 @@ internal fun BookshelfScreen(
                 label = "BookshelfTopBarMode",
             ) { multiSelect ->
                 SmallTopAppBar(
-                    title = if (multiSelect) "已选择 ${selectedIds.size} 部" else "书架",
+                    title = if (multiSelect) "已选择 ${selectedIds.size} 部" else if (scanningUpdates) "书架 · 检查更新中" else "书架",
                     titlePadding = if (multiSelect) 8.dp else TopAppBarDefaults.TitlePadding,
                     color = if (activeBarBackdrop != null) androidx.compose.ui.graphics.Color.Transparent else MiuixTheme.colorScheme.surface,
                     navigationIcon = {
@@ -620,8 +646,8 @@ internal fun BookshelfScreen(
                     key = { page -> groups.getOrNull(page - 1)?.id ?: ALL_BOOKSHELF_GROUP_ID },
                 ) { page ->
                 val pageGroupId = groups.getOrNull(page - 1)?.id ?: ALL_BOOKSHELF_GROUP_ID
-                val pageEntries = remember(pageGroupId, sortOrder, sortDirection, revision, contentRevision) {
-                    repository.entries(pageGroupId, sortOrder, sortDirection)
+                val pageEntries = remember(pageGroupId, orderedEntries) {
+                    orderedEntries.filter { pageGroupId == ALL_BOOKSHELF_GROUP_ID || pageGroupId in it.groupIds }
                 }
                 val pullToRefreshState = rememberPullToRefreshState()
                 PullToRefresh(
@@ -632,7 +658,9 @@ internal fun BookshelfScreen(
                     refreshTexts = listOf("下拉刷新", "松开刷新", "正在刷新", "刷新完成"),
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                if (pageEntries.isEmpty()) {
+                if (!snapshotLoaded) {
+                    AccountPageLoading(Modifier.padding(top = topInset))
+                } else if (pageEntries.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize().padding(top = topInset)) {
                         BookshelfEmptyState(customGroup = page > 0)
                     }
@@ -714,6 +742,22 @@ internal fun BookshelfScreen(
         }
     }
 
+    WindowDialog(
+        show = confirmUpdates != null,
+        title = "确认全部书架更新",
+        summary = "确认这次已发现的书架更新？之后发现的新章节仍会提示，不影响收藏独有的漫画。",
+        onDismissRequest = { confirmUpdates = null },
+    ) {
+        Row {
+            TextButton(text = "取消", onClick = { confirmUpdates = null }, modifier = Modifier.weight(1f))
+            Spacer(Modifier.size(20.dp))
+            TextButton(text = "确认", modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary(), onClick = {
+                val clicked = confirmUpdates ?: return@TextButton
+                confirmUpdates = null
+                coroutineScope.launch { onConfirmUpdates(clicked) }
+            })
+        }
+    }
     BookshelfGroupEditorDialog(
         show = showGroupEditor,
         group = null,
@@ -909,6 +953,7 @@ internal fun BookshelfScreen(
             text = "确认替换",
             onClick = { pendingImportReplace?.let { applyImport(it, replace = true) } },
             modifier = Modifier.fillMaxWidth(),
+            colors = destructiveTextButtonColors(),
         )
     }
 
@@ -952,6 +997,7 @@ internal fun BookshelfScreen(
                 hapticFeedback.performHapticFeedback(HapticFeedbackType.Confirm)
             },
             modifier = Modifier.fillMaxWidth(),
+            colors = destructiveTextButtonColors(),
         )
     }
 
@@ -972,12 +1018,7 @@ internal fun BookshelfScreen(
                 reload()
             },
             modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.textButtonColors(
-                color = MiuixTheme.colorScheme.errorContainer,
-                disabledColor = MiuixTheme.colorScheme.errorContainer.copy(alpha = 0.38f),
-                textColor = MiuixTheme.colorScheme.onErrorContainer,
-                disabledTextColor = MiuixTheme.colorScheme.onErrorContainer.copy(alpha = 0.38f),
-            ),
+            colors = destructiveTextButtonColors(),
         )
     }
 

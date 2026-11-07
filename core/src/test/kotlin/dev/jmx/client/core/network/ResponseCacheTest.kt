@@ -8,6 +8,7 @@ import dev.jmx.client.core.protocol.ApiRoute
 import dev.jmx.client.core.protocol.ApiTokenProvider
 import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.result.JmxResult
+import kotlinx.coroutines.async
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -168,6 +169,43 @@ class ResponseCacheTest {
 
         assertTrue(failure is JmxResult.Failure)
         assertEquals("""{"page":1}""", success.valueOrFail().toString())
+    }
+
+    @Test
+    fun forcedRefreshBypassesFreshCacheAndWarmsTheCanonicalKey() = runBlocking {
+        val client = createClient(language = "CN")
+        server.enqueue(encryptedResponse(payload = """{"page":1}"""))
+        client.requestJson(apiRequest(ApiRoute.Promote))
+        server.enqueue(encryptedResponse(payload = """{"page":2}"""))
+        val refreshed = client.requestJson(apiRequest(ApiRoute.Promote) { forceRefresh() })
+        val next = client.requestJson(apiRequest(ApiRoute.Promote))
+        assertEquals("""{"page":2}""", refreshed.valueOrFail().toString())
+        assertEquals(refreshed.valueOrFail(), next.valueOrFail())
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test
+    fun forcedFailureCannotMasqueradeAsCachedSuccess() = runBlocking {
+        val client = createClient(language = "CN")
+        server.enqueue(encryptedResponse(payload = """{"page":1}"""))
+        client.requestJson(apiRequest(ApiRoute.Promote))
+        server.enqueue(MockResponse().setResponseCode(503).setBody("offline"))
+        assertTrue(client.requestJson(apiRequest(ApiRoute.Promote) { forceRefresh() }) is JmxResult.Failure)
+        assertEquals("""{"page":1}""", client.requestJson(apiRequest(ApiRoute.Promote)).valueOrFail().toString())
+    }
+
+    @Test
+    fun preRefreshInFlightReadCannotBeJoinedOrOverwriteTheNewCache() = runBlocking {
+        val client = createClient(language = "CN")
+        server.enqueue(encryptedResponse(payload = """{"page":1}""").setBodyDelay(400, java.util.concurrent.TimeUnit.MILLISECONDS))
+        val previous = async(Dispatchers.IO) { client.requestJson(apiRequest(ApiRoute.Promote)) }
+        assertTrue(server.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS) != null)
+        server.enqueue(encryptedResponse(payload = """{"page":2}"""))
+        val refreshed = client.requestJson(apiRequest(ApiRoute.Promote) { forceRefresh() })
+        assertEquals("""{"page":2}""", refreshed.valueOrFail().toString())
+        previous.await()
+        assertEquals("""{"page":2}""", client.requestJson(apiRequest(ApiRoute.Promote)).valueOrFail().toString())
+        assertEquals(2, server.requestCount)
     }
 
     private fun createClient(

@@ -419,7 +419,7 @@ internal fun OfflineDownloadsScreen(
                     }
                 },
                 modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.textButtonColorsPrimary(color = MiuixTheme.colorScheme.error, textColor = MiuixTheme.colorScheme.onError),
+                colors = destructiveTextButtonColors(),
             )
         }
     }

@@ -1,7 +1,6 @@
 package dev.jmx.client
 
 import android.app.Application
-import android.content.ComponentCallbacks2
 import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
@@ -49,19 +48,7 @@ class JmxApplication : Application(), SingletonImageLoader.Factory {
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         val memoryCache = managedImageLoader?.memoryCache ?: return
-        // 只在系统真的要不回内存时才整体清空。
-        // 原判据是 level >= TRIM_MEMORY_UI_HIDDEN(20)，而 UI_HIDDEN 只表示"界面不可见了"——
-        // 用户按一下 Home 再切回来，全部封面都要重新解码，这是最常见的路径上最贵的一次浪费。
-        // RUNNING_CRITICAL(15) 与 COMPLETE(80) 才是"再不放就要被杀"的信号。
-        val mustEvictEverything = level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
-            level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE
-        if (mustEvictEverything) {
-            memoryCache.clear()
-        } else if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
-            // Coil 3 去掉了按 level 分档的 trimMemory，只留下"缩到多大"。
-            // 中等压力下砍掉一半：最近看过的页还在，代价是回翻更远时重新解码。
-            memoryCache.trimToSize(memoryCache.size / 2)
-        }
+        trimImageMemoryCache(memoryCache, level)
     }
 
     override fun onLowMemory() {

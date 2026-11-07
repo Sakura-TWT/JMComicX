@@ -16,18 +16,11 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
-/**
- * 签到接口空载荷契约（code=200,data=null）：
- * - 单线路连续为空 -> Success(null)，且本进程后续不再交叉验证
- * - 多线路一条空、一条有效 -> 直接使用有效数据
- * - 非 200 / 缺 data 字段 / 非对象 data -> 明确失败，不伪装成无活动
- */
+/** Empty data stays a failure so the shared account layer can perform bounded recovery. */
 class LibraryApiDailyEmptyPayloadTest {
     private lateinit var primary: MockWebServer
     private lateinit var secondary: MockWebServer
@@ -59,51 +52,39 @@ class LibraryApiDailyEmptyPayloadTest {
     }
 
     @Test
-    fun dailyInfoTreatsConsistentEmptyPayloadAsNoActiveEvent() = runBlocking {
+    fun dailyInfoKeepsEmptyPayloadAsRecoverableFailure() = runBlocking {
         val api = LibraryApi(createClient(singleLine = true))
         primary.enqueue(emptyPayloadResponse())
-        primary.enqueue(emptyPayloadResponse())
-
         val first = api.dailyInfo("42")
-        assertTrue(first is JmxResult.Success)
-        assertNull((first as JmxResult.Success).value)
-        assertEquals(2, primary.requestCount)
-
-        // 会话内已跨线路确认：再次遇到空载荷直接返回，不再补发交叉验证请求
-        primary.enqueue(emptyPayloadResponse())
-        val second = api.dailyInfo("42")
-        assertTrue(second is JmxResult.Success)
-        assertNull((second as JmxResult.Success).value)
-        assertEquals(3, primary.requestCount)
-    }
-
-    @Test
-    fun dailyInfoRecoversWhenAlternateLineHasData() = runBlocking {
-        val api = LibraryApi(createClient(singleLine = false))
-        primary.enqueue(emptyPayloadResponse())
-        secondary.enqueue(encryptedResponse(DAILY_JSON))
-
-        val result = api.dailyInfo("42")
-
-        assertTrue(result is JmxResult.Success)
-        assertNotNull((result as JmxResult.Success).value)
+        assertTrue(first is JmxResult.Failure)
+        assertTrue((first as JmxResult.Failure).error is JmxError.EmptyData)
         assertEquals(1, primary.requestCount)
-        assertEquals(1, secondary.requestCount)
-        assertEquals("/daily?user_id=42", secondary.takeRequest().path)
+
+        // No process-wide "no event" memory: a later fresh session can see an event.
+        primary.enqueue(encryptedResponse(DAILY_JSON))
+        assertTrue(api.dailyInfo("42") is JmxResult.Success)
+        assertEquals(2, primary.requestCount)
     }
 
     @Test
-    fun dailyInfoKeepsAlternateLineFailureAsError() = runBlocking {
+    fun emptyPayloadDoesNotDoApiLayerSessionRecoveryOrExtraRequests() = runBlocking {
         val api = LibraryApi(createClient(singleLine = false))
         primary.enqueue(emptyPayloadResponse())
-        secondary.enqueue(emptyPayloadResponse())
-
         val result = api.dailyInfo("42")
-
-        assertTrue(result is JmxResult.Success)
-        assertNull((result as JmxResult.Success).value)
+        assertTrue(result is JmxResult.Failure)
+        assertTrue((result as JmxResult.Failure).error is JmxError.EmptyData)
+        assertEquals(1, primary.requestCount)
+        assertEquals(0, secondary.requestCount)
     }
 
+    @Test
+    fun emptyObjectIsAmbiguousNotAnInactiveEvent() = runBlocking {
+        val api = LibraryApi(createClient(singleLine = true))
+        primary.enqueue(encryptedResponse("{}"))
+        val result = api.dailyInfo("42")
+        assertTrue(result is JmxResult.Failure)
+        assertTrue((result as JmxResult.Failure).error is JmxError.EmptyData)
+    }
     @Test
     fun dailyInfoFailsOnBusinessErrorCode() = runBlocking {
         val api = LibraryApi(createClient(singleLine = true))

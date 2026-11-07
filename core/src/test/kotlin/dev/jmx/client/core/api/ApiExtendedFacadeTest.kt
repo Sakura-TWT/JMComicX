@@ -198,9 +198,9 @@ class ApiExtendedFacadeTest {
     @Test
     fun libraryApiPagesSupportedPromoteSectionTypes() {
         val api = LibraryApi(createClient())
-        server.enqueue(encryptedResponse("""{"total":90,"content":[{"id":"29-1","name":"promoted"}]}"""))
-        server.enqueue(encryptedResponse("""{"total":80,"content":[{"id":"han-1","name":"hanman"}]}"""))
-        server.enqueue(encryptedResponse("""{"total":40,"content":[{"id":"group-1","name":"group"}]}"""))
+        server.enqueue(encryptedResponse("""{"total":90,"content":[{"id":"291","name":"promoted"}]}"""))
+        server.enqueue(encryptedResponse("""{"total":80,"content":[{"id":"801","name":"hanman"}]}"""))
+        server.enqueue(encryptedResponse("""{"total":40,"content":[{"id":"401","name":"group"}]}"""))
 
         val promoted = kotlinx.coroutines.runBlocking {
             api.promotedSectionPage(

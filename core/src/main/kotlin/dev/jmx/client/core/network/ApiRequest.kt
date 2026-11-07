@@ -8,7 +8,10 @@ data class ApiRequest(
     val form: Map<String, String?> = emptyMap(),
     val headers: Map<String, String> = emptyMap(),
     val requireSuccessCode: Boolean = true,
-    val excludedEndpointUrl: String? = null
+    val excludedEndpointUrl: String? = null,
+    val forceRefresh: Boolean = false,
+    /** Captured on entry, never read again after queue waits. Not itself a wire parameter. */
+    val contentLanguageSnapshot: String? = null,
 )
 
 class ApiRequestBuilder(private val route: ApiRoute) {
@@ -17,6 +20,10 @@ class ApiRequestBuilder(private val route: ApiRoute) {
     private val headers = linkedMapOf<String, String>()
     private var requireSuccessCode: Boolean = true
     private var excludedEndpointUrl: String? = null
+    private var forceRefresh: Boolean = false
+
+    /** Bypass fresh/stale response-cache reads without changing wire parameters. */
+    fun forceRefresh(enabled: Boolean = true): ApiRequestBuilder = apply { forceRefresh = enabled }
 
     fun query(name: String, value: String?): ApiRequestBuilder = apply {
         putOrRemove(query, name, value)
@@ -57,7 +64,8 @@ class ApiRequestBuilder(private val route: ApiRoute) {
             form = form.toMap(),
             headers = headers.toMap(),
             requireSuccessCode = requireSuccessCode,
-            excludedEndpointUrl = excludedEndpointUrl
+            excludedEndpointUrl = excludedEndpointUrl,
+            forceRefresh = forceRefresh
         )
     }
 
@@ -79,13 +87,9 @@ fun apiRequest(route: ApiRoute, configure: ApiRequestBuilder.() -> Unit = {}): A
  * 不含 headers，避免登录态恢复重放时把不同会话的请求错误合并。
  */
 fun ApiRequest.dedupKey(): String {
-    val queryPart = query.entries
-        .filter { it.value != null }
-        .sortedBy { it.key }
-        .joinToString("&") { "${it.key}=${it.value}" }
-    val formPart = form.entries
-        .filter { it.value != null }
-        .sortedBy { it.key }
-        .joinToString("&") { "${it.key}=${it.value}" }
-    return "${route.method.name} ${route.path}?$queryPart#$formPart"
+    fun part(values: Map<String, String?>): String = values.entries.filter { it.value != null }.sortedBy { it.key }
+        .joinToString("&") { "${it.key.keyEncode()}=${it.value!!.keyEncode()}" }
+    return "${route.method.name} ${route.path}?${part(query)}#${part(form)}"
 }
+
+private fun String.keyEncode(): String = java.net.URLEncoder.encode(this, java.nio.charset.StandardCharsets.UTF_8)
