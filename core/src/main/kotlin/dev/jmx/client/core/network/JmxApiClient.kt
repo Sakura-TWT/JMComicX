@@ -7,14 +7,21 @@ import dev.jmx.client.core.result.NetworkExchange
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.SupervisorJob
+import dev.jmx.client.core.protocol.HttpMethod
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.CookieJar
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 class JmxApiClient(
     private val httpClient: JmxHttpClient,
@@ -31,14 +38,26 @@ class JmxApiClient(
     private val cacheNamespace: () -> String = { "" },
     private val cacheGeneration: () -> String = { "" },
     private val nowMillis: () -> Long = { System.currentTimeMillis() },
+    private val sharedScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    private val workGeneration: () -> Long = { 0L },
+    private val metrics: RequestMetricsRecorder? = null,
 ) {
-    private val inFlightRequests = ConcurrentHashMap<String, CompletableDeferred<JmxResult<JsonElement>>>()
-    private val deduplicatedRequests = AtomicInteger(0)
+    private val sharedReads = SharedReadRequests<JmxResult<JsonElement>>(sharedScope)
+    private val revalidations = ConcurrentHashMap<String, Job>()
+    private class CacheEpoch {
+        val users = AtomicInteger()
+        val mutex = Mutex()
+        var latest = 0L
+        var written: JsonElement? = null
+    }
+    private val cacheEpochs = ConcurrentHashMap<String, CacheEpoch>()
+    private val refreshSequence = AtomicLong()
     private val cacheHits = AtomicInteger(0)
     private val staleServedRequests = AtomicInteger(0)
 
     /** 因并发去重而免于重复发出的请求数，用于评估去重收益 */
-    val deduplicatedRequestCount: Int get() = deduplicatedRequests.get()
+    val deduplicatedRequestCount: Int get() = sharedReads.joinedCount.get()
+    val activeSharedReadCount: Int get() = sharedReads.activeCount
 
     /** 命中磁盘缓存（新鲜或过期可用）而免于阻塞出网的请求数 */
     val cacheHitCount: Int get() = cacheHits.get()
@@ -57,17 +76,29 @@ class JmxApiClient(
             revalidationScope = revalidationScope,
             cacheNamespace = cacheNamespace,
             cacheGeneration = cacheGeneration,
-            nowMillis = nowMillis
+            nowMillis = nowMillis,
+            sharedScope = sharedScope,
+            workGeneration = workGeneration,
+            metrics = metrics,
         )
     }
 
-    suspend fun requestJson(request: ApiRequest): JmxResult<JsonElement> {
+    suspend fun requestJson(request: ApiRequest): JmxResult<JsonElement> = requestJsonSnapshot(httpClient.snapshot(request))
+
+    private suspend fun requestJsonSnapshot(request: ApiRequest): JmxResult<JsonElement> {
+        val namespace = cacheNamespace()
+        val generation = cacheGeneration()
+        val identity = listOf(namespace, generation, workGeneration().toString(), request.contentLanguageSnapshot.orEmpty())
+            .joinToString("") { "${it.length}:$it" }
         val cache = responseCache
         val rule = cachePolicy?.ruleFor(request)
-        if (cache == null || rule == null) return requestJsonDeduplicated(request)
+        if (cache == null || rule == null) return requestJsonDeduplicated(request, identity = identity)
 
-        val key = cacheKey(request)
-        val cached = readCache(cache, key)
+        val key = "$namespace|${request.dedupKey()}"
+        val cached = if (request.forceRefresh) null else {
+            val started = System.nanoTime()
+            readCache(cache, key, generation).also { metrics?.stage(request.route.path, LoadStage.CACHE_READ, System.nanoTime() - started) }
+        }
         if (cached != null) {
             val (age, parsed) = cached
             if (age < rule.freshMillis) {
@@ -78,14 +109,37 @@ class JmxApiClient(
                 cacheHits.incrementAndGet()
                 staleServedRequests.incrementAndGet()
                 // 先出旧内容再后台校验：去重表保证同一请求不会因此发出两份。
-                revalidationScope?.launch { revalidate(request, key) }
+                scheduleRevalidation(request, key, generation, identity)
                 return JmxResult.Success(parsed)
             }
         }
 
-        val result = requestJsonDeduplicated(request)
-        if (result is JmxResult.Success) writeCache(cache, key, result.value)
-        return result
+        return fetchAndCache(request, key, generation, identity)
+    }
+
+    /** Only active keys occupy memory. A pre-refresh read cannot commit after a newer refresh. */
+    private suspend fun fetchAndCache(request: ApiRequest, key: String, generation: String, identity: String): JmxResult<JsonElement> {
+        val cache = responseCache ?: return requestJsonDeduplicated(request, identity = identity)
+        val epoch = cacheEpochs.compute(key) { _, existing -> (existing ?: CacheEpoch()).also { it.users.incrementAndGet() } }!!
+        try {
+            val ticket = withContext(NonCancellable) {
+                epoch.mutex.withLock {
+                    if (request.forceRefresh) epoch.latest = refreshSequence.incrementAndGet()
+                    epoch.latest
+                }
+            }
+            val result = requestJsonDeduplicated(request, ticket, identity)
+            if (result is JmxResult.Success) {
+                val started = System.nanoTime()
+                writeCache(cache, key, result.value, epoch, ticket, generation)
+                metrics?.stage(request.route.path, LoadStage.CACHE_WRITE, System.nanoTime() - started)
+            }
+            return result
+        } finally {
+            cacheEpochs.compute(key) { _, current ->
+                if (current !== epoch) current else if (epoch.users.decrementAndGet() == 0) null else epoch
+            }
+        }
     }
 
     /**
@@ -94,59 +148,44 @@ class JmxApiClient(
      * 读要碰磁盘、解析要走一遍 Gson，调用方却是 Compose 的 LaunchedEffect（主线程）。
      * 返回 age 而不是 Entry，是为了让 [nowMillis] 与解析结果在同一次快照里取齐。
      */
-    private suspend fun readCache(cache: JsonResponseCache, key: String): Pair<Long, JsonElement>? =
-        withContext(Dispatchers.IO) {
-            val entry = cache.read(key) ?: return@withContext null
-            if (entry.generation != cacheGeneration()) return@withContext null
+    private suspend fun readCache(cache: JsonResponseCache, key: String, generation: String): Pair<Long, JsonElement>? {
+        val entry = withContext(Dispatchers.IO) { cache.read(key) } ?: return null
+        if (entry.generation != generation) return null
+        return withContext(PROCESSING_DISPATCHER) {
             val parsed = entry.json.parseJsonOrNull() ?: return@withContext null
             entry.ageMillis(nowMillis()) to parsed
         }
+    }
 
     /** 写缓存：`toString()` 要把整棵树重新序列化（首页一次几十上百 KB），加上落盘，同样不能留在主线程。 */
-    private suspend fun writeCache(cache: JsonResponseCache, key: String, value: JsonElement) {
-        withContext(Dispatchers.IO) { cache.write(key, value.toString(), cacheGeneration()) }
-    }
-
-    private suspend fun revalidate(request: ApiRequest, key: String) {
-        val cache = responseCache ?: return
-        when (val result = requestJsonDeduplicated(request)) {
-            is JmxResult.Success -> writeCache(cache, key, result.value)
-            // 后台校验失败不做任何事：旧内容继续可用，下次前台请求再决定要不要报错。
-            is JmxResult.Failure -> Unit
-        }
-    }
-
-    private fun cacheKey(request: ApiRequest): String = "${cacheNamespace()}|${request.dedupKey()}"
-
-    private suspend fun requestJsonDeduplicated(request: ApiRequest): JmxResult<JsonElement> {
-        if (!deduplicateInFlightRequests) return requestJsonDirect(request)
-        val key = request.dedupKey()
-        while (true) {
-            inFlightRequests[key]?.let {
-                deduplicatedRequests.incrementAndGet()
-                return it.await()
-            }
-            val mine = CompletableDeferred<JmxResult<JsonElement>>()
-            val existing = inFlightRequests.putIfAbsent(key, mine)
-            if (existing != null) {
-                deduplicatedRequests.incrementAndGet()
-                return existing.await()
-            }
-            try {
-                val result = requestJsonDirect(request)
-                mine.complete(result)
-                return result
-            } catch (cancelled: CancellationException) {
-                // 发起方取消不应传染给共享同一请求的等待方
-                mine.complete(JmxResult.Failure(JmxError.Network("共享请求被发起方取消")))
-                throw cancelled
-            } catch (t: Throwable) {
-                mine.completeExceptionally(t)
-                throw t
-            } finally {
-                inFlightRequests.remove(key, mine)
+    private suspend fun writeCache(cache: JsonResponseCache, key: String, value: JsonElement, epoch: CacheEpoch, ticket: Long, generation: String) {
+        withContext(Dispatchers.IO) {
+            epoch.mutex.withLock {
+                if (epoch.latest == ticket && epoch.written !== value && cacheGeneration() == generation) {
+                    cache.write(key, value.toString(), generation)
+                    epoch.written = value
+                }
             }
         }
+    }
+
+    private fun scheduleRevalidation(request: ApiRequest, key: String, generation: String, identity: String) {
+        val scope = revalidationScope ?: return
+        val task = scope.launch(start = CoroutineStart.LAZY) {
+            backgroundNetwork { if (cacheGeneration() == generation) fetchAndCache(request, key, generation, identity) }
+        }
+        val existing = revalidations.putIfAbsent("$generation|$key", task)
+        if (existing != null) { task.cancel(); return }
+        task.invokeOnCompletion { revalidations.remove("$generation|$key", task) }
+        task.start()
+    }
+
+    private suspend fun requestJsonDeduplicated(request: ApiRequest, cacheEpoch: Long = 0, identity: String): JmxResult<JsonElement> {
+        // Separate write intents must never be merged (particularly favorite toggles).
+        if (!deduplicateInFlightRequests || request.route.method != HttpMethod.Get) return requestJsonDirect(request)
+        val key = "$identity|" + request.dedupKey() +
+            (if (request.forceRefresh) "|refresh" else "") + (if (cacheEpoch != 0L) "|epoch=$cacheEpoch" else "")
+        return sharedReads.await(key) { requestJsonDirect(request) }
     }
 
     private suspend fun requestJsonDirect(request: ApiRequest): JmxResult<JsonElement> {
@@ -164,14 +203,15 @@ class JmxApiClient(
         val exchange = raw.toExchange(request)
         // 解密是 AES + Base64，紧接着还要 Gson 解析整份响应；首页/收藏一页就有几十上百 KB。
         // 这段必须离开调用方线程（Compose 的 LaunchedEffect 跑在主线程上）。
+        val decodeStarted = System.nanoTime()
         val envelope = when (
-            val decoded = withContext(Dispatchers.IO) {
+            val decoded = withContext(PROCESSING_DISPATCHER) {
                 if (request.route.encryptedJson) {
                     responseDecoder.decodeEncryptedEnvelope(raw.body, raw.tokenTimestampSeconds)
                 } else {
                     responseDecoder.decodePlainEnvelope(raw.body)
                 }
-            }
+            }.also { metrics?.stage(request.route.path, LoadStage.DECODE, System.nanoTime() - decodeStarted) }
         ) {
             is JmxResult.Success -> decoded.value
             is JmxResult.Failure -> return JmxResult.Failure(decoded.error.withExchange(exchange))
@@ -217,6 +257,9 @@ class JmxApiClient(
             tokenTimestampSeconds = tokenTimestampSeconds,
             bodySample = bodySampler.sample(body)
         )
+    }
+    private companion object {
+        val PROCESSING_DISPATCHER = Dispatchers.Default.limitedParallelism(4)
     }
 }
 

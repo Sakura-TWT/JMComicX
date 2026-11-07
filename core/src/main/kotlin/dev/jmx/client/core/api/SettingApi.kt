@@ -15,7 +15,8 @@ import dev.jmx.client.core.result.JmxResult
 class SettingApi(
     private val apiClient: JmxApiClient,
     private val apiVersionProvider: ApiVersionProvider,
-    private val onApiVersionChanged: (String) -> Unit = {}
+    private val onApiVersionChanged: (String) -> Unit = {},
+    private val onSettingFetched: (RemoteSetting) -> Unit = {},
 ) {
     suspend fun fetchSetting(): JmxResult<RemoteSetting> {
         val data = when (val result = apiClient.requestJson(apiRequest(ApiRoute.Setting))) {
@@ -42,7 +43,7 @@ class SettingApi(
                 apiVersion = version,
                 imageHost = root.stringOrNull("img_host", "imgHost"),
                 shunts = shunts
-            )
+            ).also(onSettingFetched)
         )
     }
 }

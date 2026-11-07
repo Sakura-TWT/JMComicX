@@ -102,27 +102,27 @@ class LibraryApi(
         }
     }
 
-    suspend fun week(): JmxResult<WeekInfo> {
-        val data = when (val result = apiClient.requestJson(apiRequest(ApiRoute.Week))) {
+    suspend fun week(forceRefresh: Boolean = false): JmxResult<WeekInfo> {
+        val data = when (val result = apiClient.requestJson(apiRequest(ApiRoute.Week) { this.forceRefresh(forceRefresh) })) {
             is JmxResult.Success -> result.value
             is JmxResult.Failure -> return result
         }
         val root = data.asObjectOrNull()
             ?: return JmxResult.Failure(JmxError.Schema("/week data is not an object"))
-        return JmxResult.Success(root.toWeekInfo())
+        return root.discoveryWeekInfo()
     }
 
-    suspend fun weekFilter(page: Int, categoryId: String, typeId: String): JmxResult<AlbumPage> {
-        return albumPage(ApiRoute.WeekFilter) {
+    suspend fun weekFilter(page: Int, categoryId: String, typeId: String, forceRefresh: Boolean = false): JmxResult<AlbumPage> {
+        if (categoryId.isBlank() || typeId.isBlank()) return JmxResult.Failure(JmxError.Schema("每周必看缺少筛选项", field = "id/type"))
+        return albumPage(ApiRoute.WeekFilter, forceRefresh = forceRefresh) {
             queryAtLeast("page", page, minimum = 1)
             query("id", categoryId)
             query("type", typeId)
         }
     }
 
-    suspend fun categoriesFilter(filter: CategoryFilter): JmxResult<AlbumPage> {
-
-        return albumPage(ApiRoute.CategoriesFilter) {
+    suspend fun categoriesFilter(filter: CategoryFilter, forceRefresh: Boolean = false): JmxResult<AlbumPage> {
+        return albumPage(ApiRoute.CategoriesFilter, forceRefresh = forceRefresh) {
             queryAtLeast("page", filter.page, minimum = 1)
             query("order", "")
             query("c", filter.category)
@@ -164,8 +164,56 @@ class LibraryApi(
     }
 
     suspend fun watchList(page: Int): JmxResult<AlbumPage> {
-        return albumPage(ApiRoute.WatchList) {
+        val data = when (val result = apiClient.requestJson(apiRequest(ApiRoute.WatchList) {
             queryAtLeast("page", page, minimum = 1)
+        })) {
+            is JmxResult.Failure -> return result
+            is JmxResult.Success -> result.value
+        }
+        val list = when {
+            data.isJsonArray -> data.asJsonArray
+            data.isJsonObject -> listOf("content", "list", "data", "albums", "photos")
+                .firstNotNullOfOrNull { data.asJsonObject.get(it)?.takeUnless { value -> value.isJsonNull } }
+                ?.takeIf { it.isJsonArray }?.asJsonArray
+            else -> null
+        } ?: return JmxResult.Failure(JmxError.Schema("观看记录列表缺失，不能确认记录为空", field = "content"))
+        if (list.any { !it.isJsonObject }) return JmxResult.Failure(JmxError.Schema("观看记录列表含不明条目", field = "content"))
+        val albums = list.map { it.asJsonObject.toAlbumSummary() }
+        if (albums.any { it.id.isBlank() }) return JmxResult.Failure(JmxError.Schema("观看记录缺少漫画编号", field = "id"))
+        val total = if (data.isJsonObject) data.asJsonObject.intOrNull("total") else null
+        if (total != null && total < albums.size) return JmxResult.Failure(JmxError.Schema("观看记录总数不一致", field = "total"))
+        return JmxResult.Success(AlbumPage(total, albums, data.asObjectOrNull()?.toRawMap() ?: mapOf("content" to data.toString())))
+    }
+    /** 删除一条观看记录。移动端 POST `/watch_list`，表单 `id` 为漫画编号。 */
+    suspend fun deleteWatchHistory(albumId: String): JmxResult<Unit> {
+        val id = watchHistoryDeleteIdOrNull(albumId)
+            ?: return JmxResult.Failure(JmxError.Schema("漫画编号无效", field = "id"))
+        return postWatchHistoryRemoval(id)
+    }
+
+    private suspend fun postWatchHistoryRemoval(id: String): JmxResult<Unit> {
+        return when (
+            val result = apiClient.requestJson(
+                apiRequest(ApiRoute.WatchListAction) {
+                    form("id", id)
+                }
+            )
+        ) {
+            is JmxResult.Success -> {
+                val action = result.value.asObjectOrNull()?.toActionResult()
+                if (action?.acceptsHistoryRemoval() == true) {
+                    JmxResult.Success(Unit)
+                } else {
+                    JmxResult.Failure(
+                        if (action?.status.isNullOrBlank()) JmxError.EmptyData("观看记录删除尚未确认，需要重新查询")
+                        else JmxError.Schema(action.message ?: "观看记录未删除", field = "status")
+                    )
+                }
+            }
+            is JmxResult.Failure -> when {
+                result.error is JmxError.Schema && result.error.field == "data" -> JmxResult.Failure(JmxError.EmptyData("观看记录删除返回不明载荷，需要重新查询"))
+                else -> result
+            }
         }
     }
 
@@ -187,74 +235,20 @@ class LibraryApi(
         return JmxResult.Success(root.toCommentPage())
     }
 
-    /**
-     * 查询签到活动。Success(null) 表示服务端确认没有进行中的签到活动（空载荷）：
-     * 首次遇到空载荷会换一条线路交叉验证，两条线路都为空才认定无活动，
-     * 之后同一进程内不再重复交叉验证。
-     */
+    /** Empty data is ambiguous until the account layer has verified a fresh session. */
     suspend fun dailyInfo(userId: String): JmxResult<DailyCheckInfo?> {
         if (userId.isBlank()) return JmxResult.Failure(JmxError.Schema("userId is blank", field = "userId"))
-        return when (val outcome = requestDailyData(userId, excludedEndpointUrl = null)) {
-            is DailyDataOutcome.Data -> JmxResult.Success(outcome.root.toDailyCheckInfo())
-            is DailyDataOutcome.Empty -> resolveEmptyDailyPayload(userId, outcome.usedEndpointUrl)
-            is DailyDataOutcome.Error -> JmxResult.Failure(outcome.error)
-        }
-    }
-
-    @Volatile
-    private var dailyEmptyPayloadConfirmedAcrossEndpoints = false
-
-    private suspend fun resolveEmptyDailyPayload(
-        userId: String,
-        usedEndpointUrl: String?
-    ): JmxResult<DailyCheckInfo?> {
-        if (usedEndpointUrl == null || dailyEmptyPayloadConfirmedAcrossEndpoints) {
-            return JmxResult.Success(null)
-        }
-        return when (val retry = requestDailyData(userId, excludedEndpointUrl = usedEndpointUrl)) {
-            is DailyDataOutcome.Data -> JmxResult.Success(retry.root.toDailyCheckInfo())
-            is DailyDataOutcome.Empty -> {
-                dailyEmptyPayloadConfirmedAcrossEndpoints = true
-                JmxResult.Success(null)
-            }
-            is DailyDataOutcome.Error -> JmxResult.Failure(retry.error)
-        }
-    }
-
-    private suspend fun requestDailyData(userId: String, excludedEndpointUrl: String?): DailyDataOutcome {
-        return when (
-            val result = apiClient.requestJsonResponse(
-                apiRequest(ApiRoute.Daily) {
-                    query("user_id", userId)
-                    excludeEndpointUrl(excludedEndpointUrl)
-                }
-            )
-        ) {
-            is JmxResult.Failure -> when (result.error) {
-                is JmxError.EmptyData -> DailyDataOutcome.Empty(
-                    usedEndpointUrl = result.error.exchange?.requestUrl
-                )
-                else -> DailyDataOutcome.Error(result.error)
-            }
+        return when (val result = apiClient.requestJson(apiRequest(ApiRoute.Daily) { query("user_id", userId) })) {
+            is JmxResult.Failure -> result
             is JmxResult.Success -> {
-                val element = result.value.data
-                when {
-                    element.isJsonObject -> DailyDataOutcome.Data(element.asJsonObject)
-                    element.isJsonNull -> DailyDataOutcome.Empty(
-                        usedEndpointUrl = result.value.exchange.requestUrl
-                    )
-                    else -> DailyDataOutcome.Error(JmxError.Schema("daily data is not an object"))
-                }
+                val root = result.value.asObjectOrNull()
+                    ?: return JmxResult.Failure(JmxError.Schema("daily data is not an object"))
+                val info = root.toDailyCheckInfo()
+                if (info.dailyId == null && info.records.isEmpty()) JmxResult.Failure(JmxError.EmptyData("签到活动信息缺失，需要确认会话"))
+                else JmxResult.Success(info)
             }
         }
     }
-
-    private sealed interface DailyDataOutcome {
-        data class Data(val root: com.google.gson.JsonObject) : DailyDataOutcome
-        data class Empty(val usedEndpointUrl: String?) : DailyDataOutcome
-        data class Error(val error: JmxError) : DailyDataOutcome
-    }
-
     suspend fun dailyCheck(userId: String, dailyId: String): JmxResult<ActionResult> {
         if (userId.isBlank()) return JmxResult.Failure(JmxError.Schema("userId is blank", field = "userId"))
         if (dailyId.isBlank()) return JmxResult.Failure(JmxError.Schema("dailyId is blank", field = "dailyId"))
@@ -276,12 +270,14 @@ class LibraryApi(
 
     private suspend fun albumPage(
         route: ApiRoute,
+        forceRefresh: Boolean = false,
         build: ApiRequestBuilder.() -> Unit
     ): JmxResult<AlbumPage> {
-        val data = when (val result = apiClient.requestJson(apiRequest(route, build))) {
+        val data = when (val result = apiClient.requestJson(apiRequest(route, build).copy(forceRefresh = forceRefresh))) {
             is JmxResult.Success -> result.value
             is JmxResult.Failure -> return result
         }
+        if (route == ApiRoute.WeekFilter || route == ApiRoute.CategoriesFilter) return data.discoveryPage()
         return data.toAlbumPageOrNull()
             ?.let { JmxResult.Success(it) }
             ?: JmxResult.Failure(JmxError.Schema("${route.path} data is not object or array"))
@@ -307,3 +303,16 @@ class LibraryApi(
             ?: emptyList()
     }
 }
+
+/** 缺失状态需要读回验证，只有明确状态才算写请求已确认。 */
+internal fun ActionResult.acceptsHistoryRemoval(): Boolean {
+    val normalized = status?.trim()?.lowercase()
+    return normalized in HISTORY_REMOVAL_SUCCESS
+}
+
+/** 只接受纯数字漫画编号，避免把清空哨兵或其他字段误当成单条删除。 */
+internal fun watchHistoryDeleteIdOrNull(albumId: String): String? =
+    albumId.trim().takeIf { it.matches(WATCH_HISTORY_ID) }
+
+private val HISTORY_REMOVAL_SUCCESS = setOf("ok", "success", "1", "true")
+private val WATCH_HISTORY_ID = Regex("[0-9]+")

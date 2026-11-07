@@ -3,14 +3,18 @@ package dev.jmx.client.core.session
 import dev.jmx.client.core.network.normalizedBaseUrlOrNull
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.JmxResult
+import java.util.concurrent.atomic.AtomicLong
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 class SessionManager(
     private val cookieStore: CookieStore
 ) {
+    private val epoch = AtomicLong()
+    val generation: Long get() = epoch.get()
     fun clear() {
         cookieStore.clear()
+        epoch.incrementAndGet()
     }
 
     fun installAvsCookie(apiHost: String, avs: String): JmxResult<Cookie> {
@@ -27,7 +31,9 @@ class SessionManager(
             .path("/")
             .httpOnly()
             .build()
+        val previous = currentAvsValue()
         cookieStore.save(url, listOf(cookie))
+        if (previous != avs) epoch.incrementAndGet()
         return JmxResult.Success(cookie)
     }
 
@@ -62,7 +68,9 @@ class SessionManager(
         if (cookies.isEmpty()) return JmxResult.Success(emptyList())
         val url = requestUrl.toHttpUrlOrNull()
             ?: return JmxResult.Failure(JmxError.Domain("Cookie commit URL is invalid", endpoint = requestUrl))
+        val previous = currentAvsValue()
         cookieStore.save(url, cookies)
+        if (previous != currentAvsValue()) epoch.incrementAndGet()
         return JmxResult.Success(cookies)
     }
 

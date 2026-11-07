@@ -2,74 +2,66 @@ package dev.jmx.client
 
 import dev.jmx.client.core.result.JmxResult
 import dev.jmx.client.core.runtime.JmxCore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicInteger
 
-internal data class AlbumUpdateScanResult(
-    val scanned: Int,
-    val failed: Int,
-    val pendingAlbums: Int,
-) {
+internal data class AlbumUpdateScanResult(val scanned: Int, val failed: Int, val pendingAlbums: Int, val completed: Boolean = failed == 0) {
     val attempted: Int get() = scanned + failed
 }
 
-/**
- * 更新扫描器。
- *
- * 为什么必须逐部拉 `/album`：收藏列表和书架里都只有 id/name/author/imageCount，
- * 服务端没有给任何"最后更新时间"或"章节数"字段（Python 参考实现里 `addtime` 只出现在评论上），
- * 所以"更新了几话"只能靠 `/album` 的章节列表长度和本地基线比出来。
- *
- * 代价用两件事压住：并发上限 [SCAN_CONCURRENCY]，以及调用方的最小扫描间隔。
- */
-internal class AlbumUpdateScanner(
-    private val core: JmxCore,
-    private val store: AlbumUpdateStore,
-) {
-    /**
-     * 扫一批漫画。
-     *
-     * [albumIds] 由调用方决定范围（书架条目 ∪ 收藏），这里不关心它们从哪来。
-     * 单部失败只记一笔 [AlbumUpdateScanResult.failed]，不影响其余部分——
-     * 网络抖一下就把整轮扫描判死会让红点时有时无。
-     */
-    suspend fun scan(albumIds: Collection<String>): AlbumUpdateScanResult = withContext(Dispatchers.IO) {
-        val targets = albumIds.map(String::trim).filter(String::isNotEmpty).distinct()
-        if (targets.isEmpty()) {
-            store.setLastScanAt(System.currentTimeMillis())
-            return@withContext AlbumUpdateScanResult(0, 0, store.pendingAlbumCount())
-        }
-        val semaphore = Semaphore(SCAN_CONCURRENCY)
-        val counts = coroutineScope {
-            targets.map { albumId ->
-                async {
-                    semaphore.withPermit {
-                        albumId to chapterCountOf(albumId)
-                    }
-                }
-            }.awaitAll()
-        }
-        val resolved = counts.mapNotNull { (id, count) -> count?.let { id to it } }.toMap()
-        store.observeAll(resolved)
-        store.setLastScanAt(System.currentTimeMillis())
-        AlbumUpdateScanResult(
-            scanned = resolved.size,
-            failed = targets.size - resolved.size,
-            pendingAlbums = store.pendingAlbumCount(),
-        )
-    }
-
-    private suspend fun chapterCountOf(albumId: String): Int? =
-        when (val result = core.albumApi.detailFull(albumId)) {
-            is JmxResult.Success -> result.value.readingChapters().size
-            is JmxResult.Failure -> null
-        }
+internal interface AlbumUpdateObservations {
+    fun records(): Map<String, AlbumUpdateRecord>
+    fun observe(albumId: String, chapterCount: Int, at: Long)
 }
 
-/** 并发上限。JM 对并发敏感，这里取和详情页统计页数相同的量级，别把服务端惹毛。 */
-private const val SCAN_CONCURRENCY = 4
+/** Partial observations survive cancellation. Oldest observations are retried first. */
+internal class AlbumUpdateScanner(
+    private val store: AlbumUpdateObservations,
+    private val loadChapterCount: suspend (String) -> Int?,
+    private val roundTimeoutMillis: Long = 60_000L,
+    private val itemTimeoutMillis: Long = 15_000L,
+    private val observationTime: () -> Long = System::currentTimeMillis,
+) {
+    constructor(core: JmxCore, store: AlbumUpdateStore) : this(
+        store = store,
+        loadChapterCount = { id -> (core.albumApi.detailFull(id) as? JmxResult.Success)?.value?.readingChapters()?.size },
+        observationTime = store::nextObservationTime,
+    )
+
+    suspend fun scan(albumIds: Collection<String>, onProgress: () -> Unit = {}): AlbumUpdateScanResult = withContext(Dispatchers.IO) {
+        val records = store.records()
+        val targets = albumIds.map(String::trim).filter(String::isNotEmpty).distinct()
+            .sortedBy { records[it]?.checkedAt ?: 0L }
+        val scanned = AtomicInteger(0)
+        withTimeoutOrNull(roundTimeoutMillis) {
+            coroutineScope {
+                val cursor = java.util.concurrent.atomic.AtomicInteger()
+                (0 until minOf(4, targets.size)).map { async {
+                    while (true) {
+                        val index = cursor.getAndIncrement()
+                        if (index >= targets.size) break
+                        val id = targets[index]
+                        val observedAt = observationTime()
+                        val count = try {
+                            withTimeoutOrNull(itemTimeoutMillis) { loadChapterCount(id) }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) { null }
+                        if (count != null && count >= 0) {
+                            store.observe(id, count, observedAt)
+                            scanned.incrementAndGet()
+                            onProgress()
+                        }
+                    }
+                } }.awaitAll()
+            }
+        }
+        AlbumUpdateScanResult(scanned.get(), targets.size - scanned.get(), store.records().values.count(AlbumUpdateRecord::hasUpdate))
+    }
+}

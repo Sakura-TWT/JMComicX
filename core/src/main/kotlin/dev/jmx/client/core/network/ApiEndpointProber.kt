@@ -7,6 +7,7 @@ import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.result.JmxError
 import dev.jmx.client.core.result.NetworkExchange
 import dev.jmx.client.core.result.JmxResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -43,6 +44,11 @@ class ApiEndpointProber(
      */
     private val queryLanguageProvider: () -> String? = { null }
 ) {
+    // Separate dispatcher, same pool/TLS configuration: diagnostic probes cannot clog business enqueue.
+    private val probeClient = okHttpClient.newBuilder().dispatcher(okhttp3.Dispatcher().apply {
+        maxRequests = 4; maxRequestsPerHost = 2
+    }).build()
+
     suspend fun probeAll(route: ApiRoute = ApiRoute.Setting): List<ApiEndpointProbeResult> {
         val endpoints = endpointManager.all().map { it.url }
         return coroutineScope {
@@ -62,8 +68,8 @@ class ApiEndpointProber(
             )
             val request = buildRequest(requestUrl, route, token.token, token.tokenParam)
             runCatching {
-                okHttpClient.newCall(request).execute().use { response ->
-                    val body = response.body.string()
+                probeClient.newCall(request).awaitConsumedResponse { response ->
+                    val body = response.body.readBoundedText()
                     val latencyMillis = elapsedMillisSince(startedAt)
                     val exchange = NetworkExchange(
                         route = route.path,
@@ -98,6 +104,7 @@ class ApiEndpointProber(
                     }
                 }
             }.getOrElse {
+                if (it is CancellationException) throw it
                 val latencyMillis = elapsedMillisSince(startedAt)
                 val error = it.toJmxNetworkError()
                 endpointManager.markFailure(url, error.message)

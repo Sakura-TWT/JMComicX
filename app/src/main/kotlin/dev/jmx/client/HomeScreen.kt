@@ -67,7 +67,7 @@ import dev.jmx.client.core.api.HomePromoteSection
 import dev.jmx.client.core.image.ImageUrl
 import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.result.JmxResult
-import dev.jmx.client.core.runtime.InitStepResult
+import dev.jmx.client.core.runtime.publicRead
 import dev.jmx.client.core.runtime.JmxCore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -78,7 +78,6 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -596,13 +595,8 @@ internal class HomeRepository(
      */
     suspend fun load(preloadCategoryId: String? = null): HomeUiState = withContext(Dispatchers.IO) {
         try {
-            val init = core.initializer.initialize()
-            imageHosts.rememberRemoteHost(
-                (init.settingFetch as? InitStepResult.Success)?.value?.imageHost,
-            )
-            val imageHost = currentImageHost
-            when (val result = core.libraryApi.promotedSections()) {
-                is JmxResult.Success -> result.value.toHomeState(imageHost, preloadCategoryId)
+            when (val result = core.publicRead { core.libraryApi.promotedSections() }) {
+                is JmxResult.Success -> result.value.toHomeState(currentImageHost, preloadCategoryId)
                 is JmxResult.Failure -> HomeUiState.Error(result.error.toUiMessage())
             }
         } catch (error: CancellationException) {
@@ -684,33 +678,19 @@ internal class HomeRepository(
         )
     }
 
-    private fun warmUpCovers(albums: List<HomeAlbum>) {
-        if (albums.isEmpty()) return
-        coverWarmUpScope.launch {
-            runCatching { preloadCovers(albums) }
+    private val coverScheduler by lazy {
+        ReaderWorkScheduler<HomeAlbum>(coverWarmUpScope) { album ->
+            withTimeoutOrNull(COVER_PRELOAD_TIMEOUT_MILLIS) {
+                ImageWorkBudgets.prefetch.withPermit {
+                    val request = ImageRequest.Builder(applicationContext)
+                        .data(album.coverUrl).httpHeaders(albumCoverHeaders)
+                        .size(COVER_PRELOAD_WIDTH_PX, COVER_PRELOAD_HEIGHT_PX).precision(Precision.INEXACT).build()
+                    imageLoader.execute(request) is coil3.request.SuccessResult
+                }
+            } == true
         }
     }
-
-    private suspend fun preloadCovers(albums: List<HomeAlbum>) {
-        withTimeoutOrNull(COVER_PRELOAD_TIMEOUT_MILLIS) {
-            coroutineScope {
-                val semaphore = Semaphore(COVER_PRELOAD_CONCURRENCY)
-                albums.map { album ->
-                    async {
-                        semaphore.withPermit {
-                            val request = ImageRequest.Builder(applicationContext)
-                                .data(album.coverUrl)
-                                .httpHeaders(albumCoverHeaders)
-                                .size(COVER_PRELOAD_WIDTH_PX, COVER_PRELOAD_HEIGHT_PX)
-                                .precision(Precision.INEXACT)
-                                .build()
-                            imageLoader.execute(request)
-                        }
-                    }
-                }.awaitAll()
-            }
-        }
-    }
+    private fun warmUpCovers(albums: List<HomeAlbum>) = coverScheduler.update(albums)
 }
 
 internal sealed interface HomeUiState {
@@ -796,7 +776,6 @@ private val albumCoverHeaders: NetworkHeaders = NetworkHeaders.Builder()
     .build()
 
 // 预热并发刻意低于可见封面请求可用的网络容量，让首屏可见项优先获得带宽
-private const val COVER_PRELOAD_CONCURRENCY = 4
 private const val INITIAL_COVER_PRELOAD_COUNT = 12
 private const val LOAD_MORE_COVER_PRELOAD_COUNT = 6
 private const val COVER_PRELOAD_TIMEOUT_MILLIS = 4_500L

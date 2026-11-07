@@ -19,6 +19,7 @@ internal data class AlbumUpdateRecord(
     val seenChapterCount: Int,
     val latestChapterCount: Int,
     val checkedAt: Long,
+    val generation: Long = checkedAt,
 ) {
     /**
      * 待提示的新增话数。
@@ -37,14 +38,14 @@ internal data class AlbumUpdateRecord(
  * 只记账，不出网：扫描由 [AlbumUpdateScanner] 负责，扫完把话数喂给 [observe]。
  * 基线的清除时机由界面决定——用户点开漫画详情就算"看到了"，不要求真的翻页阅读。
  */
-internal class AlbumUpdateStore(context: Context) {
+internal class AlbumUpdateStore(context: Context) : AlbumUpdateObservations {
     private val preferences = context.applicationContext.getSharedPreferences(
         ALBUM_UPDATE_PREFERENCES,
         Context.MODE_PRIVATE,
     )
     private val lock = Any()
 
-    fun records(): Map<String, AlbumUpdateRecord> = synchronized(lock) { readRecords() }
+    override fun records(): Map<String, AlbumUpdateRecord> = synchronized(lock) { readRecords() }
 
     fun record(albumId: String): AlbumUpdateRecord? = synchronized(lock) {
         readRecords()[albumId.trim()]
@@ -63,7 +64,7 @@ internal class AlbumUpdateStore(context: Context) {
      * 第一次见到某部漫画时基线直接设成当前话数——刚加入书架就冒出"更新 30 话"是噪音，
      * 不是信息。之后话数变多才会攒出待提示量。
      */
-    fun observe(albumId: String, chapterCount: Int, at: Long = System.currentTimeMillis()) {
+    override fun observe(albumId: String, chapterCount: Int, at: Long) {
         observeAll(mapOf(albumId to chapterCount), at)
     }
 
@@ -76,11 +77,7 @@ internal class AlbumUpdateStore(context: Context) {
                 if (albumId.isEmpty()) return@forEach
                 val count = rawCount.coerceAtLeast(0)
                 val existing = current[albumId]
-                current[albumId] = if (existing == null) {
-                    AlbumUpdateRecord(albumId, count, count, at)
-                } else {
-                    existing.copy(latestChapterCount = count, checkedAt = at)
-                }
+                current[albumId] = mergeAlbumObservation(existing, albumId, count, at)
             }
             writeRecords(current)
         }
@@ -96,7 +93,6 @@ internal class AlbumUpdateStore(context: Context) {
             if (existing.seenChapterCount == existing.latestChapterCount) return
             current[id] = existing.copy(
                 seenChapterCount = existing.latestChapterCount,
-                checkedAt = at,
             )
             writeRecords(current)
         }
@@ -118,7 +114,8 @@ internal class AlbumUpdateStore(context: Context) {
         val count = chapterCount.coerceAtLeast(0)
         synchronized(lock) {
             val current = readRecords().toMutableMap()
-            current[id] = AlbumUpdateRecord(id, count, count, at)
+            val observed = mergeAlbumObservation(current[id], id, count, at)
+            current[id] = observed.copy(seenChapterCount = observed.latestChapterCount)
             writeRecords(current)
         }
     }
@@ -179,6 +176,7 @@ internal class AlbumUpdateStore(context: Context) {
                     seenChapterCount = (latest - chapters).coerceAtLeast(0),
                     latestChapterCount = latest.coerceAtLeast(chapters),
                     checkedAt = at,
+                    generation = existing?.generation ?: at,
                 )
                 affected++
             }
@@ -194,15 +192,38 @@ internal class AlbumUpdateStore(context: Context) {
             if (current.values.none(AlbumUpdateRecord::hasUpdate)) return
             writeRecords(
                 current.mapValues { (_, record) ->
-                    record.copy(seenChapterCount = record.latestChapterCount, checkedAt = at)
+                    record.copy(seenChapterCount = record.latestChapterCount)
                 },
             )
         }
     }
 
+    fun acknowledge(snapshot: Map<String, AlbumUpdateRecord>) {
+        synchronized(lock) { writeRecords(acknowledgeAlbumUpdates(readRecords(), snapshot)) }
+    }
+
+    fun lastScanScope(): String? = preferences.getString("last_scan_scope", null)
+    fun setLastScanScope(scope: String) { preferences.edit { putString("last_scan_scope", scope) } }
+    fun favoriteOwner(): String? = preferences.getString("favorite_owner", null)
+    fun setFavoriteOwner(identity: String) { preferences.edit { putString("favorite_owner", identity) } }
+
+    private var observationSequence = 0L
+    fun nextObservationTime(): Long = synchronized(lock) {
+        readRecords()
+        maxOf(observationSequence + 1, System.currentTimeMillis()).also { observationSequence = it }
+    }
+
+    private var cachedRaw: String? = null
+    private var cachedRecords: Map<String, AlbumUpdateRecord> = emptyMap()
+
     private fun readRecords(): Map<String, AlbumUpdateRecord> {
         val raw = preferences.getString(ALBUM_UPDATE_RECORDS_KEY, null) ?: return emptyMap()
-        return decodeAlbumUpdateRecords(raw)
+        if (raw != cachedRaw) {
+            cachedRecords = decodeAlbumUpdateRecords(raw)
+            observationSequence = maxOf(observationSequence, cachedRecords.values.maxOfOrNull { it.checkedAt } ?: 0L)
+            cachedRaw = raw
+        }
+        return cachedRecords
     }
 
     private fun writeRecords(records: Map<String, AlbumUpdateRecord>) {
@@ -219,9 +240,9 @@ internal class AlbumUpdateStore(context: Context) {
                 .take(MAX_ALBUM_UPDATE_RECORDS)
                 .associateBy(AlbumUpdateRecord::albumId)
         }
-        preferences.edit {
-            putString(ALBUM_UPDATE_RECORDS_KEY, encodeAlbumUpdateRecords(trimmed))
-        }
+        cachedRecords = trimmed.toMap()
+        cachedRaw = encodeAlbumUpdateRecords(cachedRecords)
+        preferences.edit { putString(ALBUM_UPDATE_RECORDS_KEY, cachedRaw) }
     }
 }
 
@@ -245,6 +266,7 @@ internal fun encodeAlbumUpdateRecords(records: Map<String, AlbumUpdateRecord>): 
                 put("seen", record.seenChapterCount)
                 put("latest", record.latestChapterCount)
                 put("checkedAt", record.checkedAt)
+                put("generation", record.generation)
             },
         )
     }
@@ -266,6 +288,7 @@ internal fun decodeAlbumUpdateRecords(raw: String): Map<String, AlbumUpdateRecor
             seenChapterCount = seen,
             latestChapterCount = latest,
             checkedAt = item.optLong("checkedAt", 0L),
+            generation = item.optLong("generation", item.optLong("checkedAt", 0L)),
         )
     }
     return result

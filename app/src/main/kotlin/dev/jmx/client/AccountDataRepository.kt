@@ -1,5 +1,6 @@
 package dev.jmx.client
 
+import dev.jmx.client.core.api.AlbumPage
 import dev.jmx.client.core.api.ActionResult
 import dev.jmx.client.core.api.DailyCheckInfo
 import dev.jmx.client.core.api.FavoriteFolder
@@ -123,6 +124,7 @@ internal class AccountDataRepository(
      * JSON 重新串成字符串），留在调用方线程上就会在"内容即将出现"的那一刻卡住界面。
      */
     private val favoriteMutationMutex = Mutex()
+    private val historyMutationMutex = Mutex()
 
     /** 本地身份快照，不读凭据也不发网络请求；调用链每次 suspend 后检查，避免串账号。 */
     fun accountIdentity(): String? = accountRepository.restore()?.let { "${it.id}:${it.username}" }
@@ -212,6 +214,57 @@ internal class AccountDataRepository(
             })
         }
 
+    suspend fun deleteWatchHistory(albumIds: Set<String>, onProgress: (Int) -> Unit = {}): FavoriteBatchResult =
+        historyMutationMutex.withLock {
+            val identity = accountIdentity()
+            deleteHistoryVerified(
+                ids = albumIds,
+                remove = { id -> if (identity == null) accountChanged() else deleteOneWatchHistory(identity, id) },
+                loadPage = { page ->
+                    val loaded = accountRepository.withSessionRecovery {
+                        if (identity == null || accountIdentity() != identity) accountChanged() else core.libraryApi.watchList(page)
+                    }
+                    when (loaded) {
+                        is JmxResult.Failure -> loaded
+                        is JmxResult.Success -> JmxResult.Success(AlbumHistoryIds(loaded.value.content.map { it.id }, loaded.value.total))
+                    }
+                },
+                isCurrent = { identity != null && accountIdentity() == identity },
+                onProgress = onProgress,
+            )
+        }
+    /**
+     * 服务端没有“一次清空”的参数。空 `id` 会被忽略并仍返回成功，记录还在。
+     * 这里反复读取第一页，按漫画编号逐条删除，直到第一页为空。
+     * 如果删完同一批编号还在，就停止并报错，避免假装已经清空。
+     */
+    suspend fun clearWatchHistory(onProgress: (Int) -> Unit = {}): JmxResult<Unit> = historyMutationMutex.withLock {
+        val identity = accountIdentity() ?: return@withLock accountChanged()
+        clearHistoryVerified(
+            loadFirst = {
+                when (val page = watchHistoryPage(identity)) {
+                    is JmxResult.Failure -> page
+                    is JmxResult.Success -> if (accountIdentity() == identity) JmxResult.Success(page.value.content.map { it.id }) else accountChanged()
+                }
+            },
+            remove = { id -> deleteOneWatchHistory(identity, id) },
+            onProgress = onProgress,
+        )
+    }
+    private suspend fun watchHistoryPage(identity: String): JmxResult<AlbumPage> =
+        accountRepository.withSessionRecovery {
+            currentCoroutineContext().ensureActive()
+            if (accountIdentity() != identity) return@withSessionRecovery accountChanged()
+            core.libraryApi.watchList(page = 1)
+        }
+
+    private suspend fun deleteOneWatchHistory(identity: String, albumId: String): JmxResult<Unit> =
+        accountRepository.withSessionRecovery {
+            currentCoroutineContext().ensureActive()
+            if (accountIdentity() != identity) return@withSessionRecovery accountChanged()
+            core.libraryApi.deleteWatchHistory(albumId)
+        }
+
     suspend fun moveFavoritesToFolder(albumIds: Set<String>, folderId: Int): FavoriteBatchResult =
         favoriteMutationMutex.withLock {
             val identity = accountIdentity()
@@ -239,32 +292,41 @@ internal class AccountDataRepository(
     suspend fun dailyInfo(profile: AccountProfile): JmxResult<DailyCheckInfo?> {
         val id = profile.id?.toString()
             ?: return JmxResult.Failure(JmxError.Schema("用户资料缺少 UID", field = "uid"))
+        val identity = "${profile.id}:${profile.username}"
+        if (accountIdentity() != identity) return accountChanged()
         // 会话过期时 /daily 不回 401，而是回空载荷（与"当期无活动"同形），
         // 所以这里要显式把空载荷也当成会话失效的可能原因交给恢复逻辑判定，
         // 否则自动签到只会静默地什么都不做。
         return accountRepository.withSessionRecovery(treatEmptyDataAsSessionLoss = true) {
-            core.libraryApi.dailyInfo(id)
-        }
+            if (accountIdentity() != identity) accountChanged() else core.libraryApi.dailyInfo(id)
+        }.let { if (accountIdentity() == identity) it else accountChanged() }
     }
 
-    suspend fun checkIn(profile: AccountProfile, dailyId: Int?): JmxResult<ActionResult> {
-        val id = profile.id?.toString()
-            ?: return JmxResult.Failure(JmxError.Schema("用户资料缺少 UID", field = "uid"))
-        val eventId = dailyId?.toString()
-            ?: return JmxResult.Failure(JmxError.Schema("签到活动编号缺失", field = "dailyId"))
-        val submit = accountRepository.withSessionRecovery(treatEmptyDataAsSessionLoss = true) {
-            core.libraryApi.dailyCheck(id, eventId)
+    private val checkInMutex = Mutex()
+
+    suspend fun checkIn(profile: AccountProfile, dailyId: Int?): JmxResult<ActionResult> = checkInMutex.withLock {
+        val identity = accountIdentity() ?: return@withLock accountChanged()
+        if (identity != "${profile.id}:${profile.username}") return@withLock accountChanged()
+        val budget = java.util.concurrent.atomic.AtomicBoolean(true)
+        suspend fun info(): JmxResult<DailyCheckInfo?> {
+            if (accountIdentity() != identity) return accountChanged()
+            val id = profile.id?.toString() ?: return JmxResult.Failure(JmxError.Schema("用户资料缺少 UID", field = "uid"))
+            val result = accountRepository.withSessionRecovery(
+                treatEmptyDataAsSessionLoss = true,
+                allowRecovery = { budget.compareAndSet(true, false) },
+            ) { core.libraryApi.dailyInfo(id) }
+            return if (accountIdentity() == identity) result else accountChanged()
         }
-        if (submit is JmxResult.Failure && submit.error is JmxError.EmptyData) {
-            // 提交签到也可能返回空载荷：以重新查询到的当日记录为准，不能只信提交响应
-            return when (val verified = resolveCheckInAfterEmptyPayload(dailyInfo(profile))) {
-                is JmxResult.Success -> verified
-                is JmxResult.Failure -> submit
+        confirmedCheckIn(::info) { eventId ->
+            if (accountIdentity() != identity) accountChanged()
+            else {
+                val result = accountRepository.withSessionRecovery(
+                    allowRecovery = { budget.compareAndSet(true, false) },
+                ) { core.libraryApi.dailyCheck(profile.id.toString(), eventId.toString()) }
+                if (accountIdentity() == identity) result else accountChanged()
             }
         }
-        return submit
     }
-
     suspend fun autoCheckIn(profile: AccountProfile): AutoCheckInResult {
         // 稳定度保护：同一时刻只允许一次自动签到流程（跳过而非排队），
         // 且两次真实尝试之间保持最小间隔，防止触发变敏感后重复提交或频繁失败
@@ -273,30 +335,35 @@ internal class AccountDataRepository(
         }
         try {
             val now = System.currentTimeMillis()
-            if (now - lastAutoCheckInAttemptAtMillis < AUTO_CHECK_IN_MIN_INTERVAL_MILLIS) {
+            val identity = accountIdentity() ?: return AutoCheckInResult.FAILED
+            if (identity != "${profile.id}:${profile.username}") return AutoCheckInResult.FAILED
+            if (lastAutoCheckInAttemptIdentity == identity && now - lastAutoCheckInAttemptAtMillis < AUTO_CHECK_IN_MIN_INTERVAL_MILLIS) {
                 return AutoCheckInResult.FAILED
             }
             lastAutoCheckInAttemptAtMillis = now
-            val info = when (val infoResult = dailyInfo(profile)) {
-                is JmxResult.Success -> infoResult.value ?: return AutoCheckInResult.NO_ACTIVE_EVENT
-                is JmxResult.Failure -> return AutoCheckInResult.FAILED
-            }
-            if (info.isSignedToday()) return AutoCheckInResult.ALREADY_SIGNED
-            return when (val result = checkIn(profile, info.dailyId)) {
-                is JmxResult.Success -> if (result.value.isAcceptedCheckInResult()) {
-                    AutoCheckInResult.COMPLETED
-                } else {
-                    AutoCheckInResult.FAILED
-                }
+            lastAutoCheckInAttemptIdentity = identity
+            return when (val result = checkIn(profile, null)) {
+                is JmxResult.Success -> if (result.value.message == "今日已签到") AutoCheckInResult.ALREADY_SIGNED else AutoCheckInResult.COMPLETED
                 is JmxResult.Failure -> AutoCheckInResult.FAILED
-            }
-        } finally {
+            }        } finally {
             autoCheckInInFlight.set(false)
         }
     }
 }
 
 private fun accountChanged() = JmxResult.Failure(JmxError.Api(401, "账号已变化，请重新打开此页面"))
+
+
+/**
+ * 返回这一页还要删除的编号。空列表表示已经清空。
+ * 这一页的编号全都删过却还在时返回 null，调用方应停止并报告失败。
+ */
+internal fun nextHistoryClearBatch(alreadyDeleted: Set<String>, pageIds: List<String>): List<String>? {
+    val ids = pageIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+    if (ids.isEmpty()) return emptyList()
+    val pending = ids.filter { it !in alreadyDeleted }
+    return pending.ifEmpty { null }
+}
 
 internal data class FavoriteLogicalPage(
     val albums: List<HomeAlbum>,
@@ -350,6 +417,9 @@ private val autoCheckInInFlight = java.util.concurrent.atomic.AtomicBoolean(fals
 @Volatile
 private var lastAutoCheckInAttemptAtMillis = 0L
 
+@Volatile
+private var lastAutoCheckInAttemptIdentity: String? = null
+
 private const val AUTO_CHECK_IN_MIN_INTERVAL_MILLIS = 15_000L
 
 internal fun resolveCheckInAfterEmptyPayload(
@@ -375,27 +445,13 @@ internal fun resolveCheckInAfterEmptyPayload(
 
 internal fun DailyCheckInfo.isSignedToday(now: Date = Date()): Boolean {
     val todayValues = todayDateValues(now)
-    val todayDay = SimpleDateFormat("d", Locale.US).format(now).toInt()
     return records.any { record ->
         if (record.signed != true) return@any false
         val date = record.date?.trim().orEmpty()
-        date in todayValues || date.substringAfterLast('-').toIntOrNull() == todayDay
+        date in todayValues || date == SimpleDateFormat("MM-dd", Locale.US).format(now)
     }
 }
 
-private fun ActionResult.isAcceptedCheckInResult(): Boolean {
-    val normalizedStatus = status?.trim()?.lowercase(Locale.ROOT)
-    return normalizedStatus.isNullOrEmpty() ||
-        normalizedStatus in AUTO_CHECK_IN_SUCCESS_STATUSES ||
-        message.orEmpty().containsAlreadySignedMessage()
-}
-
-private fun String.containsAlreadySignedMessage(): Boolean {
-    val normalized = lowercase(Locale.ROOT)
-    return "已签到" in normalized || "已簽到" in normalized || "already" in normalized
-}
-
-private val AUTO_CHECK_IN_SUCCESS_STATUSES = setOf("ok", "success", "true", "1")
 
 internal fun todayDate(now: Date = Date()): String =
     SimpleDateFormat("yyyy-MM-dd", Locale.US).format(now)

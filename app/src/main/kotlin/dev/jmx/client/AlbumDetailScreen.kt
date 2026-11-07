@@ -81,6 +81,8 @@ import dev.jmx.client.core.api.AlbumChapter
 import dev.jmx.client.core.api.CommentItem
 import dev.jmx.client.core.api.CommentPage
 import dev.jmx.client.core.result.JmxResult
+import dev.jmx.client.core.network.backgroundNetwork
+import dev.jmx.client.core.runtime.publicRead
 import dev.jmx.client.core.runtime.JmxCore
 import dev.jmx.client.effect.BlurredBar
 import dev.jmx.client.effect.TopBarBlurStyle
@@ -138,7 +140,7 @@ internal data class AlbumDetailTransitionRequest(
     val origin: AlbumDetailOrigin,
 )
 
-internal enum class AlbumDetailOrigin { HOME, SEARCH, ACCOUNT, BOOKSHELF, DOWNLOADS }
+internal enum class AlbumDetailOrigin { HOME, SEARCH, ACCOUNT, BOOKSHELF, DOWNLOADS, DISCOVERY }
 
 @Composable
 internal fun AlbumDetailTransitionHost(
@@ -356,15 +358,17 @@ private fun AlbumDetailScreen(
             )
             return@LaunchedEffect
         }
-        val loaded = repository.load(album.id)
-        state = loaded
-        val content = loaded as? AlbumDetailUiState.Content ?: return@LaunchedEffect
-        // 详情页拿到的章节列表比任何一次后台扫描都新，交给更新追踪对账并清掉这部漫画的提示。
-        onChaptersLoaded(album.id, content.detail.readingChapters().size)
-        val comments = repository.loadInitialComments(album.id)
-        val latest = state as? AlbumDetailUiState.Content
-        if (latest?.detail?.id == content.detail.id) {
-            state = latest.copy(comments = comments)
+        coroutineScope {
+            // Independent reads overlap, but the detail is published without waiting for comments.
+            val pendingComments = async { repository.loadInitialComments(album.id) }
+            val loaded = repository.load(album.id)
+            state = loaded
+            val content = loaded as? AlbumDetailUiState.Content
+            if (content == null) { pendingComments.cancel(); return@coroutineScope }
+            onChaptersLoaded(album.id, content.detail.readingChapters().size)
+            val comments = pendingComments.await()
+            val latest = state as? AlbumDetailUiState.Content
+            if (latest?.detail?.id == content.detail.id) state = latest.copy(comments = comments)
         }
     }
 
@@ -373,7 +377,7 @@ private fun AlbumDetailScreen(
         if (offline) offlineManifest?.chapters.orEmpty().map { it.toReaderChapter() }
         else detail?.readingChapters().orEmpty()
     }
-    LaunchedEffect(detail?.id, repository, readerActive, offline, offlineManifest) {
+    LaunchedEffect(detail?.id, repository, readerActive, selectedTab, offline, offlineManifest) {
         pageSummary = if (detail == null) {
             AlbumPageSummary.Loading
         } else if (offline) {
@@ -384,6 +388,8 @@ private fun AlbumDetailScreen(
             )
         } else if (readerActive) {
             pageSummary
+        } else if ((detail.imageCount ?: 0) <= 0 && selectedTab != DETAIL_CATALOG_TAB) {
+            repository.cachedPageSummary(detail)
         } else {
             repository.loadPageSummary(detail) { progress -> pageSummary = progress }
         }
@@ -1801,6 +1807,7 @@ internal class AlbumDetailRepository(
     private val accountRepository: AccountRepository,
 ) {
     private val chapterPageCounts = ConcurrentHashMap<String, Int>()
+    private val failedCountAt = ConcurrentHashMap<String, Long>()
 
     fun bookshelfAlbum(album: HomeAlbum): HomeAlbum {
         val host = core.imageHostRegistry.current()
@@ -1834,7 +1841,7 @@ internal class AlbumDetailRepository(
     suspend fun load(albumId: String): AlbumDetailUiState = withContext(Dispatchers.IO) {
         try {
             val detailResult = withTimeoutOrNull(DETAIL_REQUEST_TIMEOUT_MILLIS) {
-                core.albumApi.detailFull(albumId)
+                core.publicRead { core.albumApi.detailFull(albumId) }
             } ?: return@withContext AlbumDetailUiState.Error("详情请求超时，请检查网络或切换线路后重试。")
             when (detailResult) {
                 is JmxResult.Success -> AlbumDetailUiState.Content(
@@ -1850,11 +1857,11 @@ internal class AlbumDetailRepository(
         }
     }
 
-    suspend fun loadInitialComments(albumId: String): DetailCommentsState {
-        return try {
+    suspend fun loadInitialComments(albumId: String): DetailCommentsState = DetailCommentsLoader.load {
+        try {
             val result = withTimeoutOrNull(COMMENT_REQUEST_TIMEOUT_MILLIS) {
-                core.interactionApi.albumComments(albumId, page = 1)
-            } ?: return DetailCommentsState(error = "评论请求超时，可稍后重试。")
+                core.publicRead { core.interactionApi.albumComments(albumId, page = 1) }
+            } ?: return@load DetailCommentsState(error = "评论请求超时，可稍后重试。")
             when (result) {
                 is JmxResult.Success -> result.value.toDetailCommentsState()
                 is JmxResult.Failure -> DetailCommentsState(error = result.error.toUiMessage())
@@ -1869,10 +1876,10 @@ internal class AlbumDetailRepository(
     suspend fun loadMoreComments(
         albumId: String,
         current: DetailCommentsState,
-    ): DetailCommentsState {
-        if (current.endReached) return current.copy(isLoading = false)
-        return try {
-            when (val result = core.interactionApi.albumComments(albumId, page = current.nextPage)) {
+    ): DetailCommentsState = DetailCommentsLoader.load {
+        if (current.endReached) return@load current.copy(isLoading = false)
+        try {
+            when (val result = core.publicRead { core.interactionApi.albumComments(albumId, page = current.nextPage) }) {
                 is JmxResult.Success -> {
                     val merged = mergeCommentPages(current.items, result.value.comments)
                     val total = result.value.total ?: current.total
@@ -1898,60 +1905,52 @@ internal class AlbumDetailRepository(
         }
     }
 
+    fun cachedPageSummary(detail: AlbumDetail): AlbumPageSummary {
+        val chapters = detail.readingChapters()
+        detail.imageCount?.takeIf { it > 0 }?.let { return AlbumPageSummary.Ready(it, chapters.size, chapters.size) }
+        val counts = chapters.mapNotNull { chapterPageCounts[it.id] }
+        return if (counts.isEmpty()) AlbumPageSummary.Unavailable(chapters.size)
+        else AlbumPageSummary.Ready(counts.sum(), counts.size, chapters.size)
+    }
+
     suspend fun loadPageSummary(
         detail: AlbumDetail,
         onProgress: (AlbumPageSummary.Ready) -> Unit = {},
-    ): AlbumPageSummary = coroutineScope {
-        val chapters = detail.readingChapters()
-        val albumImageCount = detail.imageCount
-        if (albumImageCount != null && albumImageCount > 0) {
-            if (chapters.size == 1) chapterPageCounts[chapters.first().id] = albumImageCount
-            return@coroutineScope AlbumPageSummary.Ready(
-                totalPages = albumImageCount,
-                resolvedChapters = chapters.size,
-                totalChapters = chapters.size,
-            )
-        }
-
-        val semaphore = Semaphore(PAGE_COUNT_CONCURRENCY)
-        val progressMutex = Mutex()
-        var resolvedChapters = 0
-        var resolvedPages = 0
-        val counts = chapters.map { chapter ->
-            async {
-                val count = semaphore.withPermit {
-                    chapterPageCounts[chapter.id] ?: loadChapterPageCount(chapter.id)?.also { count ->
-                        chapterPageCounts[chapter.id] = count
-                    }
+    ): AlbumPageSummary = backgroundNetwork {
+        withContext(Dispatchers.IO) {
+            val chapters = detail.readingChapters()
+            val initial = cachedPageSummary(detail)
+            if (initial is AlbumPageSummary.Ready && initial.resolvedChapters == chapters.size) return@withContext initial
+            var resolved = (initial as? AlbumPageSummary.Ready)?.resolvedChapters ?: 0
+            var pages = (initial as? AlbumPageSummary.Ready)?.totalPages ?: 0
+            val progress = Mutex()
+            val now = System.currentTimeMillis()
+            val remaining = chapters.filter { !chapterPageCounts.containsKey(it.id) && failedCountAt[it.id]?.let { failed -> now < failed || now - failed >= 30_000L } != false }
+            val cursor = java.util.concurrent.atomic.AtomicInteger()
+            withTimeoutOrNull(30_000L) {
+                coroutineScope {
+                    (0 until minOf(2, remaining.size)).map { async {
+                        while (true) {
+                            val index = cursor.getAndIncrement()
+                            if (index >= remaining.size) break
+                            val chapter = remaining[index]
+                            val count = withTimeoutOrNull(15_000L) { loadChapterPageCount(chapter.id) }
+                            if (count == null) failedCountAt[chapter.id] = System.currentTimeMillis()
+                            else {
+                                chapterPageCounts[chapter.id] = count
+                                failedCountAt.remove(chapter.id)
+                                progress.withLock {
+                                    resolved++; pages += count
+                                    onProgress(AlbumPageSummary.Ready(pages, resolved, chapters.size))
+                                }
+                            }
+                        }
+                    } }.forEach { it.await() }
                 }
-                if (count != null) {
-                    progressMutex.withLock {
-                        resolvedChapters++
-                        resolvedPages += count
-                        onProgress(
-                            AlbumPageSummary.Ready(
-                                totalPages = resolvedPages,
-                                resolvedChapters = resolvedChapters,
-                                totalChapters = chapters.size,
-                            ),
-                        )
-                    }
-                }
-                count
             }
-        }.map { it.await() }
-        val resolved = counts.filterNotNull()
-        if (resolved.isEmpty()) {
-            AlbumPageSummary.Unavailable(totalChapters = chapters.size)
-        } else {
-            AlbumPageSummary.Ready(
-                totalPages = resolved.sum(),
-                resolvedChapters = resolved.size,
-                totalChapters = chapters.size,
-            )
+            cachedPageSummary(detail)
         }
     }
-
     private suspend fun loadChapterPageCount(chapterId: String): Int? {
         when (val detailResult = core.chapterApi.detail(chapterId)) {
             is JmxResult.Success -> {

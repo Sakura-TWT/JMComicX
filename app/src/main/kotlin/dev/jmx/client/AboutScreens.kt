@@ -4,6 +4,7 @@ import android.app.Activity
 import android.graphics.Color as AndroidColor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -38,12 +39,14 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.blur.BlendColorEntry
 import top.yukonga.miuix.kmp.blur.BlurBlendMode
 import top.yukonga.miuix.kmp.blur.BlurDefaults
+import top.yukonga.miuix.kmp.blur.LayerBackdrop
 import top.yukonga.miuix.kmp.blur.textureBlur
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import dev.jmx.client.effect.rememberBarBackdrop
+import dev.jmx.client.effect.usesDarkEffectPreset
 
 internal data class ThirdPartyLibrary(
     val name: String,
@@ -111,15 +114,6 @@ internal fun AboutScreen(
         }
     }
     val backdrop = rememberBarBackdrop()
-    val blurColors = BlurDefaults.blurColors(
-        blendColors = listOf(
-            BlendColorEntry(
-                MiuixTheme.colorScheme.surface.copy(alpha = 0.76f),
-                BlurBlendMode.SrcOver,
-            ),
-        ),
-        saturation = 1.1f,
-    )
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -177,25 +171,9 @@ internal fun AboutScreen(
                     )
                 }
                 item(key = "about-project") {
-                    Card(
-                        modifier = Modifier
-                            .padding(horizontal = 12.dp)
-                            .then(
-                                if (backdrop != null) {
-                                    Modifier.textureBlur(
-                                        backdrop = backdrop,
-                                        shape = RoundedCornerShape(16.dp),
-                                        blurRadius = 52f,
-                                        colors = blurColors,
-                                    )
-                                } else {
-                                    Modifier
-                                },
-                            ),
-                        colors = CardDefaults.defaultColors(
-                            color = Color.Transparent,
-                            contentColor = MiuixTheme.colorScheme.onSurfaceContainer,
-                        ),
+                    AboutOptionCard(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        backdrop = backdrop,
                     ) {
                         ArrowPreference(
                             title = "项目地址",
@@ -205,25 +183,9 @@ internal fun AboutScreen(
                     }
                 }
                 item(key = "about-open-source") {
-                    Card(
-                        modifier = Modifier
-                            .padding(horizontal = 12.dp, vertical = 12.dp)
-                            .then(
-                                if (backdrop != null) {
-                                    Modifier.textureBlur(
-                                        backdrop = backdrop,
-                                        shape = RoundedCornerShape(16.dp),
-                                        blurRadius = 52f,
-                                        colors = blurColors,
-                                    )
-                                } else {
-                                    Modifier
-                                },
-                            ),
-                        colors = CardDefaults.defaultColors(
-                            color = Color.Transparent,
-                            contentColor = MiuixTheme.colorScheme.onSurfaceContainer,
-                        ),
+                    AboutOptionCard(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                        backdrop = backdrop,
                     ) {
                         ArrowPreference(
                             title = "开源协议",
@@ -240,6 +202,45 @@ internal fun AboutScreen(
             }
         }
     }
+}
+
+/**
+ * 关于页选项卡。底色保持透明，模糊混合用光度 / 叠加而不是不透明的 SrcOver，
+ * 这样背后的流光可以穿过来，沿用 MIUIX 的主题容器色与官方 textureBlur。
+ */
+@Composable
+private fun AboutOptionCard(
+    modifier: Modifier = Modifier,
+    backdrop: LayerBackdrop?,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val dark = MiuixTheme.colorScheme.surface.usesDarkEffectPreset()
+    val base = MiuixTheme.colorScheme.surfaceContainer
+    val blendColors = remember(dark, base) { listOf(BlendColorEntry(base.copy(alpha = if (dark) 0.25f else 0.18f), BlurBlendMode.SrcOver)) }
+    val blurEnabled = backdrop != null
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (blurEnabled) {
+                    Modifier.textureBlur(
+                        backdrop = backdrop,
+                        shape = RoundedCornerShape(16.dp),
+                        blurRadius = if (dark) 72f else 64f,
+                        noiseCoefficient = BlurDefaults.NoiseCoefficient,
+                        colors = BlurDefaults.blurColors(blendColors = blendColors),
+                        enabled = true,
+                    )
+                } else {
+                    Modifier
+                },
+            ),
+        colors = CardDefaults.defaultColors(
+            color = if (blurEnabled) Color.Transparent else MiuixTheme.colorScheme.surfaceContainer,
+            contentColor = MiuixTheme.colorScheme.onSurface,
+        ),
+        content = content,
+    )
 }
 
 @Composable

@@ -126,15 +126,20 @@ import dev.jmx.client.core.image.ImagePipeline
 import dev.jmx.client.core.image.ImagePlan
 import dev.jmx.client.core.protocol.JmxProtocolConstants
 import dev.jmx.client.core.result.JmxResult
+import dev.jmx.client.core.network.backgroundNetwork
+import dev.jmx.client.core.network.readBoundedBytes
+import dev.jmx.client.core.network.LoadStage
+import dev.jmx.client.core.runtime.publicRead
 import dev.jmx.client.core.runtime.JmxCore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -614,7 +619,7 @@ private fun ComicReaderContent(
                     onPageLoaded = { index, width, height ->
                         failedPages.remove(index)
                         geometry.record(index, width, height)
-                        prefetch.markSucceeded(index)
+                        pages.getOrNull(index)?.let { prefetch.markSucceeded(selectedChapter.id, it, viewportWidthPx) }
                     },
                     onRetryPage = { index ->
                         failedPages.remove(index)
@@ -1798,7 +1803,7 @@ internal class ComicReaderRepository(
         chapterId: String,
         imageHostHint: String?,
     ): ReaderChapterState? {
-        val photo = when (val result = core.chapterApi.detail(chapterId)) {
+        val photo = when (val result = core.publicRead { core.chapterApi.detail(chapterId) }) {
             is JmxResult.Success -> result.value
             is JmxResult.Failure -> {
                 return null
@@ -1853,8 +1858,9 @@ internal class ComicReaderRepository(
      * 换章提示卡要在用户拉动之前就知道"下一话全几页"，那时不该为了一个页数去下图。
      * 失败静默返回 null——提示卡少一行字而已。
      */
-    suspend fun prepareChapter(chapterId: String, imageHostHint: String?): ReaderChapterState.Content? =
+    suspend fun prepareChapter(chapterId: String, imageHostHint: String?): ReaderChapterState.Content? = backgroundNetwork {
         cachedChapter(chapterId) ?: loadChapter(chapterId, imageHostHint) as? ReaderChapterState.Content
+    }
 
     /**
      * 预热相邻的一话：把模板与头几页备好。
@@ -1866,14 +1872,16 @@ internal class ComicReaderRepository(
         val content = prepareChapter(chapterId, imageHostHint) ?: return
         content.pages.take(CHAPTER_WARMUP_PAGES).forEach { page ->
             try {
-                imageLoader.execute(
-                    buildReaderImageRequest(
-                        context = applicationContext,
-                        page = page,
-                        retryKey = 0,
-                        viewportWidthPx = viewportWidthPx,
-                    ),
-                )
+                ImageWorkBudgets.prefetch.withPermit {
+                    imageLoader.execute(
+                        buildReaderImageRequest(
+                            context = applicationContext,
+                            page = page,
+                            retryKey = 0,
+                            viewportWidthPx = viewportWidthPx,
+                        ),
+                    )
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Exception) {
@@ -1953,31 +1961,41 @@ private class JmxScrambledDecoder(
     private val plan: ImagePlan,
     private val pipeline: ImagePipeline = ImagePipeline(),
 ) : Decoder {
-    override suspend fun decode(): DecodeResult = withContext(Dispatchers.IO) {
-        val bytes = source.source().use { it.readByteArray() }
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        val sourceWidth = bounds.outWidth
-        val sourceHeight = bounds.outHeight
-        val requested = options.size.width.pxOrElse { 0 }
-        val targetWidth = if (sourceWidth > 0 && requested in 1 until sourceWidth) {
-            requested
-        } else {
-            sourceWidth
+    override suspend fun decode(): DecodeResult {
+        var decoded: Bitmap? = null
+        val metrics = createAppJmxCore(options.context).requestMetricsRecorder
+        val slotStarted = System.nanoTime()
+        try {
+            return ImageWorkBudgets.decoderSlots.withPermit {
+                val slotWait = System.nanoTime() - slotStarted
+                val ioStarted = System.nanoTime()
+                val bytes = withContext(Dispatchers.IO) { source.source().use { it.readBoundedBytes(ImageWorkBudgets.MAX_ENCODED_BYTES) } }
+                metrics.stage("reader", LoadStage.IMAGE_IO, System.nanoTime() - ioStarted)
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                withContext(ImageWorkBudgets.decodeDispatcher) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds) }
+                val requested = options.size.width.pxOrElse { 0 }
+                val targetWidth = if (bounds.outWidth > 0 && requested in 1 until bounds.outWidth) requested else bounds.outWidth
+                val sample = readerScrambledSampleSize(bounds.outWidth, bounds.outHeight, targetWidth, plan.segmentCount)
+                val reservation = readerDecodeReservation(bounds.outWidth, bounds.outHeight, sample, bytes.size)
+                require(reservation <= ImageWorkBudgets.decodeMemory.capacity) { "图片过大，超过本机解码预算" }
+                val memoryStarted = System.nanoTime()
+                ImageWorkBudgets.decodeMemory.acquire(reservation).use {
+                    metrics.stage("reader", LoadStage.IMAGE_ADMISSION, slotWait + System.nanoTime() - memoryStarted)
+                    val cpuStarted = System.nanoTime()
+                    withContext(ImageWorkBudgets.decodeDispatcher) {
+                        currentCoroutineContext().ensureActive()
+                        val bitmap = decodeAndRestore(bytes, sample)
+                        decoded = bitmap
+                        currentCoroutineContext().ensureActive()
+                        DecodeResult(bitmap.asImage(), isSampled = sample > 1)
+                    }.also { metrics.stage("reader", LoadStage.IMAGE_DECODE, System.nanoTime() - cpuStarted) }
+                }
+            }
+        } catch (failure: Throwable) {
+            decoded?.takeIf { !it.isRecycled }?.recycle()
+            throw failure
         }
-        val sampleSize = readerScrambledSampleSize(
-            sourceWidth = sourceWidth,
-            sourceHeight = sourceHeight,
-            targetWidth = targetWidth,
-            segmentCount = plan.segmentCount,
-        )
-        val bitmap = decodeAndRestore(bytes, sampleSize)
-        DecodeResult(
-            image = bitmap.asImage(),
-            isSampled = sampleSize > 1,
-        )
     }
-
     private fun decodeAndRestore(bytes: ByteArray, sampleSize: Int): Bitmap {
         val decodeOptions = BitmapFactory.Options().apply {
             inSampleSize = sampleSize
@@ -1986,30 +2004,33 @@ private class JmxScrambledDecoder(
         val input = requireNotNull(
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions),
         ) { "图片解码失败" }
-        val rects = readerSegmentRects(input.height, plan.segmentCount, pipeline)
-        // 只有一段（或拿不到分段信息）的页本来就不用还原，省掉一次整图拷贝。
-        if (rects.isEmpty()) return input
-        val output = createBitmap(
-            input.width,
-            input.height,
-            input.config ?: Bitmap.Config.ARGB_8888,
-        ).apply {
-            density = input.density
-            setHasAlpha(input.hasAlpha())
+        var retainInput = false
+        var allocated: Bitmap? = null
+        try {
+            val rects = readerSegmentRects(input.height, plan.segmentCount, pipeline)
+            if (rects.isEmpty()) { retainInput = true; return input }
+            val output = createBitmap(input.width, input.height, input.config ?: Bitmap.Config.ARGB_8888).apply {
+                allocated = this
+                density = input.density
+                setHasAlpha(input.hasAlpha())
+            }
+            val canvas = Canvas(output)
+            rects.forEach { rect ->
+                // Continuous decode, equal-sized rectangles, integer offsets, no paint/resampling.
+                canvas.drawBitmap(
+                    input,
+                    Rect(0, rect.sourceTop, input.width, rect.sourceBottom),
+                    Rect(0, rect.targetTop, input.width, rect.targetBottom),
+                    null,
+                )
+            }
+            return output
+        } catch (failure: Throwable) {
+            allocated?.takeIf { !it.isRecycled }?.recycle()
+            throw failure
+        } finally {
+            if (!retainInput) input.recycle()
         }
-        val canvas = Canvas(output)
-        rects.forEach { rect ->
-            // src 与 dst 等宽等高、偏移是整数、不给 paint：不缩放、不滤波、不抖动，
-            // 按行严丝合缝地拼。接缝处的像素值与整图解出来的完全一致。
-            canvas.drawBitmap(
-                input,
-                Rect(0, rect.sourceTop, input.width, rect.sourceBottom),
-                Rect(0, rect.targetTop, input.width, rect.targetBottom),
-                null,
-            )
-        }
-        input.recycle()
-        return output
     }
 }
 
@@ -2519,108 +2540,33 @@ internal fun readerPageVelocity(
  * 深度写死成 2，追不上翻页速度。这里三处都改掉，并且旧窗口的请求一出窗就取消——
  * 否则跳页后新窗口要排在一串没人要的请求后面，用户感觉"越跳越慢"。
  */
+private data class ReaderPrefetchKey(val chapterId: String, val page: ReaderPage, val width: Int)
+
 private class ReaderPrefetchController(
     context: Context,
     private val imageLoader: ImageLoader,
-    private val scope: CoroutineScope,
+    scope: CoroutineScope,
 ) {
     private val applicationContext = context.applicationContext
-    private val semaphore = Semaphore(READER_PREFETCH_CONCURRENCY)
-    private val inFlight = mutableMapOf<Int, Job>()
-    private val succeeded = mutableSetOf<Int>()
-    private var chapterKey: String? = null
-
+    private val scheduler = ReaderWorkScheduler<ReaderPrefetchKey>(scope) { key ->
+        ImageWorkBudgets.prefetch.withPermit {
+            backgroundNetwork {
+                imageLoader.execute(buildReaderImageRequest(applicationContext, key.page, 0, key.width)) is SuccessResult
+            }
+        }
+    }
     fun update(
-        chapterId: String,
-        pages: List<ReaderPage>,
-        center: Int,
-        forward: Boolean,
-        velocity: Float,
-        viewportWidthPx: Int,
-        decodedWidthPx: Int,
-        pageAspect: Float,
+        chapterId: String, pages: List<ReaderPage>, center: Int, forward: Boolean, velocity: Float,
+        viewportWidthPx: Int, decodedWidthPx: Int, pageAspect: Float,
     ) {
-        if (pages.isEmpty()) return
-        val plan = readerPrefetchPlan(
-            budgetBytes = imageLoader.memoryCache?.maxSize ?: 0L,
-            pageBytes = readerEstimatedPageBytes(decodedWidthPx, pageAspect),
-            velocity = velocity,
-        )
-        val window = readerPrefetchWindow(
-            center = center,
-            ahead = plan.ahead,
-            behind = plan.behind,
-            forward = forward,
-            pageCount = pages.size,
-        )
-        val launching = synchronized(this) {
-            if (chapterKey != chapterId) {
-                chapterKey = chapterId
-                cancelAllLocked()
-            }
-            inFlight.entries.removeAll { (index, job) ->
-                if (index in window) {
-                    false
-                } else {
-                    job.cancel()
-                    true
-                }
-            }
-            window.filter { it !in succeeded && it !in inFlight.keys }
-        }
-        launching.forEach { index -> launch(pages[index], index, viewportWidthPx) }
+        if (pages.isEmpty()) { scheduler.clear(); return }
+        val plan = readerPrefetchPlan(imageLoader.memoryCache?.maxSize ?: 0L, readerEstimatedPageBytes(decodedWidthPx, pageAspect), velocity)
+        val window = readerPrefetchWindow(center, plan.ahead, plan.behind, forward, pages.size)
+        scheduler.update(window.map { ReaderPrefetchKey(chapterId, pages[it], viewportWidthPx) })
     }
-
-    fun markSucceeded(index: Int) {
-        synchronized(this) { succeeded.add(index) }
-    }
-
-    fun clear() {
-        synchronized(this) {
-            cancelAllLocked()
-            succeeded.clear()
-            chapterKey = null
-        }
-    }
-
-    private fun cancelAllLocked() {
-        inFlight.values.forEach(Job::cancel)
-        inFlight.clear()
-        succeeded.clear()
-    }
-
-    private fun launch(page: ReaderPage, index: Int, viewportWidthPx: Int) {
-        val job = scope.launch {
-            semaphore.withPermit {
-                val result = try {
-                    imageLoader.execute(
-                        buildReaderImageRequest(
-                            context = applicationContext,
-                            page = page,
-                            retryKey = 0,
-                            viewportWidthPx = viewportWidthPx,
-                        ),
-                    )
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                    null
-                }
-                // 失败的页不记成功：留在窗口里，下一次 update 会再试一次。
-                if (result is SuccessResult) markSucceeded(index)
-            }
-        }
-        val replaced = synchronized(this) {
-            val previous = inFlight.put(index, job)
-            previous
-        }
-        replaced?.cancel()
-        job.invokeOnCompletion {
-            synchronized(this) { if (inFlight[index] === job) inFlight.remove(index) }
-        }
-    }
+    fun markSucceeded(chapterId: String, page: ReaderPage, width: Int) = scheduler.markSucceeded(ReaderPrefetchKey(chapterId, page, width))
+    fun clear() = scheduler.clear()
 }
-
 /** 换章手势的进度与"已越过阈值"。方向由调用方持有，这里只看位移大小。 */
 internal data class ReaderFlipState(val progress: Float, val armed: Boolean)
 
@@ -2763,7 +2709,6 @@ private const val READER_SPINNER_DELAY_MILLIS = 180L
 private const val READER_MIN_VIEWPORT_WIDTH_PX = 360
 
 /** 预取。深度按内存预算算，这里只给上下限与档位。 */
-private const val READER_PREFETCH_CONCURRENCY = 3
 private const val READER_PREFETCH_MIN_DEPTH = 2
 private const val READER_PREFETCH_MAX_DEPTH = 12
 private const val READER_PREFETCH_MAX_BEHIND = 3

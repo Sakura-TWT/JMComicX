@@ -15,7 +15,8 @@ data class RawNetworkResponse(
     val body: String,
     val contentType: String?,
     val requestUrl: String,
-    val tokenTimestampSeconds: Long
+    val tokenTimestampSeconds: Long,
+    val networkDurationMillis: Long = 0,
 )
 
 data class JsonNetworkResponse(

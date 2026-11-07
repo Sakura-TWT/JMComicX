@@ -1,11 +1,6 @@
 package dev.jmx.client
 
-import android.view.Gravity
-import android.view.View
-import android.view.ViewGroup
-import android.view.Window
 import android.view.WindowManager
-import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -34,9 +29,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -46,13 +45,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.key
@@ -60,25 +58,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.core.graphics.drawable.toDrawable
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsAnimationCompat
-import androidx.core.view.WindowInsetsCompat
 import com.github.houbb.opencc4j.util.ZhConverterUtil
 import dev.jmx.client.core.api.AlbumDetail
 import dev.jmx.client.core.api.SearchQueryComposer
 import dev.jmx.client.core.protocol.JmxMagicConstants
+import dev.jmx.client.core.runtime.publicRead
 import dev.jmx.client.core.result.JmxResult
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -109,6 +104,15 @@ import top.yukonga.miuix.kmp.menu.WindowIconDropdownMenu
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
+private val SEARCH_FILTER_SAVER = listSaver<SearchTagFilter, String>(
+    save = { listOf(it.includeTags.size.toString()) + it.includeTags + it.excludeTags },
+    restore = { saved ->
+        saved.firstOrNull()?.toIntOrNull()?.takeIf { it in 0 until saved.size }?.let { count ->
+            SearchTagFilter(saved.drop(1).take(count), saved.drop(count + 1))
+        } ?: SearchTagFilter()
+    },
+)
+
 @Composable
 internal fun ComicSearchScreen(
     homeRepository: HomeRepository,
@@ -117,6 +121,7 @@ internal fun ComicSearchScreen(
     liftedAlbumId: String?,
     onDismiss: () -> Unit,
     onAlbumSelected: (HomeAlbum, Rect?) -> Unit,
+    transitionProgress: () -> Float = { 1f },
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -124,114 +129,39 @@ internal fun ComicSearchScreen(
     val repository = remember(homeRepository) { ComicSearchRepository(homeRepository) }
     val historyStore = remember(context) { SearchHistoryStore(context) }
     val statusBarPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    var query by remember { mutableStateOf("") }
-    var submittedQuery by remember { mutableStateOf<String?>(null) }
-    var searchRequestId by remember { mutableIntStateOf(0) }
-    var state by remember { mutableStateOf<ComicSearchUiState>(ComicSearchUiState.Idle) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var submittedQuery by rememberSaveable { mutableStateOf<String?>(null) }
+    val requestEpoch = remember(repository) { SearchRequestEpoch() }
+    val searchGridState = rememberLazyGridState()
+    DisposableEffect(requestEpoch) { onDispose { requestEpoch.advance() } }
+    val submission = remember(requestEpoch) { SearchSubmissionState(requestEpoch) }
     var history by remember(historyStore) { mutableStateOf(historyStore.load()) }
     var deletingHistory by rememberSaveable { mutableStateOf(false) }
+    var confirmClearHistory by rememberSaveable { mutableStateOf(false) }
     var initialQueryConsumed by rememberSaveable(initialQuery) { mutableStateOf(false) }
     var inputEnabled by rememberSaveable(initialQuery) { mutableStateOf(initialQuery.isNullOrBlank()) }
     var inputMode by rememberSaveable(initialQuery) { mutableStateOf(initialQuery.isNullOrBlank()) }
     var searchOrder by rememberSaveable { mutableStateOf(ComicSearchOrder.LATEST) }
-    var tagFilter by remember { mutableStateOf(SearchTagFilter()) }
+    var tagFilter by rememberSaveable(stateSaver = SEARCH_FILTER_SAVER) { mutableStateOf(SearchTagFilter()) }
     var showTagFilter by remember { mutableStateOf(false) }
     val tagStore = remember(context) { SearchTagStore(context) }
     var userTags by remember(tagStore) { mutableStateOf(tagStore.load()) }
     val coroutineScope = rememberCoroutineScope()
-    val searchSurfaceColor = MiuixTheme.colorScheme.surface
     val activity = context.findActivity()
 
-    SideEffect {
+    // The activity owns theme/system-bar appearance. Search owns only its input mode.
+    // A decor-level scrim cannot participate in Compose transition coordinates and created seams.
+    DisposableEffect(activity, manageSystemBar) {
         val window = activity?.window
-        if (manageSystemBar && window != null) {
-            applySearchSystemBarAppearance(window, searchSurfaceColor.toArgb(), searchSurfaceColor.luminance() > 0.5f)
-        }
-    }
-
-    DisposableEffect(context, activity, searchSurfaceColor, manageSystemBar) {
-        val window = activity?.window
-        val decor = window?.decorView as? ViewGroup
-        if (!manageSystemBar || window == null || decor == null) {
-            return@DisposableEffect onDispose {}
-        }
-
-        val color = searchSurfaceColor.toArgb()
-        val controller = WindowCompat.getInsetsController(window, window.decorView)
-        val previousLightStatusBars = controller.isAppearanceLightStatusBars
+        if (!manageSystemBar || window == null) return@DisposableEffect onDispose {}
         val previousSoftInputMode = window.attributes.softInputMode
-        @Suppress("DEPRECATION")
-        val previousStatusBarColor = window.statusBarColor
-        val scrim = View(context).apply {
-            setBackgroundColor(color)
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }
-        val initialStatusBarHeight = ViewCompat.getRootWindowInsets(decor)
-            ?.getInsets(WindowInsetsCompat.Type.statusBars())
-            ?.top
-            ?: 0
-        decor.addView(
-            scrim,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                initialStatusBarHeight,
-                Gravity.TOP,
-            ),
-        )
-        ViewCompat.setOnApplyWindowInsetsListener(scrim) { view, insets ->
-            val statusBarHeight = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
-            if (view.layoutParams.height != statusBarHeight) {
-                view.layoutParams = view.layoutParams.apply { height = statusBarHeight }
-            }
-            insets
-        }
-        ViewCompat.requestApplyInsets(scrim)
-        window.setBackgroundDrawable(color.toDrawable())
-        @Suppress("DEPRECATION")
+        @Suppress("DEPRECATION") // Required for IME insets on supported older Android releases.
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-        val lightStatusBars = searchSurfaceColor.luminance() > 0.5f
-        val insetsAnimationCallback = object : WindowInsetsAnimationCompat.Callback(
-            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE,
-        ) {
-            override fun onPrepare(animation: WindowInsetsAnimationCompat) {
-                applySearchSystemBarAppearance(window, color, lightStatusBars)
-            }
-
-            override fun onStart(
-                animation: WindowInsetsAnimationCompat,
-                bounds: WindowInsetsAnimationCompat.BoundsCompat,
-            ): WindowInsetsAnimationCompat.BoundsCompat {
-                applySearchSystemBarAppearance(window, color, lightStatusBars)
-                return bounds
-            }
-
-            override fun onProgress(
-                insets: WindowInsetsCompat,
-                runningAnimations: List<WindowInsetsAnimationCompat>,
-            ): WindowInsetsCompat {
-                applySearchSystemBarAppearance(window, color, lightStatusBars)
-                return insets
-            }
-
-            override fun onEnd(animation: WindowInsetsAnimationCompat) {
-                applySearchSystemBarAppearance(window, color, lightStatusBars)
-            }
-        }
-        ViewCompat.setWindowInsetsAnimationCallback(window.decorView, insetsAnimationCallback)
-        applySearchSystemBarAppearance(window, color, lightStatusBars)
-
-        onDispose {
-            ViewCompat.setWindowInsetsAnimationCallback(window.decorView, null)
-            ViewCompat.setOnApplyWindowInsetsListener(scrim, null)
-            decor.removeView(scrim)
-            window.setSoftInputMode(previousSoftInputMode)
-            @Suppress("DEPRECATION")
-            window.statusBarColor = previousStatusBarColor
-            controller.isAppearanceLightStatusBars = previousLightStatusBars
-        }
+        onDispose { window.setSoftInputMode(previousSoftInputMode) }
     }
 
     fun dismissSearch() {
+        submission.reset()
         focusManager.clearFocus(force = true)
         keyboardController?.hide()
         onDismiss()
@@ -255,6 +185,16 @@ internal fun ComicSearchScreen(
         onAlbumSelected(album, sourceBounds)
     }
 
+    fun beginSearch(resetScroll: Boolean = true) {
+        if (submittedQuery == null && !tagFilter.enabled) {
+            submission.reset()
+            inputMode = true
+            return
+        }
+        submission.begin(submittedQuery.orEmpty(), searchOrder, tagFilter)
+        if (resetScroll) searchGridState.requestScrollToItem(0)
+    }
+
     fun submitSearch(value: String) {
         val normalizedQuery = value.trim()
         if (normalizedQuery.isEmpty()) return
@@ -265,81 +205,51 @@ internal fun ComicSearchScreen(
         deletingHistory = false
         submittedQuery = normalizedQuery
         inputMode = false
-        searchRequestId++
+        beginSearch()
     }
 
-    LaunchedEffect(initialQuery) {
+    LaunchedEffect(initialQuery, submission) {
         val value = initialQuery?.trim().orEmpty()
         if (!initialQueryConsumed && value.isNotEmpty()) {
             initialQueryConsumed = true
             submitSearch(value)
+        } else if (submission.request == null) {
+            beginSearch(resetScroll = false)
+        }
+        if (!inputEnabled) {
             delay(INITIAL_SEARCH_FOCUS_GUARD_MILLIS)
             inputEnabled = true
         }
     }
 
-    LaunchedEffect(submittedQuery, searchRequestId, searchOrder, tagFilter, repository) {
-        val baseQuery = submittedQuery
-        // 允许“仅标签”的过滤搜索：没有关键词但存在包含标签时也发起。
-        if (baseQuery == null && !tagFilter.enabled) return@LaunchedEffect
-        val queryText = baseQuery.orEmpty()
-        val displayQuery = queryText.ifBlank { tagFilterSummary(tagFilter) }
-        state = ComicSearchUiState.Loading
-        when (val result = repository.search(
-            queryText,
-            page = 1,
-            order = searchOrder,
-            tagFilter = tagFilter,
-        )) {
-            is ComicSearchResult.Direct -> {
-                state = ComicSearchUiState.Content(
-                    query = queryText,
-                    albums = listOf(result.album),
-                    total = 1,
-                    nextPage = 2,
-                    order = searchOrder,
-                    tagFilter = tagFilter,
-                    endReached = true,
-                )
-                openAlbum(result.album, null)
-            }
-            is ComicSearchResult.Page -> {
-                state = if (result.albums.isEmpty() && result.endReached) {
-                    ComicSearchUiState.Empty(displayQuery)
-                } else {
-                    ComicSearchUiState.Content(
-                        query = queryText,
-                        albums = result.albums,
-                        total = result.total,
-                        nextPage = 2,
-                        order = searchOrder,
-                        tagFilter = tagFilter,
-                        endReached = result.endReached,
-                    )
-                }
-            }
-            is ComicSearchResult.Error -> state = ComicSearchUiState.Error(result.message)
-        }
+    val pendingRequest = submission.request
+    LaunchedEffect(pendingRequest, repository) {
+        val request = pendingRequest ?: return@LaunchedEffect
+        submission.execute(request, repository::search)?.let { openAlbum(it, null) }
     }
 
     fun loadMore() {
-        val content = state as? ComicSearchUiState.Content ?: return
-        if (content.isLoadingMore || content.endReached) return
-        state = content.copy(isLoadingMore = true, loadMoreError = null)
-        coroutineScope.launch {
+        val content = submission.state as? ComicSearchUiState.Content ?: return
+        if (!requestEpoch.accepts(content.generation) || content.isLoadingMore || content.endReached) return
+        if (content.nextPage > MAX_SEARCH_PAGES) {
+            submission.state = content.copy(endReached = true, browseLimited = true)
+            return
+        }
+        val task = coroutineScope.launch(start = CoroutineStart.LAZY) {
             val result = repository.search(
                 query = content.query,
                 page = content.nextPage,
                 order = content.order,
                 tagFilter = content.tagFilter,
             )
-            val latest = state as? ComicSearchUiState.Content
+            val latest = submission.state as? ComicSearchUiState.Content
             if (
-                latest?.query != content.query ||
+                !requestEpoch.accepts(content.generation) || latest?.generation != content.generation ||
+                latest.query != content.query || latest.nextPage != content.nextPage ||
                 latest.order != content.order ||
                 latest.tagFilter != content.tagFilter
             ) return@launch
-            state = when (result) {
+            submission.state = when (result) {
                 is ComicSearchResult.Page -> {
                     val mergedPage = mergeSearchAlbums(
                         existing = latest.albums,
@@ -351,7 +261,8 @@ internal fun ComicSearchScreen(
                         total = result.total ?: latest.total,
                         nextPage = latest.nextPage + 1,
                         isLoadingMore = false,
-                        endReached = mergedPage.endReached,
+                        endReached = mergedPage.endReached || content.nextPage >= MAX_SEARCH_PAGES,
+                        browseLimited = mergedPage.limitReached || content.nextPage >= MAX_SEARCH_PAGES,
                         loadMoreError = null,
                     )
                 }
@@ -362,21 +273,28 @@ internal fun ComicSearchScreen(
                 is ComicSearchResult.Direct -> latest.copy(isLoadingMore = false)
             }
         }
+        if (requestEpoch.register(content.generation, task)) {
+            submission.state = content.copy(isLoadingMore = true, loadMoreError = null)
+            task.invokeOnCompletion { requestEpoch.finished(task) }
+            task.start()
+        }
     }
 
-    BackHandler {
+    fun handleBack() {
         when {
             deletingHistory -> deletingHistory = false
             inputMode -> cancelInputMode()
             else -> dismissSearch()
         }
     }
+    BackHandler(onBack = ::handleBack)
     SearchBar(
         inputField = {
             InputField(
                 query = query,
                 onQueryChange = {
                     query = it
+                    if (deletingHistory) deletingHistory = false
                 },
                 onSearch = ::submitSearch,
                 enabled = inputEnabled,
@@ -400,18 +318,19 @@ internal fun ComicSearchScreen(
             )
         },
         expanded = true,
-        onExpandedChange = { if (!it) dismissSearch() },
+        onExpandedChange = { if (!it) handleBack() },
         outsideEndAction = {
-            AnimatedContent(
-                targetState = inputMode,
-                transitionSpec = {
-                    (fadeIn(tween(180)) + slideInHorizontally { it / 3 }) togetherWith
-                        (fadeOut(tween(120)) + slideOutHorizontally { it / 3 })
-                },
-                label = "SearchEndAction",
-            ) { editing ->
-                if (editing) {
-                    // 输入态也保留标签过滤入口：可以先挑标签再敲关键词，甚至只用标签搜索。
+            Box(Modifier.width(112.dp).height(44.dp), contentAlignment = Alignment.CenterEnd) {
+                AnimatedContent(
+                    targetState = inputMode,
+                    transitionSpec = {
+                        ((fadeIn(tween(180)) + slideInHorizontally { it / 3 }) togetherWith
+                            (fadeOut(tween(120)) + slideOutHorizontally { it / 3 })).using(null)
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.CenterEnd,
+                    label = "SearchEndAction",
+                ) { editing ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (SEARCH_TAG_FILTER_UI_ENABLED) {
                             SearchTagFilterButton(
@@ -419,28 +338,19 @@ internal fun ComicSearchScreen(
                                 onClick = { showTagFilter = true },
                             )
                         }
-                        Text(
-                            text = "取消",
-                            color = MiuixTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .clickable(onClick = ::cancelInputMode)
-                                .padding(start = 4.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
-                        )
-                    }
-                } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (SEARCH_TAG_FILTER_UI_ENABLED) {
-                            SearchTagFilterButton(
-                                activeCount = tagFilter.activeCount,
-                                onClick = { showTagFilter = true },
+                        if (editing) {
+                            QuietTextAction("取消", ::cancelInputMode, modifier = Modifier.padding(end = 4.dp), emphasized = true)
+                        } else {
+                            SearchOrderDropdown(
+                                selected = searchOrder,
+                                onSelected = { order ->
+                                    if (order != searchOrder) {
+                                        searchOrder = order
+                                        beginSearch()
+                                    }
+                                },
                             )
                         }
-                        SearchOrderDropdown(
-                            selected = searchOrder,
-                            onSelected = { order ->
-                                if (order != searchOrder) searchOrder = order
-                            },
-                        )
                     }
                 }
             }
@@ -448,7 +358,9 @@ internal fun ComicSearchScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MiuixTheme.colorScheme.surface)
-            .padding(top = statusBarPadding),
+            .imePadding()
+            .padding(top = statusBarPadding)
+            .graphicsLayer { translationY = -24.dp.toPx() * (1f - transitionProgress()) },
     ) {
         Box(
             modifier = Modifier
@@ -459,30 +371,38 @@ internal fun ComicSearchScreen(
             AnimatedContent(
                 targetState = inputMode,
                 transitionSpec = {
-                    (fadeIn(tween(190)) + slideInHorizontally { if (targetState) -it / 8 else it / 8 }) togetherWith
-                        (fadeOut(tween(130)) + slideOutHorizontally { if (targetState) it / 8 else -it / 8 })
+                    ((fadeIn(tween(190)) + slideInHorizontally { if (targetState) -it / 8 else it / 8 }) togetherWith
+                        (fadeOut(tween(130)) + slideOutHorizontally { if (targetState) it / 8 else -it / 8 })).using(null)
                 },
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.TopStart,
                 label = "SearchModeContent",
             ) { editing ->
                 if (editing) {
-                    SearchHistory(
+                    SearchHistoryPanel(
                         history = history,
-                        deleting = deletingHistory,
-                        onDeletingChange = { deletingHistory = it },
+                        filterQuery = query,
+                        editing = deletingHistory,
+                        onEditingChange = { editing ->
+                            focusManager.clearFocus(force = true)
+                            keyboardController?.hide()
+                            deletingHistory = editing
+                        },
                         onSelected = ::submitSearch,
                         onDelete = { historyQuery ->
                             history = historyStore.remove(history, historyQuery)
                             if (history.isEmpty()) deletingHistory = false
                         },
+                        onClearAll = { confirmClearHistory = true },
                     )
                 } else {
-                    when (val current = state) {
+                    when (val current = submission.state) {
                         ComicSearchUiState.Idle -> SearchMessage("输入关键词后执行搜索")
                         ComicSearchUiState.Loading -> SearchLoading()
                         is ComicSearchUiState.Empty -> SearchMessage("未找到“${current.query}”相关漫画")
                         is ComicSearchUiState.Error -> SearchError(
                             message = current.message,
-                            onRetry = { searchRequestId++ },
+                            onRetry = { beginSearch() },
                         )
                         is ComicSearchUiState.Content -> key(
                             current.query,
@@ -491,6 +411,7 @@ internal fun ComicSearchScreen(
                         ) {
                             SearchResultGrid(
                                 content = current,
+                                gridState = searchGridState,
                                 liftedAlbumId = liftedAlbumId,
                                 onLoadMore = ::loadMore,
                                 onAlbumSelected = { album, bounds -> openAlbum(album, bounds) },
@@ -499,6 +420,34 @@ internal fun ComicSearchScreen(
                     }
                 }
             }
+        }
+    }
+
+    WindowDialog(
+        show = confirmClearHistory,
+        title = "清空搜索历史",
+        summary = "清空全部搜索历史？此操作只影响这台设备。",
+        onDismissRequest = { confirmClearHistory = false },
+    ) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            TextButton(
+                text = "保留历史",
+                onClick = { confirmClearHistory = false },
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(
+                text = "全部清空",
+                onClick = {
+                    history = historyStore.clear()
+                    deletingHistory = false
+                    confirmClearHistory = false
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColors(
+                    color = MiuixTheme.colorScheme.error,
+                    textColor = MiuixTheme.colorScheme.onError,
+                ),
+            )
         }
     }
 
@@ -519,7 +468,13 @@ internal fun ComicSearchScreen(
                 tagFilter = selected
                 showTagFilter = false
                 // 应用过滤后重新发起首页搜索：既有关键词、或仅标签过滤，都需要刷新。
-                if (submittedQuery != null || selected.enabled) searchRequestId++
+                if (submittedQuery != null || selected.enabled) {
+                    focusManager.clearFocus(force = true)
+                    keyboardController?.hide()
+                    deletingHistory = false
+                    inputMode = false
+                    beginSearch()
+                }
             },
             onDismiss = { showTagFilter = false },
         )
@@ -542,8 +497,8 @@ private fun SearchTagFilterButton(
     val active = activeCount > 0
     IconButton(
         onClick = onClick,
-        minWidth = 42.dp,
-        minHeight = 42.dp,
+        minWidth = 44.dp,
+        minHeight = 44.dp,
     ) {
         BadgedBox(
             badge = {
@@ -797,37 +752,14 @@ private fun SearchOrderDropdown(
             )
         },
     )
-    Row(
-        modifier = Modifier.padding(end = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        Text(
-            text = selected.label,
-            color = MiuixTheme.colorScheme.primary,
-            style = MiuixTheme.textStyles.footnote1,
-        )
-        WindowIconDropdownMenu(
-            entry = entry,
-            minWidth = 42.dp,
-            minHeight = 42.dp,
-        ) {
-            Icon(
-                imageVector = MiuixIcons.Sort,
-                contentDescription = "结果排序：${selected.label}",
-                modifier = Modifier.size(20.dp),
-                tint = MiuixTheme.colorScheme.primary,
-            )
+    WindowIconDropdownMenu(entry = entry, minWidth = 68.dp, minHeight = 44.dp) {
+        Row(Modifier.padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Icon(MiuixIcons.Sort, contentDescription = "结果排序：${selected.label}", modifier = Modifier.size(20.dp), tint = MiuixTheme.colorScheme.onSurfaceVariantActions)
+            Text(selected.label, color = MiuixTheme.colorScheme.onSurfaceVariantActions, style = MiuixTheme.textStyles.footnote1)
         }
     }
 }
 
-private fun applySearchSystemBarAppearance(window: Window, color: Int, lightStatusBars: Boolean) {
-    window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
-    @Suppress("DEPRECATION")
-    window.statusBarColor = color
-    WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = lightStatusBars
-}
 
 @Composable
 private fun SearchResultGrid(
@@ -835,25 +767,22 @@ private fun SearchResultGrid(
     liftedAlbumId: String?,
     onLoadMore: () -> Unit,
     onAlbumSelected: (HomeAlbum, Rect) -> Unit,
+    gridState: LazyGridState,
 ) {
-    val gridState = rememberLazyGridState()
     val footerKey = "search-footer"
     val footerVisible by remember(gridState) {
         derivedStateOf {
             gridState.layoutInfo.visibleItemsInfo.any { item -> item.key == footerKey }
         }
     }
-    var loadMoreArmed by remember(content.query, content.tagFilter) { mutableStateOf(true) }
+    var loadMoreArmed by remember(content.generation) { mutableStateOf(true) }
     LaunchedEffect(footerVisible) {
         if (!footerVisible) loadMoreArmed = true
     }
-    LaunchedEffect(content.nextPage) {
-        loadMoreArmed = true
-    }
     LazyVerticalGrid(
-        columns = GridCells.Fixed(3),
+        columns = GridCells.Adaptive((108f * LocalDensity.current.fontScale.coerceIn(1f, 1.5f)).dp),
         state = gridState,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().navigationBarsPadding(),
         contentPadding = PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 28.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
@@ -894,77 +823,13 @@ private fun SearchResultGrid(
                     content.isLoadingMore -> CircularProgressIndicator(size = 24.dp, strokeWidth = 3.dp)
                     content.loadMoreError != null -> TextButton(text = "加载失败，重试", onClick = onLoadMore)
                     content.endReached -> Text(
-                        text = "已显示全部 ${content.albums.size} 部漫画",
+                        text = if (content.browseLimited) "已达到本次浏览上限 · ${content.albums.size} 部" else "已加载 ${content.albums.size} 部漫画",
                         style = MiuixTheme.textStyles.footnote1,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     )
+                    else -> QuietTextAction("加载更多", onLoadMore)
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun SearchHistory(
-    history: List<String>,
-    deleting: Boolean,
-    onDeletingChange: (Boolean) -> Unit,
-    onSelected: (String) -> Unit,
-    onDelete: (String) -> Unit,
-) {
-    if (history.isEmpty()) return
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(top = 8.dp)
-            .verticalScroll(rememberScrollState()),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(52.dp)
-                .padding(start = 20.dp, end = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "搜索历史",
-                style = MiuixTheme.textStyles.title3,
-            )
-            Spacer(modifier = Modifier.weight(1f))
-            IconButton(onClick = { onDeletingChange(!deleting) }) {
-                Icon(
-                    imageVector = if (deleting) MiuixIcons.Basic.Check else MiuixIcons.Delete,
-                    contentDescription = if (deleting) "完成删除" else "删除搜索历史",
-                    tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
-                )
-            }
-        }
-        history.forEach { item ->
-            BasicComponent(
-                title = item,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .combinedClickable(
-                        onClick = { if (!deleting) onSelected(item) },
-                        onLongClick = { onDeletingChange(true) },
-                    ),
-                endActions = {
-                    AnimatedVisibility(
-                        visible = deleting,
-                        enter = fadeIn(),
-                        exit = fadeOut(),
-                    ) {
-                        IconButton(onClick = { onDelete(item) }) {
-                            Icon(
-                                imageVector = MiuixIcons.Delete,
-                                contentDescription = "删除 $item",
-                                tint = MiuixTheme.colorScheme.primary,
-                                modifier = Modifier.size(22.dp),
-                            )
-                        }
-                    }
-                },
-            )
         }
     }
 }
@@ -1041,12 +906,12 @@ internal class ComicSearchRepository(
 
         return withContext(Dispatchers.IO) {
             try {
-                when (val result = homeRepository.core.albumApi.searchResolved(
+                when (val result = homeRepository.core.publicRead { homeRepository.core.albumApi.searchResolved(
                     query = composedQuery,
                     page = page,
                     order = order.apiValue,
                     mainTag = JmxMagicConstants.MAIN_TAG_ALL,
-                )) {
+                ) }) {
                     is JmxResult.Success -> {
                         val searchPage = result.value
                         // 车号直达（服务端重定向）：无过滤时命中，直接进入详情。
@@ -1078,7 +943,7 @@ internal class ComicSearchRepository(
     }
 
     private suspend fun loadDirectAlbum(albumId: String): ComicSearchResult {
-        return when (val result = homeRepository.core.albumApi.detailFull(albumId)) {
+        return when (val result = homeRepository.core.publicRead { homeRepository.core.albumApi.detailFull(albumId) }) {
             is JmxResult.Success -> ComicSearchResult.Direct(
                 result.value.toHomeAlbum(homeRepository.currentImageHost),
             )
@@ -1111,37 +976,26 @@ internal sealed interface ComicSearchResult {
 internal data class SearchAlbumMerge(
     val albums: List<HomeAlbum>,
     val endReached: Boolean,
+    val limitReached: Boolean = false,
 )
+
+internal const val MAX_SEARCH_RESULTS = 2000
+private const val MAX_SEARCH_PAGES = 100
 
 internal fun mergeSearchAlbums(
     existing: List<HomeAlbum>,
     incoming: List<HomeAlbum>,
     sourceEndReached: Boolean,
+    maxAlbums: Int = MAX_SEARCH_RESULTS,
 ): SearchAlbumMerge {
-    val existingIds = existing.mapTo(hashSetOf()) { it.id }
-    val newAlbums = incoming.filter { it.id !in existingIds }.distinctBy { it.id }
-    return SearchAlbumMerge(
-        albums = existing + newAlbums,
-        endReached = sourceEndReached || newAlbums.isEmpty(),
-    )
-}
-
-private sealed interface ComicSearchUiState {
-    data object Idle : ComicSearchUiState
-    data object Loading : ComicSearchUiState
-    data class Empty(val query: String) : ComicSearchUiState
-    data class Error(val message: String) : ComicSearchUiState
-    data class Content(
-        val query: String,
-        val albums: List<HomeAlbum>,
-        val total: Int?,
-        val nextPage: Int,
-        val order: ComicSearchOrder,
-        val tagFilter: SearchTagFilter = SearchTagFilter(),
-        val isLoadingMore: Boolean = false,
-        val endReached: Boolean = false,
-        val loadMoreError: String? = null,
-    ) : ComicSearchUiState
+    require(maxAlbums > 0)
+    val merged = ArrayList<HomeAlbum>(minOf(maxAlbums, existing.size + incoming.size))
+    val seen = HashSet<String>()
+    existing.forEach { if (merged.size < maxAlbums && seen.add(it.id)) merged.add(it) }
+    val previousCount = merged.size
+    incoming.forEach { if (merged.size < maxAlbums && seen.add(it.id)) merged.add(it) }
+    val limited = merged.size >= maxAlbums
+    return SearchAlbumMerge(merged, sourceEndReached || merged.size == previousCount || limited, limited)
 }
 
 /** 仅标签过滤（无关键词）时用于展示/历史/空态的摘要文案。 */

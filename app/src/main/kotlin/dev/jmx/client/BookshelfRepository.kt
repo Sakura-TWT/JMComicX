@@ -386,6 +386,11 @@ internal class BookshelfRepository(
         )
     }
 
+    /** UI reads one atomic snapshot on IO; export ordering remains unchanged. */
+    fun uiSnapshot(): BookshelfSnapshot = synchronized(lock) {
+        BookshelfSnapshot(readEntries(), groups())
+    }
+
     /** 整体替换：本地书架与分组全部作废，只留导入内容。 */
     fun replaceWith(snapshot: BookshelfSnapshot): BookshelfImportOutcome = synchronized(lock) {
         val (next, outcome) = replaceBookshelfWith(snapshot)

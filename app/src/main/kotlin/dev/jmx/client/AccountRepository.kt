@@ -39,15 +39,9 @@ internal class AccountRepository(
     )
     private val credentialStore = SecureCredentialStore(context, gson)
     private val authenticationMutex = Mutex()
-    @Volatile
-    private var authenticationGeneration = 0L
-
-    /**
-     * 已经因"空载荷"重登过一次、且重登后依然是空载荷的登录态编号。
-     * 见 [withSessionRecovery] 的 treatEmptyDataAsSessionLoss。
-     */
-    @Volatile
-    private var emptyDataVerifiedAtGeneration = -1L
+    private val authenticationGeneration = java.util.concurrent.atomic.AtomicLong(0L)
+    private val identityLock = Any()
+    private val recoveryGuard = SessionRecoveryGuard()
 
     /**
      * 冷启动时立即可用的登录态。
@@ -94,15 +88,16 @@ internal class AccountRepository(
      * 那一次点击就要多背一个登录往返。有 AVS 时不做任何网络动作，热启动路径不受影响。
      */
     suspend fun restoreSession(): AccountProfile? = withContext(Dispatchers.IO) {
-        val cached = restore()
-        if (core.sessionManager.hasAvs()) return@withContext cached
-        val credentials = credentialStore.load() ?: return@withContext cached
+        val expectedGeneration = authenticationGeneration.get()
+        if (core.sessionManager.hasAvs()) return@withContext restore()
         authenticationMutex.withLock {
-            if (core.sessionManager.hasAvs()) return@withLock restore()
-            (loginLocked(credentials, persistCredentials = true) as? JmxResult.Success)?.value ?: cached
+            if (authenticationGeneration.get() != expectedGeneration || core.sessionManager.hasAvs()) return@withLock restore()
+            val credentials = credentialStore.load() ?: return@withLock restore()
+            if (authenticationGeneration.get() != expectedGeneration) return@withLock restore()
+            val login = loginLocked(credentials, persistCredentials = true, expectedGeneration = expectedGeneration)
+            (login as? JmxResult.Success)?.value ?: restore()
         }
     }
-
     /**
      * 执行 [block]，若失败原因是会话失效则重新登录并重试一次。
      *
@@ -110,42 +105,33 @@ internal class AccountRepository(
      *   签到接口（/daily）在会话过期时并不回 401，而是回 `code=200` + 空 data，
      *   与"当期确实没有活动"长得一模一样，因此默认不认它——收藏夹为空之类的正常空结果
      *   不该触发重登。只有本来就必须带登录态、且空载荷几乎只可能是掉登录的调用才打开。
-     *   打开后同一个登录态最多因此重登一次：重登后仍是空载荷就认定"服务端真的没内容"，
-     *   否则每次打开签到页都会白重登一次。
+     *   同一个登录态短时只验证一次空载荷，仍为空则保留未确认失败，
+     *   冷却期后可重新恢复，避免会话后来过期却永久被跳过。
      */
     suspend fun <T> withSessionRecovery(
         treatEmptyDataAsSessionLoss: Boolean = false,
+        allowRecovery: () -> Boolean = { true },
         block: suspend () -> JmxResult<T>,
-    ): JmxResult<T> {
-        val generation = authenticationGeneration
-        val first = block()
-        if (first !is JmxResult.Failure) return first
-        val emptyDataSuspected = treatEmptyDataAsSessionLoss && first.error is JmxError.EmptyData
-        if (!first.error.requiresSessionRecovery() && !emptyDataSuspected) return first
-        if (emptyDataSuspected && emptyDataVerifiedAtGeneration == generation) return first
-        val credentials = credentialStore.load() ?: return first
-
-        return authenticationMutex.withLock {
-            if (generation == authenticationGeneration) {
-                when (val login = loginLocked(credentials, persistCredentials = true)) {
-                    is JmxResult.Success -> Unit
-                    is JmxResult.Failure -> return@withLock login
-                }
+    ): JmxResult<T> = boundedSessionRequest(
+        generation = authenticationGeneration::get,
+        mutex = authenticationMutex,
+        guard = recoveryGuard,
+        recover = { expected ->
+            val credentials = withContext(Dispatchers.IO) { credentialStore.load() }
+            if (credentials == null || authenticationGeneration.get() != expected) RecoveryLogin.Skipped
+            else when (val login = loginLocked(credentials, persistCredentials = true, expectedGeneration = expected)) {
+                is JmxResult.Success -> RecoveryLogin.Recovered
+                is JmxResult.Failure -> RecoveryLogin.Failed(login)
             }
-            block().also { retried ->
-                if (emptyDataSuspected &&
-                    retried is JmxResult.Failure &&
-                    retried.error is JmxError.EmptyData
-                ) {
-                    emptyDataVerifiedAtGeneration = authenticationGeneration
-                }
-            }
-        }
-    }
-
+        },
+        treatEmptyDataAsSessionLoss = treatEmptyDataAsSessionLoss,
+        allowRecovery = allowRecovery,
+        block = block,
+    )
     private suspend fun loginLocked(
         credentials: AccountCredentials,
         persistCredentials: Boolean,
+        expectedGeneration: Long = authenticationGeneration.get(),
     ): JmxResult<AccountProfile> = withContext(Dispatchers.IO) {
             val username = credentials.username.trim()
             val password = credentials.password
@@ -157,23 +143,28 @@ internal class AccountRepository(
                         core.userApi.logout()
                         JmxResult.Failure(JmxError.Schema("登录成功但响应缺少用户资料"))
                     } else {
-                        update(profile)
-                        preferences.edit {
-                            putString(ACCOUNT_LAST_USERNAME_KEY, username)
+                        synchronized(identityLock) {
+                            if (authenticationGeneration.get() != expectedGeneration) {
+                                core.userApi.logout()
+                                JmxResult.Failure(JmxError.Api(401, "账号操作已取消，请重新登录"))
+                            } else {
+                                update(profile)
+                                preferences.edit { putString(ACCOUNT_LAST_USERNAME_KEY, username) }
+                                if (persistCredentials) credentialStore.save(AccountCredentials(username, password))
+                                authenticationGeneration.incrementAndGet()
+                                JmxResult.Success(profile)
+                            }
                         }
-                        if (persistCredentials) credentialStore.save(AccountCredentials(username, password))
-                        authenticationGeneration++
-                        JmxResult.Success(profile)
                     }
                 }
                 is JmxResult.Failure -> result
             }
         }
 
-    fun logout() {
+    fun logout() = synchronized(identityLock) {
         core.userApi.logout()
         credentialStore.clear()
-        authenticationGeneration++
+        authenticationGeneration.incrementAndGet()
         preferences.edit { remove(ACCOUNT_PROFILE_KEY) }
     }
 }
